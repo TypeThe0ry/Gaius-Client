@@ -1,0 +1,32 @@
+name: Patcher
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  patcher:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Patcher self-test
+        run: java patcher/GaiusPatcher.java selftest
+
+      - name: Patcher unit tests
+        run: python3 -m unittest discover -s patcher/tests -v
+
+      - name: Public tree check
+        run: python3 patcher/tools/public_tree_check.py .

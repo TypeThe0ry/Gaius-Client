@@ -1,0 +1,4 @@
+# Type renames from the canonical set to the legacy-12111 set, applied to the code (not comments or
+# string literals) of every shared and canonical file a legacy-12111 profile compiles.
+# Format: <canonical type>	<legacy-12111 type>	<reason>.
+dev.gaius.browser.kernel.light.DampeningLightOps	dev.gaius.browser.kernel.light.LightBlockLightOps	selected light engine member names

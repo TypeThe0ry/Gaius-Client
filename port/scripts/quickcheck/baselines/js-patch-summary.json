@@ -1,0 +1,109 @@
+{
+ "comment": "PATCH_* lines of a GAIUS_TEAVM_TARGET=js build-overlays.sh run (wasmgc_rules.py rule f); rewrite with --write-baseline only for a reviewed change of the JavaScript patch set",
+ "profiles": {
+  "1.21.11": {
+   "summary": [
+    "PATCH_SUMMARY applied=201 dropped=1 bringupSkipped=0 targetSkipped=10 notApplicable=1",
+    "PATCH_SUMMARY applied=1 dropped=0 bringupSkipped=0 targetSkipped=2",
+    "PATCH_SUMMARY applied=0 dropped=0 bringupSkipped=0 targetSkipped=2"
+   ],
+   "dropped": [
+    "MinecraftClientPatcher.patchStateDefinitionNeighbourTables"
+   ],
+   "targetSkipped": [
+    "Minecraft12111BrowserPatcher.patchInitRendererDeviceFactory",
+    "Minecraft12111BrowserPatcher.patchLineWidthVertexFormatAlignment",
+    "MinecraftClientPatcher.patchClimateRTreeBrowserFlatIndex",
+    "MinecraftClientPatcher.patchMinecraftRunFrameBoundary",
+    "MinecraftClientPatcher.patchMipmapGeneratorAtlasPrebake",
+    "MinecraftClientPatcher.patchMultiNoiseBiomeSourceBrowserCachedParameters",
+    "MinecraftClientPatcher.patchSingleplayerHostCompression",
+    "MinecraftClientPatcher.patchStitcherAtlasPrebake",
+    "MinecraftClientPatcher.patchTagKeyBrowserHashCodeCache",
+    "MinecraftClientPatcher.patchTickPacketParity",
+    "MinecraftClientPatcher.patchWorldGenRegionBrowserCachedHeight",
+    "MinecraftClientPatcher.patchWorldGenRegionBrowserLastChunk",
+    "MinecraftServerWorkerPatcher.lightWakePatches",
+    "MinecraftServerWorkerPatcher.worldLoaderCache"
+   ],
+   "bringupSkipped": []
+  },
+  "26.2": {
+   "summary": [
+    "PATCH_SUMMARY applied=215 dropped=0 bringupSkipped=0 targetSkipped=11",
+    "PATCH_SUMMARY applied=35 dropped=0 bringupSkipped=0 targetSkipped=1",
+    "PATCH_SUMMARY applied=0 dropped=0 bringupSkipped=0 targetSkipped=2"
+   ],
+   "dropped": [],
+   "targetSkipped": [
+    "Minecraft262BrowserPatcher.patchTerrainSectionUniformBlock",
+    "MinecraftClientPatcher.patchClimateRTreeBrowserFlatIndex",
+    "MinecraftClientPatcher.patchMinecraftRunFrameBoundary",
+    "MinecraftClientPatcher.patchMipmapGeneratorAtlasPrebake",
+    "MinecraftClientPatcher.patchMultiNoiseBiomeSourceBrowserCachedParameters",
+    "MinecraftClientPatcher.patchSectionBufferBuilderPoolTelemetry",
+    "MinecraftClientPatcher.patchSingleplayerHostCompression",
+    "MinecraftClientPatcher.patchStitcherAtlasPrebake",
+    "MinecraftClientPatcher.patchTagKeyBrowserHashCodeCache",
+    "MinecraftClientPatcher.patchTickPacketParity",
+    "MinecraftClientPatcher.patchWorldGenRegionBrowserCachedHeight",
+    "MinecraftClientPatcher.patchWorldGenRegionBrowserLastChunk",
+    "MinecraftServerWorkerPatcher.lightWakePatches",
+    "MinecraftServerWorkerPatcher.worldLoaderCache"
+   ],
+   "bringupSkipped": []
+  },
+  "26.3": {
+   "summary": [
+    "PATCH_SUMMARY applied=195 dropped=20 bringupSkipped=0 targetSkipped=11",
+    "PATCH_SUMMARY applied=30 dropped=5 bringupSkipped=0 targetSkipped=1",
+    "PATCH_SUMMARY applied=0 dropped=0 bringupSkipped=0 targetSkipped=2",
+    "PATCH_SUMMARY applied=33 dropped=0 bringupSkipped=0"
+   ],
+   "dropped": [
+    "Minecraft262BrowserPatcher.patchGlBufferMappedViewRanges",
+    "Minecraft262BrowserPatcher.patchMacosUtil",
+    "Minecraft262BrowserPatcher.patchNoiseChunkGraphMapper",
+    "Minecraft262BrowserPatcher.patchVulkanBackend",
+    "Minecraft262BrowserPatcher.patchVulkanDebug",
+    "MinecraftClientPatcher.patchBeardifierBrowserPackedCompute",
+    "MinecraftClientPatcher.patchBrowserKeyboardHandler",
+    "MinecraftClientPatcher.patchBrowserMouseHandler",
+    "MinecraftClientPatcher.patchCommandEncoderLegacyTextureUpload",
+    "MinecraftClientPatcher.patchDensityFunctionsPureTransformersBrowserDirect",
+    "MinecraftClientPatcher.patchGlRenderPipelineDrawMetadata",
+    "MinecraftClientPatcher.patchGlslPreprocessor",
+    "MinecraftClientPatcher.patchGlx",
+    "MinecraftClientPatcher.patchImprovedNoiseBrowserHotPath",
+    "MinecraftClientPatcher.patchInputConstants.glfw",
+    "MinecraftClientPatcher.patchMultiPlayerGameModeBrowserHitSound",
+    "MinecraftClientPatcher.patchNoiseChunkBrowserSynchronous",
+    "MinecraftClientPatcher.patchNoiseChunkCacheOnceBrowserIntCounters",
+    "MinecraftClientPatcher.patchNoiseChunkContextBrowserIntCounters",
+    "MinecraftClientPatcher.patchNoiseInterpolatorBrowserLerp",
+    "MinecraftClientPatcher.patchOpenUri.utilOs",
+    "MinecraftClientPatcher.patchPerlinNoiseBrowserDoubleWrap",
+    "MinecraftClientPatcher.patchSurfaceRulesContextBrowserReusableBiomeSupplier",
+    "MinecraftClientPatcher.patchSurfaceRulesLazyConditionBrowserPrimitiveCache",
+    "MinecraftClientPatcher.patchSurfaceRulesSequenceBrowserIndexed"
+   ],
+   "targetSkipped": [
+    "Minecraft262BrowserPatcher.patchTerrainSectionUniformBlock",
+    "MinecraftClientPatcher.patchClimateRTreeBrowserFlatIndex",
+    "MinecraftClientPatcher.patchMinecraftRunFrameBoundary",
+    "MinecraftClientPatcher.patchMipmapGeneratorAtlasPrebake",
+    "MinecraftClientPatcher.patchMultiNoiseBiomeSourceBrowserCachedParameters",
+    "MinecraftClientPatcher.patchSectionBufferBuilderPoolTelemetry",
+    "MinecraftClientPatcher.patchSingleplayerHostCompression",
+    "MinecraftClientPatcher.patchStitcherAtlasPrebake",
+    "MinecraftClientPatcher.patchTagKeyBrowserHashCodeCache",
+    "MinecraftClientPatcher.patchTickPacketParity",
+    "MinecraftClientPatcher.patchWorldGenRegionBrowserCachedHeight",
+    "MinecraftClientPatcher.patchWorldGenRegionBrowserLastChunk",
+    "MinecraftServerWorkerPatcher.lightWakePatches",
+    "MinecraftServerWorkerPatcher.worldLoaderCache"
+   ],
+   "bringupSkipped": []
+  }
+ }
+}

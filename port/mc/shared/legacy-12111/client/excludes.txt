@@ -1,0 +1,7 @@
+# Canonical client overrides that the legacy-12111 compat set does not compile: classes that do not
+# exist in the legacy client (the audio DeviceTracker, resources/model/sprite/TextureSlots) and the
+# density graph mapper of the modern router runtime.  The compat copies of the other canonical
+# overrides are in java/ here.
+dev/gaius/browser/BrowserDeviceTracker.java
+net/minecraft/client/resources/model/sprite/TextureSlots.java
+net/minecraft/world/level/levelgen/BrowserNoiseGraphMapper.java

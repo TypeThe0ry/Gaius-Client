@@ -1,0 +1,7 @@
+name: GaiusServerBridge
+version: '${project.version}'
+main: dev.gaius.serverplugin.GaiusServerBridgePlugin
+api-version: '1.21.11'
+description: Direct WebSocket transport for the Gaius browser client
+authors: [Gaius]
+website: https://github.com/hahatt/Gaius

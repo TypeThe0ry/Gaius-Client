@@ -1,0 +1,708 @@
+{
+  "schema": 1,
+  "reason": "Existing compatibility helpers and JVM fixtures preceding the mc source boundary. Counts pin existing dependencies only; new vanilla-facing files belong under port/mc. Remove entries as legacy sources migrate.",
+  "sources": [
+    {
+      "path": "port/scripts/fixtures/BrowserZipResourcePatcherFixture.java",
+      "symbols": {
+        "net.minecraft.network.chat.Component": 1,
+        "net.minecraft.server.packs.FilePackResources": 2,
+        "net.minecraft.server.packs.PackLocationInfo": 1,
+        "net.minecraft.server.packs.PackResources": 1,
+        "net.minecraft.server.packs.PackType": 1
+      }
+    },
+    {
+      "path": "port/scripts/fixtures/DragonPacketCodecFixture.java",
+      "symbols": {
+        "com.mojang.datafixers.util.Pair.of": 1,
+        "net.minecraft.SharedConstants.tryDetectVersion": 1,
+        "net.minecraft.core.RegistryAccess": 1,
+        "net.minecraft.core.RegistryAccess.EMPTY": 1,
+        "net.minecraft.core.RegistryAccess.fromRegistryOfRegistries": 1,
+        "net.minecraft.core.Rotations": 1,
+        "net.minecraft.core.registries.BuiltInRegistries.REGISTRY": 1,
+        "net.minecraft.network.RegistryFriendlyByteBuf": 1,
+        "net.minecraft.network.chat.Component": 1,
+        "net.minecraft.network.codec.StreamCodec": 1,
+        "net.minecraft.network.protocol.game.ClientboundAddEntityPacket": 1,
+        "net.minecraft.network.protocol.game.ClientboundBossEventPacket": 1,
+        "net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket": 1,
+        "net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket": 1,
+        "net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket": 1,
+        "net.minecraft.network.syncher.EntityDataSerializers": 1,
+        "net.minecraft.network.syncher.SynchedEntityData": 1,
+        "net.minecraft.server.Bootstrap.bootStrap": 1,
+        "net.minecraft.server.level.ServerBossEvent": 1,
+        "net.minecraft.world.BossEvent": 1,
+        "net.minecraft.world.entity.EntityTypes.ENDER_DRAGON": 1,
+        "net.minecraft.world.entity.EquipmentSlot": 1,
+        "net.minecraft.world.entity.boss.enderdragon.EnderDragon": 1,
+        "net.minecraft.world.entity.boss.enderdragon.phases.EnderDragonPhase": 1,
+        "net.minecraft.world.item.ItemStack": 1,
+        "net.minecraft.world.phys.Vec3": 1
+      }
+    },
+    {
+      "path": "port/scripts/fixtures/GaiusChunkLayerBytecodeVerifier.java",
+      "symbols": {
+        "net.minecraft.server.level.ChunkGenerationTask.class": 2
+      }
+    },
+    {
+      "path": "port/scripts/fixtures/GaiusRespawnSearchFixture.java",
+      "symbols": {
+        "net.minecraft.SharedConstants.tryDetectVersion": 1,
+        "net.minecraft.client.server.IntegratedServer": 1,
+        "net.minecraft.core.BlockPos": 1,
+        "net.minecraft.server.Bootstrap.bootStrap": 1,
+        "net.minecraft.server.MinecraftServer": 1,
+        "net.minecraft.server.level.PlayerSpawnFinder": 1,
+        "net.minecraft.server.level.ServerLevel": 1,
+        "net.minecraft.server.network.config.PrepareSpawnTask": 1,
+        "net.minecraft.world.entity.Entity": 1,
+        "net.minecraft.world.flag.FeatureFlags": 1,
+        "net.minecraft.world.level.GameType": 1,
+        "net.minecraft.world.level.block.Blocks": 1,
+        "net.minecraft.world.level.block.state.BlockState": 1,
+        "net.minecraft.world.level.border.WorldBorder": 1,
+        "net.minecraft.world.level.chunk.LevelChunk": 1,
+        "net.minecraft.world.level.dimension.DimensionType": 1,
+        "net.minecraft.world.level.gamerules.GameRules": 1,
+        "net.minecraft.world.level.levelgen.Heightmap": 1,
+        "net.minecraft.world.level.storage.WorldData": 1,
+        "net.minecraft.world.phys.AABB": 1,
+        "net.minecraft.world.phys.Vec3": 1
+      }
+    },
+    {
+      "path": "port/scripts/fixtures/GaiusSpawnEntityGateFixture.java",
+      "symbols": {
+        "net.minecraft.SharedConstants": 1,
+        "net.minecraft.server.Bootstrap": 1,
+        "net.minecraft.server.level.ChunkLoadCounter": 1,
+        "net.minecraft.server.level.ServerChunkCache": 1,
+        "net.minecraft.server.level.ServerLevel": 1,
+        "net.minecraft.server.level.TicketType": 1,
+        "net.minecraft.server.level.progress.LevelLoadListener": 1,
+        "net.minecraft.server.network.config.PrepareSpawnTask": 1,
+        "net.minecraft.server.network.config.PrepareSpawnTask$Preparing": 2,
+        "net.minecraft.server.network.config.PrepareSpawnTask$Ready": 1,
+        "net.minecraft.world.level.ChunkPos": 1,
+        "net.minecraft.world.level.TicketStorage": 1,
+        "net.minecraft.world.level.entity.ChunkEntities": 1,
+        "net.minecraft.world.level.entity.PersistentEntitySectionManager": 1,
+        "net.minecraft.world.phys.Vec2": 1,
+        "net.minecraft.world.phys.Vec3": 1
+      }
+    },
+    {
+      "path": "port/scripts/fixtures/GaiusTextureCaptureFixture.java",
+      "symbols": {
+        "net.minecraft.client.renderer.texture.SpriteContents$AnimatedTexture": 1,
+        "net.minecraft.client.renderer.texture.SpriteContents$AnimationState": 1,
+        "net.minecraft.client.renderer.texture.SpriteContents$FrameInfo": 1
+      }
+    },
+    {
+      "path": "port/scripts/fixtures/GameRulesHandoffCheck.java",
+      "symbols": {
+        "com.mojang.serialization.Dynamic": 1,
+        "net.minecraft.SharedConstants": 1,
+        "net.minecraft.nbt.CompoundTag": 1,
+        "net.minecraft.nbt.NbtOps": 1,
+        "net.minecraft.nbt.Tag": 1,
+        "net.minecraft.server.Bootstrap": 1,
+        "net.minecraft.world.flag.FeatureFlagSet": 1,
+        "net.minecraft.world.flag.FeatureFlags": 1,
+        "net.minecraft.world.level.LevelSettings": 1,
+        "net.minecraft.world.level.WorldDataConfiguration": 1,
+        "net.minecraft.world.level.gamerules.GameRule": 1,
+        "net.minecraft.world.level.gamerules.GameRules": 1
+      }
+    },
+    {
+      "path": "port/scripts/fixtures/NoiseGraphMapperFixture.java",
+      "symbols": {
+        "net.minecraft.world.level.levelgen": 1
+      }
+    },
+    {
+      "path": "port/scripts/fixtures/RealNoiseGraphMapperFixture.java",
+      "symbols": {
+        "net.minecraft.SharedConstants": 1,
+        "net.minecraft.server.Bootstrap": 1,
+        "net.minecraft.world.level.levelgen": 1
+      }
+    },
+    {
+      "path": "port/scripts/fixtures/WorldgenPriorityJvmFixture.java",
+      "symbols": {
+        "net.minecraft.util.thread.PriorityConsecutiveExecutor": 1,
+        "net.minecraft.util.thread.StrictQueue": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserAboutScreen.java",
+      "symbols": {
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.gui.Font": 1,
+        "net.minecraft.client.gui.components.AbstractWidget": 1,
+        "net.minecraft.client.gui.components.Button": 1,
+        "net.minecraft.client.gui.components.FittingMultiLineTextWidget": 1,
+        "net.minecraft.client.gui.components.MultiLineTextWidget": 1,
+        "net.minecraft.client.gui.components.events.GuiEventListener": 1,
+        "net.minecraft.client.gui.layouts.HeaderAndFooterLayout": 1,
+        "net.minecraft.client.gui.layouts.LinearLayout": 1,
+        "net.minecraft.client.gui.screens.ConfirmLinkScreen": 1,
+        "net.minecraft.client.gui.screens.Screen": 1,
+        "net.minecraft.network.chat.CommonComponents": 1,
+        "net.minecraft.network.chat.Component": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserAtlasResourceFallback.java",
+      "symbols": {
+        "net.minecraft.resources.Identifier": 1,
+        "net.minecraft.server.packs.resources.Resource": 1,
+        "net.minecraft.server.packs.resources.ResourceManager": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserAuthlibGson.java",
+      "symbols": {
+        "com.mojang.authlib.minecraft.MinecraftProfileTexture": 1,
+        "com.mojang.authlib.yggdrasil.response.MinecraftTexturesPayload": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserBeardifier.java",
+      "symbols": {
+        "net.minecraft.world.level.levelgen.Beardifier": 1,
+        "net.minecraft.world.level.levelgen.structure.BoundingBox": 1,
+        "net.minecraft.world.level.levelgen.structure.pools.JigsawJunction": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserBlockSupportMemo.java",
+      "symbols": {
+        "net.minecraft.core.BlockPos": 1,
+        "net.minecraft.core.Direction": 1,
+        "net.minecraft.world.level.BlockGetter": 1,
+        "net.minecraft.world.level.block.SupportType": 1,
+        "net.minecraft.world.level.block.state.BlockState": 1,
+        "net.minecraft.world.phys.shapes.VoxelShape": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserChunkGenerationOrderTelemetry.java",
+      "symbols": {
+        "net.minecraft.world.level.chunk.status.ChunkStatus": 4
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserClientNetwork.java",
+      "symbols": {
+        "net.minecraft.network.PacketProcessor": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserClimate.java",
+      "symbols": {
+        "net.minecraft.world.level.biome.Climate": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserCompressionDecoder.java",
+      "symbols": {
+        "net.minecraft.network.CompressionDecoder": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserCreateWorldChoiceScreen.java",
+      "symbols": {
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.gui.components.Button": 1,
+        "net.minecraft.client.gui.components.Tooltip": 1,
+        "net.minecraft.client.gui.layouts.HeaderAndFooterLayout": 1,
+        "net.minecraft.client.gui.layouts.LinearLayout": 1,
+        "net.minecraft.client.gui.screens.Screen": 1,
+        "net.minecraft.client.gui.screens.worldselection.CreateWorldScreen": 1,
+        "net.minecraft.network.chat.CommonComponents": 1,
+        "net.minecraft.network.chat.Component": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserFontBitmapCache.java",
+      "symbols": {
+        "com.mojang.blaze3d.platform.NativeImage": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserFontProviderIndex.java",
+      "symbols": {
+        "com.mojang.blaze3d.font.GlyphProvider": 1,
+        "net.minecraft.client.gui.font.providers.BitmapProvider": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserGameRulesHandoff.java",
+      "symbols": {
+        "com.mojang.serialization.JsonOps": 1,
+        "net.minecraft.world.flag.FeatureFlagSet": 1,
+        "net.minecraft.world.level.gamerules.GameRules": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserGpuBufferPoolCache.java",
+      "symbols": {
+        "com.mojang.blaze3d.buffers.GpuBuffer": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserGzip.java",
+      "symbols": {
+        "net.minecraft.nbt.CompoundTag": 1,
+        "net.minecraft.nbt.NbtAccounter": 1,
+        "net.minecraft.nbt.NbtIo": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserHostConnection.java",
+      "symbols": {
+        "net.minecraft.network.Connection": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserI18n.java",
+      "symbols": {
+        "net.minecraft.network.chat.Component": 1,
+        "net.minecraft.network.chat.MutableComponent": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserInputDispatch.java",
+      "symbols": {
+        "net.minecraft.client.Minecraft": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserIntegratedServerMain.java",
+      "symbols": {
+        "com.mojang.datafixers.DataFixer": 1,
+        "net.minecraft.core.Holder": 1,
+        "net.minecraft.network.Connection": 1,
+        "net.minecraft.network.protocol.game.ServerboundMovePlayerPacket": 1,
+        "net.minecraft.server.Main": 1,
+        "net.minecraft.server.MinecraftServer": 1,
+        "net.minecraft.server.TickTask": 1,
+        "net.minecraft.server.level.ServerChunkCache": 1,
+        "net.minecraft.server.level.ServerPlayer": 1,
+        "net.minecraft.server.network.ServerConnectionListener": 1,
+        "net.minecraft.server.players.PlayerList": 1,
+        "net.minecraft.util.datafix.DataFixers.getDataFixer": 1,
+        "net.minecraft.world.entity.ai.attributes.Attributes": 1,
+        "net.minecraft.world.flag.FeatureFlagSet": 1,
+        "net.minecraft.world.level.gamerules.GameRules": 1,
+        "net.minecraft.world.phys.Vec3": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserLanSession.java",
+      "symbols": {
+        "net.minecraft.SharedConstants": 1,
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.gui.components.Button": 1,
+        "net.minecraft.client.gui.layouts.GridLayout": 1,
+        "net.minecraft.locale.Language": 1,
+        "net.minecraft.network.chat.Component": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserLazyDataFixer.java",
+      "symbols": {
+        "com.mojang.datafixers.DSL": 1,
+        "com.mojang.datafixers.DataFixer": 1,
+        "com.mojang.datafixers.schemas.Schema": 1,
+        "com.mojang.serialization.Dynamic": 1,
+        "net.minecraft.util.datafix.DataFixers": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserMeshUpload.java",
+      "symbols": {
+        "com.mojang.blaze3d.vertex.MeshData": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserMultiplayerRecovery.java",
+      "symbols": {
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.gui.screens.ConnectScreen": 1,
+        "net.minecraft.client.gui.screens.Screen": 1,
+        "net.minecraft.client.multiplayer.ServerData": 1,
+        "net.minecraft.client.multiplayer.resolver.ServerAddress": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserNativeImageCopy.java",
+      "symbols": {
+        "com.mojang.blaze3d.platform.NativeImage": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserPacketScheduler.java",
+      "symbols": {
+        "net.minecraft.network.protocol.game.ServerboundMovePlayerPacket": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserPlayerListCompat.java",
+      "symbols": {
+        "net.minecraft.server.players.PlayerList": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserProfileScreen.java",
+      "symbols": {
+        "com.mojang.authlib.GameProfile": 1,
+        "net.minecraft.ChatFormatting": 1,
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.gui.components.Button": 1,
+        "net.minecraft.client.gui.components.EditBox": 1,
+        "net.minecraft.client.gui.components.MultiLineTextWidget": 1,
+        "net.minecraft.client.gui.components.PlayerSkinWidget": 1,
+        "net.minecraft.client.gui.components.StringWidget": 1,
+        "net.minecraft.client.gui.layouts.HeaderAndFooterLayout": 1,
+        "net.minecraft.client.gui.layouts.LinearLayout": 1,
+        "net.minecraft.client.gui.screens.Screen": 1,
+        "net.minecraft.network.chat.CommonComponents": 1,
+        "net.minecraft.network.chat.Component": 1,
+        "net.minecraft.world.entity.player.PlayerSkin": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserProtoChunk.java",
+      "symbols": {
+        "net.minecraft.world.level.block.state.BlockState": 1,
+        "net.minecraft.world.level.chunk.ChunkAccess": 1,
+        "net.minecraft.world.level.levelgen.Heightmap": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserRelayEditScreen.java",
+      "symbols": {
+        "net.minecraft.ChatFormatting": 1,
+        "net.minecraft.client.gui.components.Button": 1,
+        "net.minecraft.client.gui.components.CycleButton": 1,
+        "net.minecraft.client.gui.components.EditBox": 1,
+        "net.minecraft.client.gui.components.MultiLineTextWidget": 1,
+        "net.minecraft.client.gui.components.StringWidget": 1,
+        "net.minecraft.client.gui.layouts.HeaderAndFooterLayout": 1,
+        "net.minecraft.client.gui.layouts.LinearLayout": 1,
+        "net.minecraft.client.gui.screens.Screen": 1,
+        "net.minecraft.network.chat.CommonComponents": 1,
+        "net.minecraft.network.chat.Component": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserRelaysScreen.java",
+      "symbols": {
+        "net.minecraft.ChatFormatting": 1,
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.gui.components.Button": 1,
+        "net.minecraft.client.gui.components.MultiLineTextWidget": 1,
+        "net.minecraft.client.gui.components.ScrollableLayout": 1,
+        "net.minecraft.client.gui.components.StringWidget": 1,
+        "net.minecraft.client.gui.components.Tooltip": 1,
+        "net.minecraft.client.gui.layouts.HeaderAndFooterLayout": 1,
+        "net.minecraft.client.gui.layouts.LinearLayout": 1,
+        "net.minecraft.client.gui.screens.ConfirmScreen": 1,
+        "net.minecraft.client.gui.screens.Screen": 1,
+        "net.minecraft.network.chat.CommonComponents": 1,
+        "net.minecraft.network.chat.Component": 1,
+        "net.minecraft.network.chat.MutableComponent": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserResourceReloadProfiler.java",
+      "symbols": {
+        "net.minecraft.server.packs.resources.PreparableReloadListener": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserRingPositions.java",
+      "symbols": {
+        "net.minecraft.world.level.ChunkPos": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserScreens.java",
+      "symbols": {
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.gui.screens.Screen": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserSectionAudit.java",
+      "symbols": {
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.SectionUpdateTracker": 1,
+        "net.minecraft.client.multiplayer.ClientLevel": 1,
+        "net.minecraft.client.player.LocalPlayer": 1,
+        "net.minecraft.client.renderer.LevelRenderer": 1,
+        "net.minecraft.client.renderer.SectionOcclusionGraph": 1,
+        "net.minecraft.client.renderer.chunk.CompiledSectionMesh": 1,
+        "net.minecraft.client.renderer.chunk.SectionRenderDispatcher": 1,
+        "net.minecraft.client.renderer.extract.LevelExtractor": 1,
+        "net.minecraft.client.renderer.state.level.ChunkLoadingRenderState": 1,
+        "net.minecraft.client.renderer.state.level.LevelRenderState": 1,
+        "net.minecraft.client.renderer.state.level.SectionUpdateRenderState": 1,
+        "net.minecraft.core.SectionPos": 1,
+        "net.minecraft.util.Util": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserSectionVisibilityFastPath.java",
+      "symbols": {
+        "net.minecraft.client.renderer.SectionOcclusionGraph": 1,
+        "net.minecraft.client.renderer.chunk.SectionMesh": 1,
+        "net.minecraft.client.renderer.state.level.CameraRenderState": 1,
+        "net.minecraft.core.Direction": 1,
+        "net.minecraft.core.SectionPos": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserServerPackReuse.java",
+      "symbols": {
+        "net.minecraft.client.resources.server.PackLoadFeedback": 1,
+        "net.minecraft.network.Connection": 1,
+        "net.minecraft.network.protocol.common.ClientboundResourcePackPushPacket": 1,
+        "net.minecraft.network.protocol.common.ServerboundResourcePackPacket": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserShareToLanScreen.java",
+      "symbols": {
+        "net.minecraft.ChatFormatting": 1,
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.gui.components.Button": 1,
+        "net.minecraft.client.gui.components.EditBox": 1,
+        "net.minecraft.client.gui.components.MultiLineTextWidget": 1,
+        "net.minecraft.client.gui.layouts.HeaderAndFooterLayout": 1,
+        "net.minecraft.client.gui.layouts.LinearLayout": 1,
+        "net.minecraft.client.gui.screens.Screen": 1,
+        "net.minecraft.network.chat.CommonComponents": 1,
+        "net.minecraft.network.chat.Component": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserSigner.java",
+      "symbols": {
+        "net.minecraft.util.SignatureUpdater": 1,
+        "net.minecraft.util.Signer": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserSingleplayerClient.java",
+      "symbols": {
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.gui.screens.ConnectScreen": 1,
+        "net.minecraft.client.gui.screens.DisconnectedScreen": 1,
+        "net.minecraft.client.gui.screens.TitleScreen": 1,
+        "net.minecraft.client.multiplayer.ServerData": 1,
+        "net.minecraft.client.multiplayer.resolver.ServerAddress": 1,
+        "net.minecraft.network.chat.Component": 1,
+        "net.minecraft.server.WorldStem": 1,
+        "net.minecraft.world.level.gamerules.GameRules": 1,
+        "net.minecraft.world.level.storage.LevelStorageSource": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserSkinProfile.java",
+      "symbols": {
+        "com.mojang.authlib.GameProfile": 1,
+        "com.mojang.authlib.properties.Property": 1,
+        "com.mojang.authlib.properties.PropertyMap": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserStructurePreloader.java",
+      "symbols": {
+        "net.minecraft.resources.Identifier": 1,
+        "net.minecraft.server.MinecraftServer": 1,
+        "net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserSurfaceBiomeSupplier.java",
+      "symbols": {
+        "net.minecraft.core.BlockPos": 1,
+        "net.minecraft.core.Holder": 1,
+        "net.minecraft.world.level.biome.Biome": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserTargeting.java",
+      "symbols": {
+        "net.minecraft.client.Camera": 1,
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.core.BlockPos": 1,
+        "net.minecraft.core.Direction": 1,
+        "net.minecraft.world.entity.EntitySelector": 1,
+        "net.minecraft.world.entity.projectile.ProjectileUtil": 1,
+        "net.minecraft.world.level.ClipContext": 1,
+        "net.minecraft.world.phys.AABB": 1,
+        "net.minecraft.world.phys.BlockHitResult": 1,
+        "net.minecraft.world.phys.EntityHitResult": 1,
+        "net.minecraft.world.phys.HitResult": 1,
+        "net.minecraft.world.phys.Vec3": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserTextureSolidifier.java",
+      "symbols": {
+        "com.mojang.blaze3d.platform.NativeImage": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserUploadedSkin.java",
+      "symbols": {
+        "com.mojang.authlib.SignatureState": 1,
+        "com.mojang.authlib.minecraft.MinecraftProfileTexture": 1,
+        "com.mojang.authlib.minecraft.MinecraftProfileTextures": 1,
+        "com.mojang.blaze3d.platform.NativeImage": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserUserResourcePacks.java",
+      "symbols": {
+        "net.minecraft.client.gui.components.Button": 1,
+        "net.minecraft.client.gui.screens.Screen": 1,
+        "net.minecraft.client.gui.screens.packs.PackSelectionScreen": 1,
+        "net.minecraft.network.chat.Component": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserWallShapes.java",
+      "symbols": {
+        "net.minecraft.core.Direction": 1,
+        "net.minecraft.world.level.block.WallBlock": 1,
+        "net.minecraft.world.level.block.state.BlockState": 1,
+        "net.minecraft.world.phys.shapes.VoxelShape": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserWorldTransfer.java",
+      "symbols": {
+        "net.minecraft.client.Minecraft": 1,
+        "net.minecraft.client.gui.components.AbstractWidget": 1,
+        "net.minecraft.client.gui.components.Button": 1,
+        "net.minecraft.client.gui.components.Tooltip": 1,
+        "net.minecraft.client.gui.layouts.GridLayout": 1,
+        "net.minecraft.client.gui.layouts.LayoutElement": 1,
+        "net.minecraft.client.gui.layouts.LinearLayout": 1,
+        "net.minecraft.client.gui.screens.Screen": 1,
+        "net.minecraft.client.gui.screens.worldselection.WorldSelectionList": 1,
+        "net.minecraft.network.chat.Component": 1,
+        "net.minecraft.world.level.storage.LevelSummary": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserWorldTransferScreen.java",
+      "symbols": {
+        "net.minecraft.ChatFormatting": 1,
+        "net.minecraft.client.gui.components.Button": 1,
+        "net.minecraft.client.gui.components.MultiLineTextWidget": 1,
+        "net.minecraft.client.gui.layouts.HeaderAndFooterLayout": 1,
+        "net.minecraft.client.gui.layouts.LinearLayout": 1,
+        "net.minecraft.client.gui.screens.Screen": 1,
+        "net.minecraft.network.chat.CommonComponents": 1,
+        "net.minecraft.network.chat.Component": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/BrowserWorldgenScheduler.java",
+      "symbols": {
+        "net.minecraft.world.entity.Mob": 1,
+        "net.minecraft.world.entity.boss.enderdragon.EnderDragon": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/PlatformSmoke.java",
+      "symbols": {
+        "com.mojang.blaze3d.opengl.GlBackend": 1,
+        "com.mojang.blaze3d.platform.MonitorManager": 1,
+        "com.mojang.blaze3d.platform.NativeImage": 1,
+        "com.mojang.blaze3d.platform.Window": 1,
+        "com.mojang.blaze3d.shaders.GpuDebugOptions": 1,
+        "com.mojang.blaze3d.systems.RenderSystem": 1,
+        "com.mojang.serialization.JsonOps": 1,
+        "net.minecraft.client.sounds.JOrbisAudioStream": 1,
+        "net.minecraft.core.BlockPos": 1,
+        "net.minecraft.resources.Identifier": 1,
+        "net.minecraft.server.packs.OverlayMetadataSection": 1,
+        "net.minecraft.server.packs.PackType": 1,
+        "net.minecraft.server.packs.metadata.pack.PackFormat": 1,
+        "net.minecraft.util.LinearCongruentialGenerator": 1,
+        "net.minecraft.util.Mth": 1,
+        "net.minecraft.util.SimpleBitStorage": 1,
+        "net.minecraft.util.Util": 1,
+        "net.minecraft.world.level.biome.Climate": 1,
+        "net.minecraft.world.level.levelgen.Beardifier": 1,
+        "net.minecraft.world.level.levelgen.LegacyRandomSource": 1,
+        "net.minecraft.world.level.levelgen.structure.BoundingBox": 1,
+        "net.minecraft.world.level.levelgen.structure.TerrainAdjustment": 1,
+        "net.minecraft.world.level.levelgen.structure.pools.JigsawJunction": 1,
+        "net.minecraft.world.level.levelgen.structure.pools.StructureTemplatePool": 1,
+        "net.minecraft.world.level.levelgen.synth.ImprovedNoise": 1,
+        "net.minecraft.world.level.levelgen.synth.PerlinNoise": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/kernel/light/BrowserLightEngineHooks.java",
+      "symbols": {
+        "net.minecraft.world.level.ChunkPos": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/kernel/light/BrowserLightKernel.java",
+      "symbols": {
+        "net.minecraft.core.BlockPos": 1,
+        "net.minecraft.core.Direction": 1,
+        "net.minecraft.core.SectionPos": 1,
+        "net.minecraft.network.FriendlyByteBuf": 1,
+        "net.minecraft.server.level.ThreadedLevelLightEngine": 1,
+        "net.minecraft.world.level.ChunkPos": 1,
+        "net.minecraft.world.level.LightLayer": 1,
+        "net.minecraft.world.level.block.Block": 1,
+        "net.minecraft.world.level.block.Blocks": 1,
+        "net.minecraft.world.level.block.state.BlockState": 1,
+        "net.minecraft.world.level.chunk.ChunkAccess": 1,
+        "net.minecraft.world.level.chunk.DataLayer": 1,
+        "net.minecraft.world.level.chunk.LevelChunkSection": 1,
+        "net.minecraft.world.level.chunk.LightChunk": 1,
+        "net.minecraft.world.level.lighting.GaiusLightColumnAccess": 1,
+        "net.minecraft.world.level.lighting.LightEngine": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/kernel/light/BrowserLightStateTable.java",
+      "symbols": {
+        "net.minecraft.core.Direction": 1,
+        "net.minecraft.core.IdMapper": 1,
+        "net.minecraft.world.level.block.Block": 1,
+        "net.minecraft.world.level.block.state.BlockState": 1,
+        "net.minecraft.world.phys.AABB": 1,
+        "net.minecraft.world.phys.shapes.Shapes": 1,
+        "net.minecraft.world.phys.shapes.VoxelShape": 1
+      }
+    },
+    {
+      "path": "port/src/main/java/dev/gaius/browser/quality/BrowserQualityFrame.java",
+      "symbols": {
+        "net.minecraft.client.gui.screens.inventory": 1
+      }
+    }
+  ]
+}

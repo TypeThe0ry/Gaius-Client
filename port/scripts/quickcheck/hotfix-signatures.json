@@ -1,0 +1,447 @@
+{
+  "hotfixes": [
+    {
+      "id": "webgpu-resource-pack-pipeline-validation",
+      "commit": "eleventh-round",
+      "description": "Wait for RenderPearl WebGPU pipeline validation during resource reload and propagate failures",
+      "signatures": [
+        {
+          "file": "port/web/runtime/webgpu/gpu-glue.js",
+          "must_exist": true,
+          "substring": "G.awaitPipelineValidation = function (handle, callback)"
+        },
+        {
+          "file": "port/mc/seams/renderpearl-1/src/main/java/dev/gaius/mc/seams/renderpearl1/RpDevice.java",
+          "must_exist": true,
+          "substring": "WebGPU pipeline validation failed: "
+        },
+        {
+          "file": "port/web/runtime/webgpu/gpu-pipeline-validation-smoke.mjs",
+          "must_exist": true,
+          "substring": "reload validation observes WGSL compilation errors"
+        }
+      ]
+    },
+    {
+      "id": "webgpu-derivative-uniformity-diagnostic",
+      "commit": "seventh-round",
+      "description": "Disable WebGPU derivative uniformity diagnostics for translated GLSL shaders",
+      "signatures": [
+        {
+          "file": "port/native/crates/gaius-shaderxlat/src/lib.rs",
+          "must_exist": true,
+          "substring": "diagnostic(off, derivative_uniformity);"
+        }
+      ]
+    },
+    {
+      "id": "exact-numeric-clock-import",
+      "commit": "historical",
+      "description": "Fresh monotonic clock reads through a numeric Wasm import without JSBody callbacks",
+      "signatures": [
+        {
+          "file": "port/overrides/classlib/src/target-wasmgc/java/dev/gaius/browser/HostClock.java",
+          "must_exist": true,
+          "substring": "@Import(module = \"gaiusClock\", name = \"nowMillis\")"
+        },
+        {
+          "file": "port/web/runtime/wasmgc/gaius-jspi.js",
+          "must_exist": true,
+          "substring": "importObj.gaiusClock = {nowMillis: function () {"
+        },
+        {
+          "file": "port/scripts/exact-clock-import.test.mjs",
+          "must_exist": true,
+          "substring": "EXACT_CLOCK_IMPORT_TEST PASS"
+        }
+      ]
+    },
+    {
+      "id": "swept-block-intersection-traversal",
+      "description": "Scalar swept slice traversal preserves vanilla callbacks and distinct mutable cursors",
+      "commit": "codex/w12-fall27",
+      "signatures": [
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/MinecraftClientPatcher.java",
+          "must_exist": true,
+          "substring": "MinecraftClientPatcher.patchSweptBlockIntersectionTraversal"
+        },
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/patches/worldgen/BlockIntersectionPatches.java",
+          "must_exist": true,
+          "substring": "Swept traversal shape changed:"
+        },
+        {
+          "file": "port/tools/src/test/java/dev/gaius/tools/BlockIntersectionTraversalTest.java",
+          "must_exist": true,
+          "substring": "BLOCK_INTERSECTION_TEST PASS"
+        }
+      ]
+    },
+    {
+      "id": "shader-toolchain-wasm-retry",
+      "description": "Retry shader toolchain Wasm compilation after transient network aborts",
+      "commit": "historical",
+      "signatures": [
+        {
+          "file": "port/wasm/shader-toolchain/loader/gaius-shader-toolchain.js",
+          "must_exist": true,
+          "substring": "function compileWasmOnce(url, streaming, cacheMode)"
+        },
+        {
+          "file": "port/wasm/shader-toolchain/loader/gaius-shader-toolchain.js",
+          "must_exist": true,
+          "substring": "var delays = [300, 900];"
+        },
+        {
+          "file": "port/wasm/shader-toolchain/loader/gaius-shader-toolchain.js",
+          "must_exist": true,
+          "substring": "return compileWasmOnce(url, false, \"reload\")"
+        }
+      ]
+    },
+    {
+      "id": "wasm-memory-fallback",
+      "description": "Wasm memory fallback loader",
+      "commit": "PR #22",
+      "signatures": [
+        {
+          "file": "port/web/runtime/wasmgc/gaius-wasm-boot.js",
+          "regex": "loadWithMemoryFallback",
+          "must_exist": true,
+          "staged": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "portable-payload-origin",
+      "description": "Embedded payloads and translator work on hosted single files",
+      "commit": "historical",
+      "signatures": [
+        {
+          "file": "port/web/boot/gaius-boot.js",
+          "must_exist": true,
+          "substring": "return (isPortable() || (isFile && !site)) && payloads",
+          "staged": "boot"
+        },
+        {
+          "file": "port/scripts/build-portable-html.py",
+          "must_exist": true,
+          "substring": "raise RuntimeError(\"the staged boot still gates its file payloads on file://\")"
+        }
+      ]
+    },
+    {
+      "id": "ios-update-message",
+      "description": "Tell iPhone and iPad users to update iOS",
+      "commit": "historical",
+      "signatures": [
+        {
+          "file": "port/web/boot/gaius-boot.js",
+          "regex": "update iOS|iPhone and iPad",
+          "must_exist": true
+        }
+      ]
+    },
+    {
+      "id": "third-party-error-ignore",
+      "description": "Ignore third-party script errors in startup overlay",
+      "commit": "historical",
+      "signatures": [
+        {
+          "file": "port/web/launcher/index.template.html",
+          "regex": "isForeignScriptError",
+          "must_exist": true
+        }
+      ]
+    },
+    {
+      "id": "hosted-portable-worker",
+      "description": "Portable idle worker embeds server bootstrap and payloads",
+      "commit": "historical",
+      "signatures": [
+        {
+          "file": "port/web/boot/gaius-boot.js",
+          "must_exist": true,
+          "substring": "if (isFile && !isPortable() || typeof global.Worker !== \"function\"",
+          "staged": "boot"
+        },
+        {
+          "file": "port/web/boot/gaius-boot.js",
+          "must_exist": true,
+          "substring": "if (!workerUrl && isPortable()) {",
+          "staged": "boot"
+        },
+        {
+          "file": "port/web/boot/gaius-boot.js",
+          "must_exist": true,
+          "substring": "portableFilesPromise = Promise.all(names.map((name) => boot.filePayload(name)))",
+          "staged": "boot"
+        }
+      ]
+    },
+    {
+      "id": "respawn-ground",
+      "description": "Run vanilla spawn search immediately for respawns",
+      "commit": "historical",
+      "signatures": [
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/patches/serverworker/ServerWorkerPatches.java",
+          "must_exist": true,
+          "substring": "Opcodes.INVOKESTATIC, owner, \"gaius$findSpawnNow\""
+        },
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/patches/serverworker/ServerWorkerPatches.java",
+          "must_exist": true,
+          "substring": "call.getOpcode(), owner, \"gaius$searchNow\", \"()V\", false"
+        },
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/patches/serverworker/ServerWorkerPatches.java",
+          "must_exist": true,
+          "substring": "markSpawnSearchDeferred(start);"
+        }
+      ]
+    },
+    {
+      "id": "delete-world-path-equality",
+      "description": "Repair TeaVM path identity comparison",
+      "commit": "release-line hotfix",
+      "signatures": [
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/TeaVMClasslibPatcher.java",
+          "must_exist": true,
+          "substring": "patchDefaultPathIdentityEquals(jar, root);"
+        },
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/TeaVMClasslibPatcher.java",
+          "must_exist": true,
+          "substring": "method.instructions.set(identityResult, new InsnNode(Opcodes.ICONST_1));"
+        }
+      ]
+    },
+    {
+      "id": "insecure-chat-toast",
+      "description": "Suppress insecure chat toast without telemetry restoring original bytecode",
+      "commit": "historical",
+      "signatures": [
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/patches/telemetry/TelemetryPatches.java",
+          "must_exist": true,
+          "substring": "ClassNode node = Files.exists(output) ? read(output)"
+        },
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/MinecraftClientPatcher.java",
+          "must_exist": true,
+          "regex": "patchSuppressInsecureServerToast"
+        }
+      ]
+    },
+    {
+      "id": "loading-overlay-sentinel",
+      "description": "Advance elapsed fade time after preserving completion sentinel",
+      "commit": "release-line hotfix",
+      "signatures": [
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/patches/ui/UiPatches.java",
+          "must_exist": true,
+          "substring": "// Keep the real completion time: negative values are vanilla's unfinished sentinel."
+        },
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/patches/ui/UiPatches.java",
+          "must_exist": true,
+          "substring": "// Skip animation in elapsed-time arithmetic, after the sentinel guard."
+        }
+      ]
+    },
+    {
+      "id": "shader-base-vertex",
+      "description": "Map gl_BaseVertex in shader translation",
+      "commit": "local hotfix",
+      "signatures": [
+        {
+          "file": "port/native/crates/gaius-shaderxlat/src/passes/base_vertex.rs",
+          "regex": "gl_BaseVertex",
+          "must_exist": true
+        }
+      ]
+    },
+    {
+      "id": "native-shader-screen",
+      "description": "Open shader packs through native settings widgets",
+      "commit": "release-line hotfix",
+      "signatures": [
+        {
+          "file": "port/mc/shared/canonical/client/java/dev/gaius/browser/BrowserShaderPacksScreen.java",
+          "must_exist": true,
+          "substring": "extends Screen"
+        },
+        {
+          "file": "port/mc/shared/canonical/client/java/dev/gaius/browser/BrowserShaderPacksScreen.java",
+          "must_exist": true,
+          "substring": "BrowserScreens.show(new BrowserShaderPacksScreen(videoSettings))"
+        },
+        {
+          "file": "port/mc/shared/canonical/client/java/dev/gaius/browser/BrowserShaderPacksScreen.java",
+          "must_exist": false,
+          "substring": "document.createElement"
+        }
+      ]
+    },
+    {
+      "id": "memory-fallback-test",
+      "description": "Keep executable fallback regression coverage",
+      "commit": "PR #22",
+      "signatures": [
+        {
+          "file": "port/scripts/wasmgc-boot-memory-fallback.test.mjs",
+          "substring": "maxBytes = [1024, 768, 512, 384, 320]",
+          "must_exist": true
+        }
+      ]
+    },
+    {
+      "id": "sound-event-entries",
+      "description": "Preserve referenced sound events in filtered metadata",
+      "commit": "historical",
+      "signatures": [
+        {
+          "file": "port/scripts/browser-sounds-metadata.jq",
+          "must_exist": true,
+          "substring": "entry_type == \"event\" and ($events | has($name))"
+        },
+        {
+          "file": "port/scripts/test-browser-sound-selection.py",
+          "must_exist": true,
+          "regex": "ambient|weather"
+        }
+      ]
+    },
+    {
+      "id": "graphics-first-run",
+      "description": "Seed vanilla FAST values without GPU-tier overrides",
+      "commit": "historical",
+      "signatures": [
+        {
+          "file": "port/overrides/classlib/src/main/java/dev/gaius/browser/BrowserFilePersistence.java",
+          "must_exist": true,
+          "substring": "\"renderDistance:8\""
+        },
+        {
+          "file": "port/overrides/classlib/src/main/java/dev/gaius/browser/BrowserFilePersistence.java",
+          "must_exist": true,
+          "substring": "\"simulationDistance:6\""
+        },
+        {
+          "file": "port/overrides/classlib/src/main/java/dev/gaius/browser/BrowserFilePersistence.java",
+          "must_exist": true,
+          "substring": "String graphics = VANILLA_FAST_GRAPHICS_DEFAULTS;"
+        }
+      ]
+    },
+    {
+      "id": "gpu-diagnostics-cleanup",
+      "description": "Disable per-frame WebGPU surface and submit timing diagnostics unless debug or diag is enabled",
+      "commit": "codex/w12-e3clock",
+      "signatures": [
+        {
+          "file": "port/web/runtime/webgpu/gpu-glue.js",
+          "must_exist": true,
+          "substring": "var submitDiagnostics = surfaceDebug();"
+        },
+        {
+          "file": "port/web/runtime/webgpu/gpu-glue.js",
+          "must_exist": true,
+          "substring": "if (!surfaceDebug()) return;"
+        }
+      ]
+    },
+    {
+      "id": "adaptive-latency-surface-gate",
+      "description": "Adaptive bounded WebGPU surface back-pressure gate with JSPI stall telemetry",
+      "commit": "codex/w12-p1gate",
+      "signatures": [
+        {
+          "file": "port/web/runtime/webgpu/gpu-glue.js",
+          "must_exist": true,
+          "substring": "surfaceLatencyEwma"
+        },
+        {
+          "file": "port/web/runtime/wasmgc/gaius-jspi.js",
+          "must_exist": true,
+          "substring": "surfaceBackpressureStalls"
+        },
+        {
+          "file": "port/web/runtime/webgpu/gpu-surface-backpressure-smoke.mjs",
+          "must_exist": true,
+          "substring": "adaptiveCap"
+        }
+      ]
+    },
+    {
+      "id": "surface-gate-load-window-wake",
+      "description": "Apply live surface gate configuration to parked load frames without fabricating retirement",
+      "commit": "codex/w12-p1gate",
+      "signatures": [
+        {
+          "file": "port/web/runtime/webgpu/gpu-glue.js",
+          "must_exist": true,
+          "substring": "function reconsiderSurfaceGate()"
+        },
+        {
+          "file": "port/web/runtime/webgpu/gpu-glue.js",
+          "must_exist": true,
+          "substring": "var surfaceConfiguredCap = \"auto\";"
+        },
+        {
+          "file": "port/web/runtime/webgpu/gpu-surface-backpressure-smoke.mjs",
+          "must_exist": true,
+          "substring": "disable during world-load window"
+        }
+      ]
+    },
+    {
+      "id": "time-based-surface-gate-v2",
+      "description": "Time-budget surface admission with refresh observer, exact gap telemetry and readable stats",
+      "commit": "codex/w12-p1gate",
+      "signatures": [
+        {
+          "file": "port/web/runtime/webgpu/gpu-glue.js",
+          "must_exist": true,
+          "substring": "function surfaceShouldWait()"
+        },
+        {
+          "file": "port/web/runtime/webgpu/gpu-glue.js",
+          "must_exist": true,
+          "substring": "G.stats.submitCount = G.submitCount;"
+        },
+        {
+          "file": "port/tests/jspi/frame-pacer-test.mjs",
+          "must_exist": true,
+          "substring": "no skipped or duplicate game frames"
+        }
+      ]
+    },
+    {
+      "id": "visual-viewport-canvas-resize",
+      "description": "Refresh the game canvas after visual viewport changes that omit a window resize event",
+      "commit": "codex/w12-mpjoinhang",
+      "signatures": [
+        {
+          "file": "port/overrides/libraries/lwjgl-sdl/src/main/java/org/lwjgl/sdl/BrowserSdlDom.java",
+          "must_exist": true,
+          "substring": "visualViewport.addEventListener('resize'"
+        },
+        {
+          "file": "port/overrides/libraries/lwjgl-glfw/src/main/java/org/lwjgl/glfw/BrowserGlfw.java",
+          "must_exist": true,
+          "substring": "visualViewport.addEventListener('resize'"
+        },
+        {
+          "file": "port/scripts/lwjgl-sdl-browser-dom-smoke.mjs",
+          "must_exist": true,
+          "substring": "visual viewport resize refreshes the canvas backing size"
+        }
+      ]
+    }
+  ]
+}

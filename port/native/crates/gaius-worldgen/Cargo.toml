@@ -1,0 +1,10 @@
+[package]
+name = "gaius-worldgen"
+description = "Chunk generation (biomes, terrain fill, aquifers, ore veins, surface rules) driven by a density IR exported from the Java generator."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gaius-noise.workspace = true

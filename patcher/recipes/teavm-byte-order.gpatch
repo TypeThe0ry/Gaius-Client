@@ -1,0 +1,12 @@
+gaius-source-patch 2
+base c0c4c3a06ec39d03426b688e052c7606d24af3fa5aea56338d3cdac9c43f53b7
+result 7a73b6fcc4ad08811ec696b43467c3c5fa7bc1642e17453d3e0f2c50d1e90dd6
+@@ 2 6
++/** Browser JavaScript and WebAssembly targets are little-endian. */
+@@ 11 2
+=1 1
++    private final String name;
+@@ 19 15
++        return LITTLE_ENDIAN;
+@@ 38 1
++        return name;

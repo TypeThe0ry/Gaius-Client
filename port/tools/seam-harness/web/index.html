@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Gaius render seam harness</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block;width:1280px;height:720px}</style>
+</head>
+<body>
+<canvas id="mc-canvas" width="1280" height="720"></canvas>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  globalThis.__harness = {
+    mode: q.get("mode") || "webgpu",
+    status: "loading",
+    info: {},
+    shaders: {},
+    modules: {},
+    canvas: document.getElementById("mc-canvas")
+  };
+})();
+</script>
+<script src="gpu-glue.js"></script>
+<script src="shaderxlat-job.js"></script>
+<script src="gaius-shader-toolchain.js"></script>
+<script>document.write('<script src="' + (new URLSearchParams(location.search).get("js") || "classes.js") + '"><\/script>');</script>
+<script>
+(function () {
+  var h = globalThis.__harness;
+  function fail(stage, error) {
+    h.status = "error: " + stage + ": " + (error && error.message ? error.message : error);
+  }
+  var ready = fetch("shaders.json").then(function (r) { return r.json(); }).then(function (shaders) {
+    h.shaders = shaders;
+  });
+  if (h.mode === "webgpu") {
+    // The blaze3d GLSL front-end: shaderc (the page's shader toolchain) and the gaius-shaderxlat
+    // kernel (link and translation) on synchronous instances, as the game page installs them.
+    ready = ready.then(function () {
+      return Promise.all([globalThis.__gaiusShaderToolchainReady,
+        fetch("shaderxlat.wasm").then(function (r) { return r.arrayBuffer(); }).then(function (b) {
+          return WebAssembly.compile(b);
+        })]);
+    }).then(function (parts) {
+      GaiusWebGpu.translator = GaiusShaderXlatJob.instantiateSync(parts[1]);
+      // The seams' backend lists and device factories select WebGPU on this flag (?gpu=webgpu).
+      GaiusWebGpu.requested = true;
+      var q = new URLSearchParams(location.search);
+      return GaiusWebGpu.init(h.canvas, { allowFallback: q.get("fallback") === "1" });
+    });
+  }
+  ready.then(function () {
+    h.started = performance.now();
+    main([]);
+  }).catch(function (error) { fail("setup", error); });
+})();
+</script>
+</body>
+</html>

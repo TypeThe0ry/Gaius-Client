@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "name": "1.21.11",
+  "protocolVersion": 774,
+  "loginLayoutVersion": 1,
+  "source": {
+    "kind": "vanilla-server-reports",
+    "serverSha1": "64bb6d763bed0a9f1d632ec347938594144943ed",
+    "packetsSha256": "602f772e07ed74266ad3f38161c0702224f362936d193b48c4295a6d15116479"
+  },
+  "login": {
+    "clientboundDisconnect": 0,
+    "clientboundEncryptionRequest": 1,
+    "clientboundLoginFinished": 2,
+    "clientboundCompression": 3,
+    "serverboundHello": 0,
+    "serverboundKey": 1,
+    "serverboundLoginAcknowledged": 3
+  },
+  "configuration": {
+    "clientboundDisconnect": 2,
+    "clientboundFinish": 3,
+    "clientboundKeepAlive": 4,
+    "clientboundPing": 5,
+    "clientboundKnownPacks": 14,
+    "clientboundResourcePackPush": 9,
+    "clientboundShowDialog": 18,
+    "clientboundCodeOfConduct": 19,
+    "serverboundFinish": 3,
+    "serverboundKeepAlive": 4,
+    "serverboundPong": 5,
+    "serverboundSelectKnownPacks": 7,
+    "serverboundResourcePack": 6,
+    "serverboundCustomClickAction": 8,
+    "serverboundAcceptCodeOfConduct": 9
+  },
+  "play": {
+    "clientboundChunkBatchFinished": 11,
+    "clientboundChunkBatchStart": 12,
+    "clientboundCustomPayload": 24,
+    "clientboundDisconnect": 32,
+    "clientboundKeepAlive": 43,
+    "clientboundPing": 59,
+    "clientboundLogin": 48,
+    "clientboundChunk": 44,
+    "clientboundSetChunkCacheCenter": 92,
+    "clientboundSetChunkCacheRadius": 93,
+    "clientboundSetSimulationDistance": 109,
+    "clientboundStartConfiguration": 116,
+    "serverboundCustomPayload": 21,
+    "serverboundChunkBatchReceived": 10,
+    "serverboundKeepAlive": 27,
+    "serverboundPong": 44,
+    "serverboundPlayerLoaded": 43,
+    "serverboundClientTickEnd": 12,
+    "serverboundConfigurationAcknowledged": 15
+  }
+}

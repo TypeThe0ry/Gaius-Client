@@ -1,0 +1,76 @@
+{
+  "generation": "blaze3d-direct-0",
+  "description": "WebGPU behind vanilla 1.21.11's single-interface blaze3d device (GpuDevice / CommandEncoder / RenderPass, no frontend), with the mini-frontend 26.2 later moved into vanilla. A delegating adapter onto port/gpu/webgpu-core; the device receives GLSL, which the core's blaze3d GLSL front-end compiles with the lenient link and GL's depth range.",
+  "profiles": [
+    "1.21.11"
+  ],
+  "package": "dev.gaius.mc.seams.blaze3ddirect0",
+  "sources": "src/main/java",
+  "tests": {
+    "sources": "src/test/java",
+    "mains": [
+      "dev.gaius.mc.seams.blaze3ddirect0.D0EnumsTest",
+      "dev.gaius.mc.seams.blaze3ddirect0.D0UploadTest",
+      "dev.gaius.mc.seams.blaze3ddirect0.D0MipLevelsTest"
+    ]
+  },
+  "entry": {
+    "device": "dev.gaius.mc.seams.blaze3ddirect0.D0Device",
+    "deviceFactory": "dev.gaius.mc.seams.blaze3ddirect0.D0Devices.create",
+    "lineWidthPadding": "dev.gaius.mc.seams.blaze3ddirect0.D0Devices.lineWidthPadding"
+  },
+  "registration": {
+    "target": "com.mojang.blaze3d.systems.RenderSystem.initRenderer",
+    "patch": "Minecraft12111BrowserPatcher.patchInitRendererDeviceFactory",
+    "targets": [
+      "wasmgc"
+    ],
+    "wired": true
+  },
+  "requiredPatches": [
+    "Minecraft12111BrowserPatcher.patchInitRendererDeviceFactory: new GlDevice -> invokestatic D0Devices.create (registration)",
+    "Minecraft12111BrowserPatcher.patchLineWidthVertexFormatAlignment: POSITION_COLOR_NORMAL_LINE_WIDTH padding(D0Devices.lineWidthPadding()) before LineWidth (stride 23 -> 24 for WebGPU)"
+  ],
+  "shaders": "glsl",
+  "shaderFront": "blaze3d-glsl-lenient",
+  "depthZeroToOne": false,
+  "frameYield": "org.lwjgl.glfw.GLFW.glfwSwapBuffers (RenderSystem.flipFrame, unchanged)",
+  "fingerprint": {
+    "file": "port/mc/profiles/{profile}/spi.fingerprint",
+    "closurePackages": [
+      "com/mojang/blaze3d/buffers/",
+      "com/mojang/blaze3d/pipeline/",
+      "com/mojang/blaze3d/platform/",
+      "com/mojang/blaze3d/shaders/",
+      "com/mojang/blaze3d/systems/",
+      "com/mojang/blaze3d/textures/",
+      "com/mojang/blaze3d/vertex/"
+    ],
+    "implements": [
+      "com/mojang/blaze3d/buffers/GpuBuffer$MappedView",
+      "com/mojang/blaze3d/buffers/GpuFence",
+      "com/mojang/blaze3d/pipeline/CompiledRenderPipeline",
+      "com/mojang/blaze3d/systems/CommandEncoder",
+      "com/mojang/blaze3d/systems/GpuDevice",
+      "com/mojang/blaze3d/systems/GpuQuery",
+      "com/mojang/blaze3d/systems/RenderPass",
+      "com/mojang/blaze3d/systems/RenderPass$UniformUploader"
+    ],
+    "extends": [
+      "com/mojang/blaze3d/buffers/GpuBuffer",
+      "com/mojang/blaze3d/textures/GpuSampler",
+      "com/mojang/blaze3d/textures/GpuTexture",
+      "com/mojang/blaze3d/textures/GpuTextureView"
+    ],
+    "instantiates": [
+      "com/mojang/blaze3d/opengl/GlDevice"
+    ],
+    "watch": [
+      "com/mojang/blaze3d/pipeline/RenderPipeline",
+      "com/mojang/blaze3d/preprocessor/GlslPreprocessor",
+      "com/mojang/blaze3d/systems/RenderSystem",
+      "com/mojang/blaze3d/vertex/DefaultVertexFormat",
+      "com/mojang/blaze3d/vertex/VertexFormat"
+    ]
+  }
+}

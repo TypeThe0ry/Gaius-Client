@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gaius platform smoke</title>
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #111; color: #eee; }
+    #mc-canvas { display: block; margin: 48px auto 0; background: #000; outline: 1px solid #333; }
+    #status { position: fixed; inset: 12px 16px auto; font: 14px/1.4 monospace; }
+    #status[data-success="true"] { color: #72e083; }
+    #status[data-success="false"] { color: #ff7272; }
+  </style>
+</head>
+<body>
+  <div id="status">Running the TeaVM platform smoke...</div>
+  <canvas id="mc-canvas" tabindex="0"></canvas>
+  <script src="vanilla-assets-smoke-loader.js?v=1"></script>
+  <script src="platform-smoke-v4.js?v=12"></script>
+  <script>
+    window.__gaiusVanillaAssetsReady.then(
+      () => main([]),
+      (error) => {
+        const status = document.getElementById("status");
+        status.dataset.success = "false";
+        status.textContent = "vanilla assets: " + String(error);
+        console.error(error);
+      }
+    );
+  </script>
+</body>
+</html>

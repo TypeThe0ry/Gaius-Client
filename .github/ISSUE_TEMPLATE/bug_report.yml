@@ -1,0 +1,76 @@
+name: Bug report
+description: Something does not work or behaves differently from the Java Edition
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Read the [issue rules](https://github.com/TypeThe0ry/Gaius-Client/blob/main/CONTRIBUTING.md) first.
+        **Never attach or link game files, builds, decompiled game code, or file-host links.** Such content is deleted.
+        感谢反馈。请先阅读 [issue 规范](https://github.com/TypeThe0ry/Gaius-Client/blob/main/CONTRIBUTING.md)。
+        **请勿附带或链接游戏文件、构建、反编译的游戏代码或网盘链接**，此类内容会被删除。
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Before you post / 发帖前确认
+      options:
+        - label: I own Minecraft Java Edition and follow the Minecraft EULA. / 我拥有正版 Minecraft Java 版并遵守 Minecraft EULA。
+          required: true
+        - label: This report contains no game files, builds, decompiled game code, or links to them. / 本报告不含游戏文件、构建、反编译的游戏代码或它们的链接。
+          required: true
+        - label: I searched the existing issues. / 我已搜索过现有 issue。
+          required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Minecraft profile
+      options: ["26.3", "26.2", "1.21.11", "Not sure"]
+    validations:
+      required: true
+  - type: dropdown
+    id: form
+    attributes:
+      label: How do you run it
+      options: ["Website", "Single-file page (file://)", "Not sure"]
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Graphics backend (F3 debug screen)
+      options: ["WebGPU", "WebGL2", "Not sure"]
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: "Chrome 155 on Windows 11"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device / GPU / RAM
+      placeholder: "Desktop, RTX 4060, 16 GB"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create a new world ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console log / screenshots
+      description: >-
+        Browser console output (F12 → Console) as text, or screenshots of the bug.
+        Remove account details and private server addresses. No files other than images.

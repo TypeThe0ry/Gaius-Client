@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gaius singleplayer Worker smoke</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    body { margin: 0; background: #111; color: #eee; }
+    main { width: min(920px, calc(100% - 32px)); margin: 32px auto; }
+    h1 { margin: 0 0 12px; font-size: 22px; }
+    #status { padding: 12px 0; color: #f0c36d; }
+    body[data-state="passed"] #status { color: #72e083; }
+    body[data-state="failed"] #status { color: #ff7272; }
+    button { min-height: 36px; padding: 7px 12px; border: 1px solid #777; border-radius: 4px; background: #252525; color: inherit; cursor: pointer; }
+    button:disabled { cursor: wait; opacity: 0.55; }
+    pre { min-height: 300px; padding: 12px; overflow: auto; border: 1px solid #444; border-radius: 4px; background: #080808; line-height: 1.45; white-space: pre-wrap; }
+  </style>
+</head>
+<body data-state="idle">
+  <main>
+    <h1>Singleplayer Worker protocol smoke</h1>
+    <button id="run" type="button">Run smoke</button>
+    <div id="status">Idle</div>
+    <pre id="log"></pre>
+  </main>
+  <script src="singleplayer-worker-smoke.js?v=1"></script>
+</body>
+</html>

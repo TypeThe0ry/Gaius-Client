@@ -1,0 +1,4 @@
+# Product-code Minecraft version literals that the P3 lint (lint_version_literals.py
+# --enforce-product) still allows, each until its owner applies the change named in the reason.
+# Format: <path> | <the line, stripped> | <reason>.  An entry that no longer matches a line fails
+# the lint, so the list only shrinks.

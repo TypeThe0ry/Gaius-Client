@@ -1,0 +1,15 @@
+# Type moves and renames from the canonical set's generation to renderpearl-1, applied to code (not comments
+# or string literals) of every shared and canonical file a renderpearl-1 profile compiles.
+# Format: <canonical type>	<renderpearl-1 type>	<reason>; imported simple names follow type renames.
+com.mojang.authlib.yggdrasil.response.MinecraftTexturesPayload	com.mojang.authlib.services.response.MinecraftTexturesPayload	authlib 10 moved the profile service responses
+com.mojang.authlib.yggdrasil.ProfileResult	com.mojang.authlib.services.ProfileResult	profile service response type
+com.mojang.blaze3d.IndexType	com.mojang.renderpearl.api.pipeline.IndexType	render pipeline type
+com.mojang.blaze3d.PrimitiveTopology	com.mojang.renderpearl.api.pipeline.PrimitiveTopology	render pipeline type
+com.mojang.blaze3d.vertex.VertexFormat	com.mojang.renderpearl.api.vertex.VertexFormat	vertex API type
+com.mojang.blaze3d.buffers.GpuBuffer	com.mojang.renderpearl.api.buffers.GpuBuffer	buffer API type
+com.mojang.blaze3d.buffers.GpuBufferSlice	com.mojang.renderpearl.api.buffers.GpuBufferSlice	buffer API type
+com.mojang.blaze3d.systems.RenderPass	com.mojang.renderpearl.api.commands.RenderPass	command API type
+com.mojang.blaze3d.textures.GpuTexture	com.mojang.renderpearl.api.textures.GpuTexture	texture API type
+net.minecraft.client.renderer.DynamicUniforms	net.minecraft.client.renderer.DynamicGpuData	dynamic section records
+dev.gaius.browser.ops.Blaze3dVersionOps	dev.gaius.browser.ops.RenderpearlVersionOps	selected render seam operations
+dev.gaius.browser.kernel.mesh.Blaze3dMeshOps	dev.gaius.browser.kernel.mesh.RenderpearlMeshOps	selected mesh semantics

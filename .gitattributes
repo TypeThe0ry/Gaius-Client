@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+# Source patches are applied byte for byte; never convert their line endings.
+*.gpatch -text
+
+*.jar binary
+*.wasm binary

@@ -1,0 +1,27 @@
+[package]
+name = "gaius-shaderxlat"
+description = "Translates the SPIR-V of vanilla render pipelines to WGSL for the WebGPU backend."
+version = "0.4.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[features]
+# The native corpus tools (src/bin/shaderxlat-corpus.rs, src/bin/shaderxlat-link.rs).
+corpus = ["dep:serde_json"]
+
+[dependencies]
+naga = { version = "=30.0.1", default-features = false, features = ["spv-in", "wgsl-out"] }
+serde_json = { version = "1", optional = true }
+
+[[bin]]
+name = "shaderxlat-corpus"
+required-features = ["corpus"]
+
+[[bin]]
+name = "shaderxlat-link"
+required-features = ["corpus"]
+
+# The browser build uses the workspace profile release-size (opt-level "s"): naga dominates
+# the module and "s" is 12% smaller than 3 (903 KB / 206 KB brotli vs 1026 KB / 232 KB) at
+# 0.04 ms more per module (port/native/golden/shaders/README.md).

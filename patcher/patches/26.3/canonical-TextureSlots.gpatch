@@ -1,0 +1,109 @@
+gaius-source-patch 2
+base f7360da3a95adbd3dab936d5f538ccd95b9d1f7c56840480a49e952492414877
+result 2678a742b72b7938155f57d67ebb4e4f8784dca40fe2fb6980e2b91781adfeef
+@@ 2 1
+@@ 8 4
+@@ 14 0
++import java.util.LinkedHashMap;
+@@ 16 1
+@@ 23 0
++/** Texture-slot resolution with a particle fallback for incomplete resource-pack models. */
+@@ 26 0
+=1 1
+@@ 27 0
++    private final Material fallbackParticle;
+@@ 28 1
++    private TextureSlots(Map<String, Material> resolvedValues) {
+@@ 30 0
++        this.fallbackParticle = resolvedValues.values().stream().findFirst().orElse(null);
+@@ 36 2
++        Material material = this.resolvedValues.get(reference);
++        return material != null || !"particle".equals(reference) ? material : this.fallbackParticle;
+@@ 40 2
++    private static boolean isTextureReference(String texture) {
++        return !texture.isEmpty() && texture.charAt(0) == REFERENCE_CHAR;
+@@ 44 4
++    public static Data parseTextureMap(JsonObject textures) {
++        Data.Builder builder = new Data.Builder();
++        for (Map.Entry<String, JsonElement> entry : textures.entrySet()) {
+@@ 50 1
+@@ 54 1
++    private static void parseEntry(String slot, JsonElement value, Data.Builder output) {
+@@ 57 2
++            return;
+@@ 60 0
++        Material material = Material.CODEC.parse(JsonOps.INSTANCE, value)
++                .getOrThrow(JsonParseException::new);
++        output.addTexture(slot, material);
+@@ 62 2
++    public static final record Data(Map<String, SlotContents> values) {
++        public static final Data EMPTY = new Data(Map.of());
+@@ 66 1
++            private final Map<String, SlotContents> textureMap = new HashMap<>();
+@@ 68 2
++            public Builder addReference(String slot, String reference) {
++                this.textureMap.put(slot, new Reference(reference));
+@@ 73 2
++            public Builder addTexture(String slot, Material material) {
++                this.textureMap.put(slot, new Value(material));
+@@ 78 2
++            public Data build() {
++                return this.textureMap.isEmpty() ? EMPTY : new Data(Map.copyOf(this.textureMap));
+@@ 84 3
+@@ 89 1
++        private final List<Data> entries = new ArrayList<>();
+@@ 91 2
++        public Resolver addLast(Data data) {
++            this.entries.add(data);
+@@ 96 2
++        public Resolver addFirst(Data data) {
++            this.entries.add(0, data);
+@@ 101 1
++        public TextureSlots resolve(ModelDebugName debugName) {
+@@ 103 55
++                return EMPTY;
+=71 1
++            Map<String, Material> resolved = new LinkedHashMap<>();
++            Map<String, Reference> unresolved = new LinkedHashMap<>();
++            for (int index = this.entries.size() - 1; index >= 0; index--) {
++                for (Map.Entry<String, SlotContents> entry : this.entries.get(index).values().entrySet()) {
++                    String slot = entry.getKey();
++                    SlotContents contents = entry.getValue();
++                    if (contents instanceof Value value) {
+~112 24
+~113 24
++                    } else if (contents instanceof Reference reference) {
+~116 24
+~117 24
+=145 1
+=123 1
+=71 1
++            boolean changed;
++            do {
++                changed = false;
++                var iterator = unresolved.entrySet().iterator();
+~136 16
++                    Map.Entry<String, Reference> entry = iterator.next();
++                    Material material = resolved.get(entry.getValue().target());
++                    if (material != null) {
++                        resolved.put(entry.getKey(), material);
+~141 24
++                        changed = true;
+=145 1
+=123 1
++            } while (changed);
+~147 12
++                String details = unresolved.entrySet().stream()
++                        .map(entry -> "\t#" + entry.getKey() + " -> #"
++                                + entry.getValue().target() + "\n")
++                        .collect(Collectors.joining());
++                LOGGER.warn("Unresolved texture references in {}:\n{}", debugName.debugName(), details);
+=71 1
++            return new TextureSlots(Map.copyOf(resolved));
+@@ 161 1
++    private static final record Reference(String target) implements SlotContents {
+@@ 164 1
++    private static final record Value(Material material) implements SlotContents {
+=30 1
+=1 1
++    public interface SlotContents {

@@ -1,0 +1,219 @@
+# Gaius Patcher
+
+Gaius Patcher builds a personal copy of the Gaius browser client on your own
+computer, from your own copy of the game. It is compatible with Java Edition
+1.21.11, 26.2 and 26.3.
+
+> **Not an official Minecraft product. Not approved by or associated with
+> Mojang or Microsoft.** This repository contains no Mojang code and no Mojang
+> files. To use the patcher you must own Minecraft: Java Edition and accept
+> the [Minecraft EULA](https://www.minecraft.net/eula). See the
+> [disclaimer](../DISCLAIMER.md).
+
+## What the patcher does
+
+1. **Collects the official files from your installation.** It reads the
+   client jar, libraries and assets from your launcher's game directory and
+   checks every file against the SHA-1 pinned in
+   `port/versions/<version>.json`. Install the matching version with the official
+   launcher first. A standalone
+   `fetch` can obtain the 1.21.11 obfuscation mappings, which the launcher does
+   not keep, or you can pass them with `--mappings`. `build --offline` requires
+   local mappings and a prepared toolchain. Online tool preparation can obtain
+   pinned build dependencies. See the [disclaimer](../DISCLAIMER.md) for the
+   separate maintenance scripts that fetch from official Mojang endpoints.
+2. **Prepares the few sources that change official classes.** Gaius changes
+   about ten official classes (`patcher/source-patches.json`). Their Gaius
+   versions are published only as source patches, which hold the lines Gaius
+   wrote, the line ranges they replace, and line numbers of your own
+   decompiled text to copy where Gaius moved or re-indented a line, never a
+   line of official code.
+   `prepare` decompiles each class from your own fetched files with
+   [Vineflower](https://github.com/Vineflower/vineflower) (Apache-2.0,
+   downloaded once from Maven Central and checked against the SHA-256 pinned
+   in `source-patches.json`, or passed with `--decompiler`), checks the
+   decompiled text against the SHA-256 the patch records, applies the patch
+   and checks the result the same way. The decompiled classes stay in your
+   work directory.
+3. **Applies the Gaius bytecode patches** to the jar on your machine.
+4. **Compiles** the patched game for the browser with TeaVM.
+5. **Writes your build**: a site folder and a single HTML file.
+
+The `build` command runs steps 3 to 5 in a disposable copy of the public
+source tree. It invokes the repository's existing release scripts, so the
+patcher and the normal release build share one pipeline rather than two
+implementations. The disposable tree and all generated files are written
+under `--out`; the repository is never used as a build output directory.
+
+## Versions
+
+The patcher is versioned with the Gaius release it reproduces: patcher
+`0.4.0-pre.6` builds the same client as Gaius release `v0.4.0-pre.6`, and a
+newer release needs a newer patcher. The built client reports the release's
+own version number (`0.4.0` in its About screen), exactly like the official
+build. `java patcher/GaiusPatcher.java version` prints both numbers, and
+`fetch` records them in `fetch-manifest.json`. Patcher releases are tagged
+`vX.Y.Z` in the public repository and contain the patcher source only, never
+a build.
+
+`build` is offline after the local launcher files and toolchain have been
+installed. On an online run, missing pinned host-tool archives, JDK, Maven and
+Vineflower files are downloaded once to `work-root/tools` and verified before
+use. Locked Maven dependencies are verified in `work-root/maven-repository`;
+`--toolchain-dir` can provide a cache containing `maven-repository/`. Pass
+`--mappings` for 1.21.11 when
+the mappings are not already in your work directory. A build writes `site/`, `Gaius-<version>.html` and
+`expected-hashes.json` under `--out` (or under the default work-root build
+directory). Add `--json-progress` to receive one compact JSON object per line
+on stdout; build logs stay on stderr and a failure emits an error object before
+exiting non-zero. For 26.3, provide the pinned prebuilt shader toolchain with
+`--shader-toolchain <dir>` or `GAIUS_SHADER_TOOLCHAIN_PREBUILT`. The pinned ZIP
+may also be supplied in `--toolchain-dir`. The bundle is excluded from the
+public repository. Its public download URL and accompanying license/notice
+bundle are pending verification. See the [root README](../README.md) for
+component source and license records. Builds invoke
+the repository's Bash release scripts; on Windows, Git for Windows Bash must
+be available as `bash` on `PATH`.
+
+`patcher/toolchain.lock` records the JDK, Maven, Vineflower, TeaVM, Rust kernel
+inputs, Wasm host tools and 26.3 shader toolchain versions and hashes. The
+host-tool archives are pinned for Linux and Windows x86-64. An XZ-capable
+`tar` is required, and Linux also needs `dpkg-deb`. `--toolchain-dir <dir>`
+uses a local cache containing the pinned files and optional `maven-repository/`;
+missing offline files produce a message with the tool name, expected hash and
+work-root destination. Verified tools and the selected Maven repository are
+staged in the disposable build tree. `build.log` and `wasm-host-tools.json`
+record the host-tool versions used for the build.
+
+## Terms of use
+
+Before it reads any game file, the patcher asks you to accept its
+[terms of use](TERMS.md): you own the game, you follow the Minecraft EULA and
+Usage Guidelines, and your build stays with you. Type `I AGREE` when asked, or
+pass `--accept-terms`. The acceptance is stored in the work directory with a
+hash of the terms, and the patcher asks again if the terms change.
+`java patcher/GaiusPatcher.java terms` shows them.
+
+## Your build is for you only
+
+The HTML the patcher produces contains code and assets from your own copy of
+the game. Use it yourself, on your own computer or your own local network.
+**Do not share it, upload it, or host it on a public website.** If friends
+want to play, each of them runs the patcher with their own copy of the game.
+
+## Usage
+
+You need Java 25 (Java 21 is enough for 1.21.11). Install and start each
+version you want (1.21.11, 26.2 or 26.3) once in the official launcher, so
+its files are on disk.
+
+```sh
+java patcher/GaiusPatcher.java doctor
+java patcher/GaiusPatcher.java terms
+java patcher/GaiusPatcher.java fetch 26.3
+java patcher/GaiusPatcher.java prepare 26.3
+java patcher/GaiusPatcher.java build 26.3 --offline --accept-terms \
+  --out "$HOME/gaius-build/26.3"
+```
+
+For 1.21.11, which ships obfuscated, remap the client
+(`port/scripts/remap-client.sh`) before `prepare`.
+
+Run `manifest <build-output-dir> --out <dir>` to record the site and portable
+HTML hashes of a reference build. Run `verify <build-output-dir> --manifest
+<file>` with a trusted manifest to check a build (add `--json-progress` for
+machine-readable status; a non-zero exit code indicates missing files, hash
+mismatches, or unexpected modifications).
+
+| Option | Meaning |
+| --- | --- |
+| `--minecraft-dir <dir>` | Your launcher's game directory, if it is not in the usual place |
+| `--mappings <file>` | 1.21.11 only: a `client_mappings` file to use instead of downloading it |
+| `--shader-toolchain <dir>` | 26.3: verified prebuilt shader toolchain directory |
+| `--toolchain-dir <dir>` | Directory containing pinned tools and optionally `maven-repository/` |
+| `--quality <low|mid|high|ultra>` | Set the first-run browser quality tier; `medium` is accepted as an alias for `mid`, saved tiers take precedence |
+| `--render-distance <n>` | Set the first-run render distance (2–32 chunks); existing browser options are preserved |
+| `--backend <auto|webgpu|webgl2>` | Set the graphics backend preference; an existing `gpu` query parameter wins |
+| `--resource-pack <file>` | Copy one local resource-pack file into `site/resourcepacks/`; repeat for more files |
+| `--offline` | Never use the network |
+| `--json-progress` | Print one JSON progress object per line to stdout (`build`, `manifest`, `verify`) |
+| `--manifest <file>` | Reference manifest for `verify` |
+| `--out <dir>` | Build output directory containing the site and portable HTML |
+| `--accept-terms` | Accept the [terms of use](TERMS.md) without the prompt |
+| `--work <dir>` | Where to write the collected files |
+| `--decompiler <jar>` | `prepare`: your copy of the pinned decompiler, instead of downloading it |
+| `--into <dir>` | `prepare`: write the patched sources under this directory instead of the source tree |
+
+## What may be public
+
+Only files Gaius wrote (with external build-time dependency licenses referenced
+in `NOTICE` and `LICENSES/`): the patcher, the bytecode patches, the browser
+runtime and UI, the Rust kernels, the build scripts and the version profiles.
+Third-party-derived overrides (TeaVM/Harmony, Gson, SLF4J, jopt-simple, LWJGL,
+mojang-logging), vendored test fixtures (`fake-indexeddb`), and prebuilt shader
+toolchain artifacts are excluded and must be generated locally at build time or
+fetched from upstream public URLs with SHA verification (see the
+[root README](../README.md)). Modified copies of official classes are published
+only as patches against the user's own game. Official jars, libraries, assets,
+mappings, anything derived from them (patched jars, compiled `classes.wasm` or
+`classes.js`, packed assets, built HTML) and screenshots of the game never enter
+this repository or its releases.
+
+`patcher/public-allowlist.txt` lists what is exported; files under
+`patcher/public-root/` (README, disclaimer, issue rules, issue forms and the
+issue guard) go to the root of the public tree.
+`patcher/tools/public_tree_check.py` then refuses an export that contains a
+file in a vanilla package, a binary or media file, a copy of an official file (by
+SHA-1), or a blocked word:
+
+```sh
+python3 patcher/tools/export_public_tree.py --out /tmp/gaius-public
+python3 patcher/tools/public_tree_check.py /tmp/gaius-public \
+  --vanilla-jar port/work/26.3/client-original.jar \
+  --asset-index port/work/26.3/assets/indexes/34.json
+```
+
+## Source patches (maintainers)
+
+`patcher/patches/<version>/<id>.gpatch` are generated, never edited by hand.
+On a machine with the official game files, after `fetch` (and the remap for
+1.21.11):
+
+```sh
+python3 patcher/tools/make_source_patches.py --pin-decompiler vineflower-<version>.jar  # once per decompiler update
+python3 patcher/tools/make_source_patches.py 26.2 26.3 1.21.11
+python3 patcher/tools/make_source_patches.py 26.2 26.3 1.21.11 --check
+```
+
+The tool decompiles through the patcher itself (`GaiusPatcher decompile`), so
+the bases are the ones users get. Lines are aligned ignoring indentation, and
+a line the decompiled class already has becomes a copy by line number
+(`=<line> <count>`, or `~<line> <indent>` to re-indent it). The tool refuses a
+patch that would still carry a line of official code as text: usually a line
+only another version's class has, which means this version cannot produce
+the file, so drop it from the entry's `versions`. A line that is not official
+code (a declaration Gaius must repeat) can be accepted by adding the SHA-256
+of its stripped text to the entry's `reviewedLines`. The public tree check
+refuses any `.gpatch` that holds removed or context lines.
+
+## Publishing
+
+The public repository is
+[TypeThe0ry/Gaius-Client](https://github.com/TypeThe0ry/Gaius-Client). Changes
+are made in the private repository and synced by hand: export the allowlisted
+files, run the tests and the public tree check on the exported tree, and only
+then copy it over the public tree and open a pull request there. Each sync
+replaces the public tree, so do not edit the public repository directly.
+
+## Tests
+
+```sh
+java patcher/GaiusPatcher.java selftest
+python3 -m unittest discover -s patcher/tests
+```
+
+The tests use synthetic files only and never touch the network.
+
+## License
+
+MIT, see `LICENSE`.

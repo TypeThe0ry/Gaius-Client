@@ -1,0 +1,20 @@
+[package]
+name = "gaius-worldgen-wasm"
+description = "wasm32 entry points for gaius-worldgen: generator loading, biomes, terrain and surface jobs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+native-host = []
+
+[dependencies]
+gaius-kernel-abi.workspace = true
+gaius-worldgen = { path = "../gaius-worldgen" }
+
+[dev-dependencies]
+gaius-noise.workspace = true

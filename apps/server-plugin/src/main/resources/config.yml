@@ -1,0 +1,10 @@
+listen-address: 0.0.0.0
+websocket-port: 8081
+minecraft-host: 127.0.0.1
+connect-timeout-millis: 5000
+maximum-connections: 256
+maximum-frame-bytes: 16777216
+proxy-keepalives: true
+access-token: ''
+allowed-origins:
+  - '*'

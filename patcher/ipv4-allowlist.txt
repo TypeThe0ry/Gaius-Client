@@ -1,0 +1,5 @@
+# Literals that look like public IPv4 addresses but are not hosts, one per
+# line as: <repository path> <literal>. Reserved ranges and JDK or browser
+# version numbers (jdk-25.0.4.1, Chrome/141.0.0.0) are recognised without an
+# entry, as in tools/check-public-network-secrets.mjs, which also scans this
+# file: an entry here must be a literal that check accepts too.

@@ -1,0 +1,22 @@
+# Binary or large files allowed in the public tree: <repository path> <sha256>.
+# Kernel mirror metadata (method lists and bytecode hashes, no game code) and Gaius test fixtures.
+port/mc/profiles/1.21.11/kernel-mirror.lock 439cc4f59254588430904f977f1f4c167535f0cd31c16c7816639d781c829cc3
+port/mc/profiles/26.2/kernel-mirror.lock 5ee10d65233bae54ea91f9670b80e078b608a2ef020c0c3fafb5c212a0209f87
+port/mc/profiles/26.3/kernel-mirror.lock 204b2b3441a8a9d8a6df23196f3d5e0c713aa13dfd57484beaaee5e13acd3d76
+port/native/kernel-mirror.toml 95c23973ba696e3687be24d68ba50cc8f16e19c497aa17e7ca3013dca3d26c65
+port/native/crates/gaius-shaderxlat/tests/frontend/legacy.frag.spv e2f0621e6ee896520d21065725a5359d2ac05bf6e582b27f492687597f5e35cf
+port/native/crates/gaius-shaderxlat/tests/frontend/legacy.vert.spv 963af15b03718aed41c4060bc62aa06e8fffb6fb1f1727d2be662c894c8d9fea
+port/native/crates/gaius-shaderxlat/tests/frontend/link.frag.spv 45e7a239522effe48a33efe922f3857630ebe3209e5a88b29049fcd37da6bae4
+port/native/crates/gaius-shaderxlat/tests/frontend/link.vert.spv 2055afb350f478a918688e07616781e2c909726fd5af86f94f24aef91640365b
+port/native/crates/gaius-shaderxlat/tests/frontend/reads_missing.frag.spv bce933e4416aff4c8b3d3c799df3d903f6d2917dbfda50f0b14f85e4940cb7d6
+port/tests/classlib/res/dev/gaius/classlib/repro/data.bin 43f9b5d59eb108817176c6f65c2c6203a22f2ae8bc28b7a1dde45947678c5042
+
+# Owner artwork; provenance and original digests are recorded in the launcher icon SOURCES.md.
+port/web/launcher/icons/apple-touch-icon.png 8877b8547858977d3f5636ebab4115ef776801c791a7ee33839f849b138db3c0
+port/web/launcher/icons/favicon-16.png f6f7aa932c1c81a6766b38492b5347d0a3f33e7cee6cf332325a8615be9bd866
+port/web/launcher/icons/favicon-32.png 27d9dfa010df4b62fb2f9509fdae31c5dc2d8e135db608a7dca4ce8307ccafc9
+port/web/launcher/icons/favicon.ico d4b7799a74bf08be522f339b7e459db8b99a0c2aedfc4fd419840301b7460ce8
+port/web/launcher/icons/home-1024.png a0f01e029391d5967cd6f3bec6cf3c4c00f1ea99f645209963070231645566d6
+port/web/launcher/icons/icon-192.png 654df820c2159866a4aee1e9aebca889590fc98684dc4fc3063b6611c7fd1d43
+port/web/launcher/icons/icon-512.png 6921d18553e001f0cd829c513fba6fbcfb801f76703900ef055dee67b3e0c1c9
+port/web/launcher/icons/icon-maskable-512.png 29d45635bc84b6d16e2a6b7bad296c6058e48eb19380c5412cf68a010ab190f8

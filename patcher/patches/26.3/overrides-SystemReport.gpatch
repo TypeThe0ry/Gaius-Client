@@ -1,0 +1,58 @@
+gaius-source-patch 2
+base b99c6e7a0da8d5f38ecccd0dfab56931de9f1b6f093572438eb048c8bcaccf34
+result baab93540118fe8ea363158898e282ed916d56d3d0615faa4babf6d18c520109
+@@ 2 13
++import java.util.LinkedHashMap;
++import java.util.Map;
+@@ 16 14
+@@ 31 0
++/**
++ * Browser system report with the same public API as the desktop client.
++ */
+@@ 32 15
++    public static final long BYTES_PER_MEBIBYTE = 1_048_576L;
+=1 1
++    private final Map<String, String> entries = new LinkedHashMap<>();
+@@ 49 22
++        WorldVersion version = SharedConstants.getCurrentVersion();
++        setDetail("Minecraft Version", version.name());
++        setDetail("Minecraft Version ID", version.id());
++        setDetail("Operating System", "Web Browser");
++        setDetail("Java Version", "TeaVM 0.15 / Java 21 compatibility");
++        setDetail("Java VM Version", "JavaScript browser runtime");
++        setDetail("Memory", "Managed by the browser");
++        setDetail("CPUs", "Managed by the browser");
++        setDetail("JVM Flags", "0 total; ");
++        setDetail("Debug Flags", "0 total; ");
+@@ 73 9
++    public void setDetail(String name, String value) {
++        entries.put(name, value);
+@@ 84 11
++    public void setDetail(String name, Supplier<String> value) {
+@@ 96 4
++            setDetail(name, value.get());
++        } catch (Exception exception) {
++            setDetail(name, "ERR");
+@@ 103 16
++    public void setDetail(String name, CrashReportDetail<Object> value) {
+@@ 120 4
++            setDetail(name, String.valueOf(value.call()));
++        } catch (Throwable throwable) {
++            setDetail(name, "ERR");
+@@ 127 2
++    public static float sizeInMiB(long bytes) {
++        return (float) bytes / BYTES_PER_MEBIBYTE;
+@@ 131 2
++    public void appendToCrashReportString(StringBuilder output) {
++        entries.forEach((name, value) -> output
++                .append('\t').append(name).append(": ").append(value).append('\n'));
+=71 1
+@@ 134 7
+=252 1
++        StringBuilder output = new StringBuilder();
++        entries.forEach((name, value) -> output
++                .append(name).append(": ").append(value).append('\n'));
++        return output.toString();
+=71 1
+=255 1
+@@ 142 115

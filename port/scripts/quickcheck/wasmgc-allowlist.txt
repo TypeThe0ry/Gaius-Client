@@ -1,0 +1,27 @@
+# Exceptions to the WebAssembly GC source rules of wasmgc_rules.py (v0.4.0 WP1).
+#
+# <rule> | <path relative to the repository root> | <symbol> | <reason>
+#
+# rule c: symbol is the referenced name (org.teavm.platform.X, org.teavm.jso.JSByRef); an
+#         entry also covers the members of the name (org.teavm.platform.X.y).
+# rule d: symbol is the name of the @JSBody method.
+# rule e: symbol is <outer class>#<method>: a method that is not on a per-frame path and
+#         may keep copying Java arrays into typed arrays.
+# rule h: symbol is the simple name of the JS object type whose Java arrays the file may use.
+# Lines starting with # are comments.  Entries name a reason and the work package that
+# removes them.  An entry that matches nothing is reported as stale; delete it with the
+# change that removes the use.
+
+# TeaVM's own TObject.Monitor keeps its waiting threads in a Queue<PlatformRunnable>, so the
+# JSPI monitor code has to implement that interface; it is a plain interface with no
+# JavaScript runtime behind it (WP2 owns this file).
+c | port/overrides/classlib/src/target-wasmgc/java/org/teavm/classlib/java/lang/TJspiThreadSupport.java | org.teavm.platform.PlatformRunnable | TObject.Monitor.enteringThreads is a Queue<PlatformRunnable> in the TeaVM class library
+
+# Shader translation runs when a pipeline is created, not per frame (rule e, WP4 classifies
+# the GL and AL call sites).
+e | port/overrides/libraries/lwjgl-stb/src/target-wasmgc/java/org/lwjgl/stb/BrowserPng.java | BrowserPng#tryDecode | Bounded PNG input copy during startup and resource reload, not a per-frame path
+e | port/overrides/libraries/lwjgl-shaderc/src/main/java/org/lwjgl/util/shaderc/BrowserShadercWasm.java | BrowserShadercWasm#compile | GLSL to SPIR-V at pipeline creation
+e | port/overrides/libraries/lwjgl-spvc/src/main/java/org/lwjgl/util/spvc/BrowserSpvcWasm.java | BrowserSpvcWasm#parseSpirv | SPIR-V reflection at pipeline creation
+e | port/overrides/libraries/lwjgl-spvc/src/main/java/org/lwjgl/util/spvc/BrowserSpvcWasm.java | BrowserSpvcWasm#resourceList | SPIR-V reflection at pipeline creation
+e | port/overrides/libraries/lwjgl-spvc/src/main/java/org/lwjgl/util/spvc/BrowserSpvcWasm.java | BrowserSpvcWasm#setName | SPIR-V cross-compilation at pipeline creation
+e | port/overrides/libraries/lwjgl-spvc/src/main/java/org/lwjgl/util/spvc/BrowserSpvcWasm.java | BrowserSpvcWasm#setEntryPoint | SPIR-V cross-compilation at pipeline creation

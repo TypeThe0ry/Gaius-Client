@@ -1,0 +1,27 @@
+gaius-source-patch 2
+base 5bc71052527cfbcbce2b7ebd2aa6c1663388a5f5be92a8085d3d5fa11a8837ba
+result 11ac4704f77a1a37a8e2d5d7d03dc2a3e4f009c93bf0c1de6d58456e2d1dd88a
+@@ 2 3
+@@ 7 0
++/** Executes sound work on the browser event-loop thread without starting a JVM thread. */
+@@ 8 1
+@@ 15 11
++    @Override
++    public Runnable wrapRunnable(Runnable runnable) {
+@@ 29 1
++    @Override
++    public void schedule(Runnable runnable) {
+@@ 31 1
++            this.doRunTask(runnable);
+@@ 35 1
++    @Override
++    protected boolean shouldRun(Runnable runnable) {
+@@ 39 0
++    @Override
+@@ 40 1
++        return Thread.currentThread();
+@@ 43 6
++    @Override
+@@ 50 1
+@@ 56 7
+@@ 67 1

@@ -1,0 +1,9 @@
+Java:      25.0.5.0.3+1-1-26.04.1-Ubuntu (Ubuntu)
+Memory:    32.0 GB
+Game dir:  /gaius-fixture/minecraft (not found)
+Profiles:  /example/gaius/port/versions
+Work dir:  /example/gaius/port/work (64.0 GB free)
+
+  1.21.11  not installed: start 1.21.11 once in the official launcher
+  26.2     not installed: start 26.2 once in the official launcher
+  26.3     not installed: start 26.3 once in the official launcher

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="dark">
+  <title>Gaius Client</title>
+  <style>html, body { margin: 0; height: 100%; background: #101511; }</style>
+  <!--
+    Reload relay (see data-gaius-reload-relay in index.html). This page is served without
+    Cross-Origin-Opener-Policy, so returning from it to the isolated launcher moves the tab
+    into a new browsing context group and renderer process. Only a same-origin launcher URL
+    is followed.
+  -->
+  <script>
+    (function () {
+      var fallback = new URL("./", location.href).href;
+      var target = fallback;
+      try {
+        var requested = new URL(decodeURIComponent(location.hash.slice(1)), location.href);
+        if (requested.origin === location.origin) target = requested.href;
+      } catch (_) {
+        target = fallback;
+      }
+      location.replace(target);
+    })();
+  </script>
+</head>
+<body></body>
+</html>

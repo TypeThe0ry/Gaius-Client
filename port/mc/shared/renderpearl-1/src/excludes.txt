@@ -1,0 +1,13 @@
+# Shared sources (port/src/main/java and the canonical set) that the renderpearl-1 generation does
+# not compile.
+# PlatformSmoke probes GLFW, the blaze3d OpenGL backend and ImprovedNoise, none of which exist in
+# this generation; an SDL/renderpearl version has no owner yet (PLAN 6.5 #5).
+dev/gaius/browser/PlatformSmoke.java
+dev/gaius/browser/ops/Blaze3dVersionOps.java
+dev/gaius/browser/kernel/mesh/Blaze3dMeshOps.java
+# The canonical worldgen kernel bridge drives the router-of-records density graph; this generation
+# compiles density graphs into samplers and has its own bridge (kernel/worldgen/*263.java here).
+dev/gaius/browser/kernel/worldgen/WorldgenKernel262.java
+dev/gaius/browser/kernel/worldgen/WorldgenKernelHooks262.java
+dev/gaius/browser/kernel/worldgen/WorldgenSeedSource262.java
+net/minecraft/world/level/levelgen/GaiusWorldgenExport262.java
