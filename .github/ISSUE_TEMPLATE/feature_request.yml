@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest an idea or improvement
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is it useful
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Minecraft profile
+      options: ["Any", "26.3", "26.2", "1.21.11"]
