@@ -5,8 +5,21 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. Please do not attach game files, builds or links to them.
-        感谢反馈。请不要附带游戏文件、构建产物或相关链接。
+        Thanks for the report. Read the [issue rules](https://github.com/TypeThe0ry/Gaius-Client/blob/main/CONTRIBUTING.md) first.
+        **Never attach or link game files, builds, decompiled game code, or file-host links.** Such content is deleted.
+        感谢反馈。请先阅读 [issue 规范](https://github.com/TypeThe0ry/Gaius-Client/blob/main/CONTRIBUTING.md)。
+        **请勿附带或链接游戏文件、构建、反编译的游戏代码或网盘链接**，此类内容会被删除。
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Before you post / 发帖前确认
+      options:
+        - label: I own Minecraft Java Edition and follow the Minecraft EULA. / 我拥有正版 Minecraft Java 版并遵守 Minecraft EULA。
+          required: true
+        - label: This report contains no game files, builds, decompiled game code, or links to them. / 本报告不含游戏文件、构建、反编译的游戏代码或它们的链接。
+          required: true
+        - label: I searched the existing issues. / 我已搜索过现有 issue。
+          required: true
   - type: dropdown
     id: profile
     attributes:
@@ -58,4 +71,6 @@ body:
     id: logs
     attributes:
       label: Console log / screenshots
-      description: Browser console output (F12 → Console) or screenshots, if available.
+      description: >-
+        Browser console output (F12 → Console) as text, or screenshots of the bug.
+        Remove account details and private server addresses. No files other than images.
