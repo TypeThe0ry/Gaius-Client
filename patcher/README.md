@@ -89,11 +89,11 @@ python3 patcher/tools/public_tree_check.py /tmp/gaius-public \
 ## Publishing
 
 The public repository is
-[TypeThe0ry/Gaius-Client](https://github.com/TypeThe0ry/Gaius-Client). The
-`Public sync` workflow of the private repository exports the allowlisted files
-whenever they change on `main`, runs the tests and the public tree check on
-the exported tree, and only then pushes it to the public `main`. Make changes
-in the private repository; each sync replaces the public tree.
+[TypeThe0ry/Gaius-Client](https://github.com/TypeThe0ry/Gaius-Client). Changes
+are made in the private repository and synced by hand: export the allowlisted
+files, run the tests and the public tree check on the exported tree, and only
+then copy it over the public tree and open a pull request there. Each sync
+replaces the public tree, so do not edit the public repository directly.
 
 ## Tests
 
