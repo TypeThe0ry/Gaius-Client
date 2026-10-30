@@ -1,0 +1,7 @@
+# Words the public tree must not contain, stored as <length> <sha256 of the lowercase word> [cjk].
+# ASCII words match any token that starts with them; CJK words match inside CJK text.
+# Ask the maintainer for the plain list; do not add the words themselves to the repository.
+6 79caa3385696b719739a8767a538346d4838c7671928c62f2e217e6ed74dee3c
+9 0e89820860c342f2c7ec694d144023b10301c2accdd078cb5167a06d0c3d5bcc
+10 c378ee41c2783d081fb4f6db9fb854a46caafe455d3b64143e2239ef2cecd045
+2 fc7f41bef4b9d886df0838bd4ddb31997c23ca3a33ba6c857fa2f7a383bac48c cjk

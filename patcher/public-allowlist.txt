@@ -1,0 +1,6 @@
+# Tracked files that may be published. Everything else stays private.
+# Add a path only after reviewing it against patcher/README.md "What may be public".
+
+patcher/**
+port/versions/*.json
+LICENSE

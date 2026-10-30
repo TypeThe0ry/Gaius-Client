@@ -1,0 +1,12 @@
+# Files the patcher collects or produces contain game code and assets.
+# They must never be committed.
+port/work/
+work/
+*.jar
+*.wasm
+*.ogg
+terms-accepted.json
+fetch-manifest.json
+
+__pycache__/
+*.pyc

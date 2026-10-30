@@ -1,0 +1,2 @@
+# Gaius-written classes that must live in a vanilla package, one repository path per line.
+# Each entry needs a review note in the pull request that adds it.

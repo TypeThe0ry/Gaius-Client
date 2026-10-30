@@ -29,7 +29,7 @@ may offer them here. Requests for or offers of builds, download links,
 - Screenshots or short recordings that show a bug.
 - Browser console logs (F12, Console) and the text of error messages, with
   private data removed.
-- Gaius's own code, when it is published here.
+- Gaius's own code.
 
 ## Moderation
 
@@ -40,11 +40,12 @@ violations lead to a block from the repository.
 
 ## Pull requests
 
-Code contributions open when the patcher source is published. A pull request
-may contain only work you wrote yourself and have the right to license under
+A pull request may contain only work you wrote yourself and have the right to license under
 the MIT License; by opening one you agree to license it that way. Patches
 describe changes to the game; they must not contain copied game code or game
-files.
+files. Pull requests must pass the repository checks, including
+`patcher/tools/public_tree_check.py`, which refuses game files, copies of
+official files and files in game packages.
 
 ---
 
@@ -74,7 +75,7 @@ Gaius 不提供下载、托管构建或游戏账号，任何人也不得在这�
 - 使用 issue 表单提交问题反馈和功能建议。
 - 展示问题的截图或短视频。
 - 浏览器控制台日志（F12 → Console）和错误信息文字，请先去掉隐私数据。
-- 公开后的 Gaius 自己的代码。
+- Gaius 自己的代码。
 
 ## 管理
 
@@ -83,6 +84,8 @@ Gaius 不提供下载、托管构建或游戏账号，任何人也不得在这�
 
 ## Pull request
 
-补丁工具源码公开后开放代码贡献。pull request 只能包含你本人编写、并有权以 MIT
+pull request 只能包含你本人编写、并有权以 MIT
 许可证授权的内容；提交即表示你同意以该许可证授权。补丁描述的是对游戏的修改，
-不得包含复制的游戏代码或游戏文件。
+不得包含复制的游戏代码或游戏文件。pull request 必须通过仓库检查，包括
+`patcher/tools/public_tree_check.py`，它会拒绝游戏文件、官方文件的副本和游戏包
+中的文件。

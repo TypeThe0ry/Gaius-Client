@@ -9,9 +9,9 @@ other game content belong to Mojang and Microsoft.
 
 ## What this repository contains
 
-Only material written by the Gaius project: documentation, issue templates
-and, when published, the Gaius patcher and Gaius's own patches and browser
-runtime.
+Only material written by the Gaius project: the Gaius patcher, Gaius's own
+patches and browser runtime, version profiles that pin the official files by
+hash, documentation and issue templates.
 
 This repository does **not** contain, and will not accept, any of the
 following:
@@ -28,8 +28,7 @@ following:
 Gaius is meant for players who own Minecraft: Java Edition. The patcher reads
 game files only from your own installation of the official launcher and never
 downloads the game for you. Before it reads any game file it asks you to
-accept its terms of use (`patcher/TERMS.md`, published with the patcher),
-which include that you own the game and that you follow the
+accept its [terms of use](patcher/TERMS.md), which include that you own the game and that you follow the
 [Minecraft End User License Agreement](https://www.minecraft.net/eula) and the
 [Minecraft Usage Guidelines](https://www.minecraft.net/usage-guidelines).
 
@@ -63,8 +62,8 @@ Minecraft 是 Mojang Synergies AB 的商标。Gaius 使用这个名字只为说�
 
 ## 本仓库包含什么
 
-只包含 Gaius 项目自己编写的内容：文档、issue 模板，以及（公开后的）Gaius 补丁
-工具和 Gaius 自己的补丁与浏览器运行时。
+只包含 Gaius 项目自己编写的内容：Gaius 补丁工具、Gaius 自己的补丁与浏览器运行时、
+按哈希锁定官方文件的版本配置、文档和 issue 模板。
 
 本仓库**不包含**、也不会接受以下任何内容：
 
@@ -79,7 +78,7 @@ Minecraft 是 Mojang Synergies AB 的商标。Gaius 使用这个名字只为说�
 
 Gaius 面向拥有 Minecraft: Java Edition 的玩家。补丁工具只从你自己通过官方启动器
 安装的游戏中读取游戏文件，从不替你下载游戏。读取任何游戏文件之前，它会要求你
-接受使用条款（`patcher/TERMS.md`，随补丁工具一同公开），其中包括你拥有正版游戏，并遵守
+接受[使用条款](patcher/TERMS.md)，其中包括你拥有正版游戏，并遵守
 [Minecraft 最终用户许可协议](https://www.minecraft.net/eula)和
 [Minecraft 使用准则](https://www.minecraft.net/usage-guidelines)。
 
