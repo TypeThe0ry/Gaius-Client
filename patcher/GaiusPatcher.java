@@ -54,7 +54,15 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 public final class GaiusPatcher {
-    static final String TOOL_VERSION = "0.1.0-dev";
+    /**
+     * The patcher is versioned with the Gaius release it reproduces: patcher
+     * 0.4.0-pre.5 builds the same client as Gaius release v0.4.0-pre.5, and
+     * that client reports GAIUS_VERSION (the release's VERSION file) in its
+     * About screen, exactly like the official build.
+     */
+    static final String GAIUS_RELEASE = "0.4.0-pre.5";
+    static final String GAIUS_VERSION = "0.4.0";
+    static final String TOOL_VERSION = GAIUS_RELEASE;
 
     public static void main(String[] args) {
         Args parsed = Args.parse(args);
@@ -66,6 +74,8 @@ public final class GaiusPatcher {
                 case "selftest" -> SelfTest.run();
                 case "version", "--version" -> {
                     System.out.println("gaius-patcher " + TOOL_VERSION);
+                    System.out.println("builds Gaius release v" + GAIUS_RELEASE + " (client version " + GAIUS_VERSION
+                            + "); build is not available yet");
                     yield 0;
                 }
                 case "", "help", "--help", "-h" -> {
@@ -87,7 +97,7 @@ public final class GaiusPatcher {
 
     static void printHelp() {
         System.out.println("""
-                gaius-patcher %s
+                gaius-patcher %s (builds Gaius release v%s, client version %s)
 
                 Builds a personal Gaius client from your own installed copy of the game.
                 Install and start each version once in the official launcher first.
@@ -114,7 +124,7 @@ public final class GaiusPatcher {
                   --offline              Never use the network
                   --accept-terms         Accept the terms of use (patcher/TERMS.md) without
                                          the interactive prompt
-                """.formatted(TOOL_VERSION));
+                """.formatted(TOOL_VERSION, GAIUS_RELEASE, GAIUS_VERSION));
     }
 
     // ---------------------------------------------------------------- doctor
@@ -273,6 +283,8 @@ public final class GaiusPatcher {
 
             Map<String, Object> manifest = new LinkedHashMap<>();
             manifest.put("tool", "gaius-patcher " + TOOL_VERSION);
+            manifest.put("gaiusRelease", GAIUS_RELEASE);
+            manifest.put("gaiusVersion", GAIUS_VERSION);
             manifest.put("profile", profile.id);
             manifest.put("fetchedAt", Instant.now().toString());
             manifest.put("clientSha1", profile.clientSha1);
@@ -1175,6 +1187,8 @@ public final class GaiusPatcher {
             check("sha1 of empty", "da39a3ee5e6b4b0d3255bfef95601890afd80709".equals(Hashes.sha1(new byte[0])));
             check("sha1 of abc", "a9993e364706816aba3e25717850c26c9cd0d89d"
                     .equals(Hashes.sha1("abc".getBytes(StandardCharsets.US_ASCII))));
+            check("patcher version is the Gaius release", TOOL_VERSION.equals(GAIUS_RELEASE)
+                    && (GAIUS_RELEASE.equals(GAIUS_VERSION) || GAIUS_RELEASE.startsWith(GAIUS_VERSION + "-")));
             check("sha256 of abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
                     .equals(Hashes.sha256("abc".getBytes(StandardCharsets.US_ASCII))));
 

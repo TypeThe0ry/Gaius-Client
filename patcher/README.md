@@ -28,6 +28,20 @@ computer, from your own copy of the game. It is compatible with Java Edition
 Steps 2 to 4 are being wired up; today the patcher implements `doctor` and
 `fetch`.
 
+## Versions
+
+The patcher is versioned with the Gaius release it reproduces: patcher
+`0.4.0-pre.5` builds the same client as Gaius release `v0.4.0-pre.5`, and a
+newer release needs a newer patcher. The built client reports the release's
+own version number (`0.4.0` in its About screen), exactly like the official
+build. `java patcher/GaiusPatcher.java version` prints both numbers, and
+`fetch` records them in `fetch-manifest.json`. Patcher releases are tagged
+`vX.Y.Z` in the public repository and contain the patcher source only, never
+a build.
+
+`build` is not available yet; until it is, the patcher can check your
+installation and collect the official files.
+
 ## Terms of use
 
 Before it reads any game file, the patcher asks you to accept its
