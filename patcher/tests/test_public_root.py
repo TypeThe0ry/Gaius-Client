@@ -32,6 +32,17 @@ class ExportMappingTest(unittest.TestCase):
         self.assertIn("Not an official Minecraft product".lower(), disclaimer.lower().replace("**", ""))
 
 
+class VersionProfilesTest(unittest.TestCase):
+    def test_every_profile_is_valid_json_with_official_hashes(self):
+        profiles = sorted((PATCHER.parent / "port" / "versions").glob("*.json"))
+        self.assertTrue(profiles)
+        for path in profiles:
+            with self.subTest(profile=path.name):
+                official = json.loads(path.read_text(encoding="utf-8"))["official"]
+                self.assertRegex(official["clientSha1"], "^[0-9a-f]{40}$")
+                self.assertRegex(official["assetIndexSha1"], "^[0-9a-f]{40}$")
+
+
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class IssueGuardTest(unittest.TestCase):
     CASES = {

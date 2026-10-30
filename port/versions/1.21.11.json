@@ -1,14 +1,61 @@
 {
   "id": "1.21.11",
+  "pages": {
+    "enabled": true,
+    "runtimes": ["wasm"]
+  },
   "releaseType": "release",
+  "bringupAllowed": false,
   "protocolVersion": 774,
+  "packetSemantics": {
+    "loginSessionUuid": false,
+    "timeUpdate": "day-time"
+  },
+  "tickParity": {
+    "schema": 1,
+    "teleportAcknowledgement": "id",
+    "player": "TickParity",
+    "seed": "420040",
+    "ticks": 40,
+    "spawn": {"x": 0, "y": 80, "z": 0},
+    "viewDistance": 2,
+    "simulationDistance": 2,
+    "preloadRadius": 3,
+    "settle": "quiescent",
+    "normalization": {"rules": ["entity-constructor-uuid", "living-entity-constructor-yaw", "recipe-property-set-order", "advancement-progress-order-and-grant-time", "heightmap-type-order", "attribute-snapshot-order", "chunk-broadcast-holder-order", "game-rule-command-order"], "advancementPositionBytes": 0, "unorderedCommandChildren": [["gamerule"]]},
+    "setupCommands": ["gamerule spawn_mobs false", "gamerule respawn_radius 0", "gamerule advance_time false", "gamerule advance_weather false", "gamerule random_tick_speed 0", "time set 6000", "weather clear", "save-off"],
+    "moves": [{"tick": 4, "x": 0.5, "y": 80, "z": 0.5}, {"tick": 8, "x": 1.5, "y": 80, "z": 0.5}]
+  },
+  "relayProtocol": {
+    "loginLayoutVersion": 1
+  },
   "worldVersion": 4671,
   "javaVersion": 21,
   "classFileVersion": 65,
   "clientDistribution": "obfuscated-with-mappings",
   "worldgenTelemetryMode": "checkpoint-only",
+  "worldgenReference": {
+    "source": "native/golden/worldgen/v26_2/net/minecraft/world/level/levelgen/GaiusWorldgenReference262.java",
+    "exporter": "mc/shared/canonical/src/java/net/minecraft/world/level/levelgen/GaiusWorldgenExport262.java",
+    "mainClass": "net.minecraft.world.level.levelgen.GaiusWorldgenReference262",
+    "jvmHooks": [],
+    "oreRules": ["BlockMatchTest", "TagMatchTest"],
+    "compatibility": "legacy-router"
+  },
   "patchSet": "legacy-12111",
+  "patchkitNotApplicable": {
+    "MinecraftClientPatcher.prepareAfterOcclusionUpdate": "The renderer has no occlusion-update prepare seam",
+    "MinecraftClientPatcher.refreshVisibleSections": "The renderer has no graph-publication refresh seam",
+    "MinecraftClientPatcher.sectionVertexHeaps": "The section renderer has no vertex heaps",
+    "MinecraftClientPatcher.meshKernelPatches": "Sections retain the vanilla compiler",
+    "MinecraftServerWorkerPatcher.lightKernelPatches": {
+      "targets": ["js"],
+      "reason": "The 1.21.11 patch set does not expose the light-engine hooks used by the WebAssembly GC light kernel"
+    },
+    "MinecraftServerWorkerPatcher.worldgenKernelPatches": "The generator retains the vanilla worldgen path"
+  },
   "extraPatchers": [],
+  "renderSeam": "blaze3d-direct-0",
   "packVersions": {
     "resource": {
       "major": 75,
@@ -18,6 +65,29 @@
       "major": 94,
       "minor": 1
     }
+  },
+  "inputSeam": "glfw",
+  "shaderFront": "blaze3d-lenient",
+  "worldgenKernelDefault": false,
+  "bringup": {
+    "shader": {
+      "source": "ShaderXlatCorpusDump262.java",
+      "main": "dev.gaius.shaderxlat.ShaderXlatCorpusDump262",
+      "arguments": ["replay", "{legacy}", "{out}"],
+      "referenceProfile": "26.2",
+      "nativeLibrariesFrom": "26.3",
+      "preDump": {"source": "ShaderXlatCorpusDump12111.java", "main": "dev.gaius.shaderxlat.ShaderXlatCorpusDump12111"},
+      "frontend": true,
+      "glDepthRemap": true
+    }
+  },
+  "kernelSemantics": {
+    "code": 0,
+    "meshVertexStride": 32,
+    "floorMode": "cast-adjust",
+    "synth": "f64",
+    "densityGraph": "router-f64",
+    "irVersion": 1
   },
   "storage": {
     "schema": 2,
@@ -33,5 +103,19 @@
     "assetIndexId": "29",
     "assetIndexSha1": "e81d9e2536723a11eb68e11c5642708926b8be5f",
     "assetIndexSha1Alternates": ["4043c34fdd5d06b2ac1f6f46c5b91a4ac16e3452", "a2f0558bd140ae4f8f6a48d0ea6f1dbc16a84baa", "0e43ee533675d60aa9b7e5959742ac9c9cd2eccb"]
+  },
+  "kernelMirror": {
+    "lockSha256": "439cc4f59254588430904f977f1f4c167535f0cd31c16c7816639d781c829cc3",
+    "enabled": {
+      "noise": true,
+      "mesher": false,
+      "light": true,
+      "worldgen": true,
+      "shaderxlat": true,
+      "ore": false
+    },
+    "quarantined": {
+      "mesher": "Legacy section compiler has no mesh bridge and its 32-byte vertex layout is unsupported."
+    }
   }
 }
