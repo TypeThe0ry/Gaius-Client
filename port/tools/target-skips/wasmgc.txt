@@ -1,0 +1,38 @@
+# JavaScript-only patches that a GAIUS_TEAVM_TARGET=wasmgc overlay build skips: their
+# PatchRegistry spec names only the js target ("<KIND> js"), and the registry prints
+# "PATCH_TARGET_SKIPPED <patchId> target=wasmgc" (patchkit lint checks this list against the
+# specs).
+# check-build-log-skips.mjs (G4) requires a wasmgc build log to skip exactly the
+# ids listed here for its profile, so a semantic patch cannot disappear from the
+# WebAssembly GC build by being marked js-only, and a JavaScript accelerator
+# cannot reach it by losing the mark.  Each one must leave vanilla bytecode that
+# is exact on wasm (i64 and f32 are native there, casts saturate), or exist only for
+# the coroutine contract of the one-thread JavaScript build (yields, synchronous
+# worldgen steps, packet slicing): the wasm build runs every Java thread as a JSPI
+# activation that parks while it waits, so the vanilla code runs there
+# (classification.tsv: REQUIRED, wasm js-only).
+#
+# <patchId> | <profiles: * or the profile terms of the spec> | <reason>
+MinecraftClientPatcher.patchBlockPosBrowserPackedCoordinates | * | BrowserBlockPos JSBody (BigInt) coordinate packing; the i64 shifts are native in wasm
+MinecraftClientPatcher.patchAquiferBrowserNearestCenters | * | nearest-center fast path for the JavaScript output; the vanilla code is exact and fast in wasm
+MinecraftClientPatcher.patchClimateRTreeNodeBrowserDoubleDistance | * | BrowserClimate distance in doubles instead of TeaVM's emulated longs; longs are native in wasm
+MinecraftClientPatcher.patchFriendlyByteBufBrowserLongArray | * | BrowserLongArrayCodec long-array codec for the JavaScript output; longs are native in wasm
+MinecraftClientPatcher.patchSimpleBitStorageBrowserUnpack | * | BrowserBitStorage unpacking for the JavaScript output; longs are native in wasm
+MinecraftClientPatcher.patchHeightmapBrowserStorage | * | cached BrowserBitStorage heightmap fields for the JavaScript output; vanilla BitStorage is native in wasm
+MinecraftClientPatcher.patchBufferBuilderBrowserFastVertex | * | byte-array vertex writers of the JavaScript BrowserMemory; the wasm BrowserMemory has no backing byte array
+MinecraftClientPatcher.patchByteBufferBuilderBrowserReserve | * | byte-array cache and Math.addExact removal for the JavaScript BrowserMemory; the wasm BrowserMemory has no backing byte array
+MinecraftClientPatcher.patchBeardifierBrowserPackedCompute | * | BrowserBeardifier JSBody kernel over packed structure pieces (1.21.11, 26.2; the 26.3 js build drops it for the compiled density runtime); vanilla Beardifier.compute is exact in wasm
+MinecraftClientPatcher.patchImprovedNoiseBrowserHotPath | * | BrowserImprovedNoise JSBody kernels with a @JSByRef permutation table, which WebAssembly GC cannot pass (1.21.11, 26.2; dropped by the 26.3 js build); vanilla ImprovedNoise is exact in wasm
+MinecraftClientPatcher.patchPerlinNoiseBrowserDoubleWrap | * | BrowserPerlinNoise double-based wrap and amplitude cache for the JavaScript output (1.21.11, 26.2; dropped by the 26.3 js build); the vanilla long wrap is native in wasm
+MinecraftClientPatcher.patchNoiseInterpolatorBrowserLerp | * | BrowserNoiseInterpolator JSBody lerp3 for the JavaScript output (1.21.11, 26.2; dropped by the 26.3 js build); vanilla Mth.lerp3 is exact in wasm
+MinecraftClientPatcher.patchDensityFunctionsPureTransformersBrowserDirect | * | BrowserDensityFunctions JSBody clamp and transformer kernels for the JavaScript output (1.21.11, 26.2; dropped by the 26.3 js build); the vanilla records are exact in wasm
+Minecraft12111BrowserPatcher.patchChunkGenerationCooperation | 1.21.11 | chunk generation yields between holders (1.21.11 task-layer cursor) (coroutine contract of the one-thread JavaScript build); with JSPI the waiting threads park and the vanilla code runs
+MinecraftClientPatcher.patchBlockStateBaseBrowserStartupYield | * | block state cache initialisation yields during start-up (coroutine contract of the one-thread JavaScript build); with JSPI the waiting threads park and the vanilla code runs
+MinecraftClientPatcher.patchBlocksBrowserStartupYield | * | block registration yields during start-up (coroutine contract of the one-thread JavaScript build); with JSPI the waiting threads park and the vanilla code runs
+MinecraftClientPatcher.patchBuiltInRegistriesBrowserStartupYield | * | built-in registry bootstrap yields during start-up (coroutine contract of the one-thread JavaScript build); with JSPI the waiting threads park and the vanilla code runs
+MinecraftClientPatcher.patchFaceBakeryBrowserFloatTolerance | * | FaceBakery float comparisons with a tolerance because TeaVM's JavaScript float is a double; f32 is exact in wasm, so the vanilla comparisons hold
+MinecraftClientPatcher.patchNoiseChunkBrowserSynchronous | * | rewrites the NoiseChunk counters from long to int for the JavaScript build (its companions below are JavaScript-only); on WebAssembly GC the rewrite left NoiseChunk$CacheOnce reading an int field as long, an invalid module for 26.2 and 1.21.11, and wasm keeps the vanilla counters
+MinecraftClientPatcher.patchNoiseChunkCacheOnceBrowserIntCounters | * | companion of the JavaScript-only NoiseChunk counter rewrite; wasm must keep vanilla long field references
+MinecraftClientPatcher.patchNoiseChunkContextBrowserIntCounters | * | companion of the JavaScript-only NoiseChunk counter rewrite; wasm must keep vanilla long field references
+MinecraftClientPatcher.patchSimpleJsonResourceReloadListenerBrowserStartupYield | * | JSON resource reloads yield during start-up (coroutine contract of the one-thread JavaScript build); with JSPI the waiting threads park and the vanilla code runs
+ServerPatches263.patchRegistryLoadTaskBrowserStartupYield | >=26.3 | 26.3 datapack registry decoding yields during start-up (coroutine contract of the one-thread JavaScript build); with JSPI the waiting threads park and the vanilla code runs

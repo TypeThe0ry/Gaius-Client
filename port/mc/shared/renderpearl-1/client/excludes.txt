@@ -1,0 +1,12 @@
+# Canonical client overrides that do not apply to the renderpearl-1 generation.
+#  - VertexArrayCache: com/mojang/blaze3d/opengl/VertexArrayCache no longer exists
+#    (renderpearl backend/opengl/VertexArray replaces it; P3 decides on a port).
+#  - VanillaPackResources is no longer a PackResources; the pack body moved to
+#    FixedPathPackResources, which java/ here overrides with the browser-archive
+#    implementation (the vanilla holder stays).
+#  - BrowserNoiseGraphMapper memoizes the per-chunk NoiseChunk.wrap graph mapping of the
+#    router-of-records density runtime; this generation compiles density graphs into samplers
+#    (Minecraft262BrowserPatcher.patchNoiseChunkGraphMapper is dropped for it).
+com/mojang/blaze3d/opengl/VertexArrayCache.java
+net/minecraft/server/packs/VanillaPackResources.java
+net/minecraft/world/level/levelgen/BrowserNoiseGraphMapper.java

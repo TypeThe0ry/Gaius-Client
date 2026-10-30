@@ -80,8 +80,10 @@ java patcher/GaiusPatcher.java fetch 26.3
 
 ## What may be public
 
-Only files Gaius wrote: the patcher, the patches, the browser runtime and the
-version profiles. Official jars, libraries, assets, mappings, anything derived
+Only files Gaius wrote (plus the third-party libraries listed in `NOTICE`):
+the patcher, the bytecode patches, the browser runtime and UI, the Rust
+kernels, the build scripts and the version profiles. Modified copies of
+official classes are published only as patches against the user's own game. Official jars, libraries, assets, mappings, anything derived
 from them (patched jars, compiled `classes.wasm` or `classes.js`, packed
 assets, built HTML) and screenshots of the game never enter this repository
 or its releases.

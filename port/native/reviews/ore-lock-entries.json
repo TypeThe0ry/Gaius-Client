@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "reviewDate": "2026-10-08",
+  "reviewedFromCommit": "24b819e14ecb4b7b32b19f23dd28271f54c213ac",
+  "integratedInCommit": "b2bf89d6735ab5b249bb32077b87b6dc2b1ac7bf",
+  "decision": "Additive ordinary-ore mirror entries. No vanilla method already under approval changed, and the ore family stays disabled by default in every profile.",
+  "evidenceDirectory": "<work-dir>/evidence/wgperf2",
+  "integrationEvidenceDirectory": "<work-dir>/evidence/integ3/mirrordiff",
+  "scope": {
+    "kernel": "ore",
+    "dependencies": [
+      "worldgen"
+    ],
+    "manifest": "port/native/kernel-mirror.toml",
+    "manifestEntries": 210,
+    "watchedAs": "Exact vanilla owner/name/descriptor identities of the ore feature and configuration hierarchy, the supported rule tests and Mth (the whole class, as for every mirrored family).",
+    "semantics": "Ordered ordinary-ore sphere rasterization (phase 0) and ordered delta compaction (phase 1), kind 0x0405 run_ore. Target rules, random draws and installation stay in Java."
+  },
+  "profiles": [
+    {
+      "profile": "1.21.11",
+      "vanillaJarSha256": "13f52c73daae5c2542d103ddb55835b718b437a35cccda6481e67f2abce04c55",
+      "approvedLockSha256": "e5629e431e003412e4fd6b5eccd160e24da8a904121ac6b25c61a5eeeb46b971",
+      "reviewedLockSha256": "439cc4f59254588430904f977f1f4c167535f0cd31c16c7816639d781c829cc3",
+      "methodCountBefore": 4637,
+      "methodCountAfter": 4783,
+      "unchangedMethodCount": 4637,
+      "bodyChanges": 0,
+      "signatureChanges": 0,
+      "missingMethods": 0,
+      "oreMethodsAdded": 146,
+      "oreMethodsSha256": "4ab5245bdbf15ad7606fff566dda316d552044499b989469bc904dae843ee815",
+      "oreOwnerClasses": [
+        "net.minecraft.util.Mth",
+        "net.minecraft.world.level.levelgen.feature.OreFeature",
+        "net.minecraft.world.level.levelgen.feature.configurations.OreConfiguration",
+        "net.minecraft.world.level.levelgen.feature.configurations.OreConfiguration$TargetBlockState",
+        "net.minecraft.world.level.levelgen.structure.templatesystem.BlockMatchTest",
+        "net.minecraft.world.level.levelgen.structure.templatesystem.RuleTest",
+        "net.minecraft.world.level.levelgen.structure.templatesystem.TagMatchTest"
+      ],
+      "manifestHashBefore": "a9cf460b3041ee2d29d272e60acb8ff6d03c44bcc7c26c9c422e1246c97d2e6d",
+      "manifestHashAfter": "6cebdde8aa110b06e0f8aeceb712eab0695626e520223965ea0b741199db28ba",
+      "semanticDelta": {},
+      "oreDefault": {
+        "kernelMirrorEnabled": false,
+        "kernelSemantics": {
+          "enabled": false,
+          "reasons": [
+            "PROFILE_DEFAULT_OFF"
+          ]
+        }
+      },
+      "enabledDefaults": {
+        "noise": true,
+        "mesher": true,
+        "light": false,
+        "worldgen": true,
+        "shaderxlat": true,
+        "ore": false
+      },
+      "oracle": {
+        "pairedCases": 41832,
+        "fixtureSha256": "61f4824147703236632f606e9b891c2d164e0b76ab7517722a917ee9f2e9967a",
+        "baselineReportSha256": "29ba62316c2ff1cee05ae4ea10398cf3537c7aed967297a4ec8ca1b999733bd9",
+        "simdReportSha256": "30866b442eb43874d72cc6a35733cbc75058f23bb26449c761729980a468a737"
+      }
+    },
+    {
+      "profile": "26.2",
+      "vanillaJarSha256": "a5a268e45d6a29d4669bee53d20848fa8aec4baceee130dec552e883267b26d2",
+      "approvedLockSha256": "4118b21e12ba9803592f22c13f367faf32035f171c4b8a84603d426cdaa0bce3",
+      "reviewedLockSha256": "5ee10d65233bae54ea91f9670b80e078b608a2ef020c0c3fafb5c212a0209f87",
+      "methodCountBefore": 4734,
+      "methodCountAfter": 4884,
+      "unchangedMethodCount": 4734,
+      "bodyChanges": 0,
+      "signatureChanges": 0,
+      "missingMethods": 0,
+      "oreMethodsAdded": 150,
+      "oreMethodsSha256": "008cd51e8547281ba3416de0c83a888cb31283ab4ba509e7883c5e5c1070a2e7",
+      "oreOwnerClasses": [
+        "net.minecraft.util.Mth",
+        "net.minecraft.world.level.levelgen.feature.OreFeature",
+        "net.minecraft.world.level.levelgen.feature.configurations.OreConfiguration",
+        "net.minecraft.world.level.levelgen.feature.configurations.OreConfiguration$TargetBlockState",
+        "net.minecraft.world.level.levelgen.structure.templatesystem.BlockMatchTest",
+        "net.minecraft.world.level.levelgen.structure.templatesystem.RuleTest",
+        "net.minecraft.world.level.levelgen.structure.templatesystem.TagMatchTest"
+      ],
+      "manifestHashBefore": "8a42c1bae3bcf3e8f0d58e91655dbc99b12bf8794741a243081f0cb1d90db9a7",
+      "manifestHashAfter": "f8e9d5ce5e6ba71c90fe097221765ed229db7fb4d962637fbb499debe10072a8",
+      "semanticDelta": {},
+      "oreDefault": {
+        "kernelMirrorEnabled": false,
+        "kernelSemantics": {
+          "enabled": false,
+          "reasons": [
+            "PROFILE_DEFAULT_OFF"
+          ]
+        }
+      },
+      "enabledDefaults": {
+        "noise": true,
+        "mesher": true,
+        "light": true,
+        "worldgen": true,
+        "shaderxlat": true,
+        "ore": false
+      },
+      "oracle": {
+        "pairedCases": 41824,
+        "fixtureSha256": "d4694791f1f371ce041289719081ee3846a83e83b756d5b4242f61e65f39cb01",
+        "baselineReportSha256": "e3b504408aed9526ab4d88c8115cc37f704dc6e3a73884dec52da6bc3ca73a8e",
+        "simdReportSha256": "08a6b859bce555de2d328e560875c64f287abcdcce5e9fb3b219749e7c729133"
+      }
+    },
+    {
+      "profile": "26.3",
+      "vanillaJarSha256": "cd91fa1c9c1671a9da18f06537416b20a80f804bbe886801c3e4444420479d13",
+      "approvedLockSha256": "4dc5531cca104f223badd36755c6074a85385d15e5ebcb8dbbeee357bec09980",
+      "reviewedLockSha256": "204b2b3441a8a9d8a6df23196f3d5e0c713aa13dfd57484beaaee5e13acd3d76",
+      "methodCountBefore": 5421,
+      "methodCountAfter": 5595,
+      "unchangedMethodCount": 5421,
+      "bodyChanges": 0,
+      "signatureChanges": 0,
+      "missingMethods": 0,
+      "oreMethodsAdded": 174,
+      "oreMethodsSha256": "f9aff23a2564faec364d2a529cc901361fb2eed8fdcfd98650b82503ba70768c",
+      "oreOwnerClasses": [
+        "net.minecraft.util.Mth",
+        "net.minecraft.world.level.levelgen.feature.AbstractOreFeature",
+        "net.minecraft.world.level.levelgen.feature.BlockReplacement",
+        "net.minecraft.world.level.levelgen.feature.OreFeature",
+        "net.minecraft.world.level.levelgen.structure.templatesystem.AnyOfRuleTest",
+        "net.minecraft.world.level.levelgen.structure.templatesystem.BlockMatchTest",
+        "net.minecraft.world.level.levelgen.structure.templatesystem.RuleTest",
+        "net.minecraft.world.level.levelgen.structure.templatesystem.TagMatchTest"
+      ],
+      "manifestHashBefore": "b3ad33c12cacf8298c54269fb7f49e1ff1d424f8769bc6927f55df272134baa9",
+      "manifestHashAfter": "2bd59a75e9ec7c16a3eefa12c7c5a05cb39dcd1240a5635b96e202fe28ad1906",
+      "semanticDelta": {},
+      "oreDefault": {
+        "kernelMirrorEnabled": false,
+        "kernelSemantics": {
+          "enabled": false,
+          "reasons": [
+            "PROFILE_DEFAULT_OFF"
+          ]
+        }
+      },
+      "enabledDefaults": {
+        "noise": true,
+        "mesher": true,
+        "light": true,
+        "worldgen": true,
+        "shaderxlat": true,
+        "ore": false
+      },
+      "oracle": {
+        "pairedCases": 16217,
+        "fixtureSha256": "cd563cf834d0c089dc654d297117f3692b1facb617ed7440cc1c19ed7f8d10d7",
+        "baselineReportSha256": "3516031b1f17a0d954f60c43ec06d0d7b9b2de52227a0cd35eab64a0cbe04d0b",
+        "simdReportSha256": "e1b1126ddf25a87cbabf44a60bf6eab1492e54b39c2c382da04fe4e695c4dda9"
+      }
+    }
+  ],
+  "defaultOff": {
+    "versionManifestKey": "kernelMirror.enabled.ore",
+    "value": false,
+    "gateReason": "PROFILE_DEFAULT_OFF",
+    "note": "Every other kernel keeps its previously approved default (see enabledDefaults per profile and the unchanged defaults of mesh-vertex-stride.json). Enabling ore needs a separate review with browser acceptance; a changed ore method also disables it through BODY_CHANGED / SIGNATURE_CHANGED / METHOD_GONE without touching worldgen."
+  },
+  "checks": [
+    "The previous lock digest of each profile equals the kernelMirror.lockSha256 approved by mesh-vertex-stride.json (reviewedLockSha256 there).",
+    "kernelmirror diff of the previous lock against the integrated lock lists every pre-existing light/mesher/noise/worldgen method as UNCHANGED and only ore methods as SIGNATURE (added).",
+    "The kernelSemantics block of the lock is identical before and after; only the manifest hash and the appended ore methods differ.",
+    "Each ore method hash is computed by ClassHasher.java from the local named client jar listed per profile with -Xmx3g.",
+    "The independent ASM oracle of the real OreFeature replays 99,873 paired geometry + delta cases (41,832 / 41,824 / 16,217) byte for byte on native, wasm baseline and wasm SIMD.",
+    "kernelmirror generate --check, gate --check, test-kernelmirror.mjs, kernel-mirror-smoke.mjs and profilegen --check pass on the integrated tree."
+  ],
+  "oracleDocumentation": "port/native/docs/worldgen-ore-throughput.md",
+  "limitations": "The ore golden covers standard overworld ore placement with allowlisted rules; unsupported ores decline to vanilla and are counted separately. No full TeaVM build, browser acceptance or production ore hook was run, and the kernel is not enabled by this approval. Matching mirror hashes alone do not prove numeric parity."
+}

@@ -1,0 +1,6 @@
+# One blocked ASCII word allowed in one file: <repository path> <sha256 of the word>.
+# Only for technical terms in files the build needs verbatim; approved by the owner 2026-10-30.
+port/scripts/generate-pom.sh 0e89820860c342f2c7ec694d144023b10301c2accdd078cb5167a06d0c3d5bcc
+port/src/main/java/dev/gaius/browser/BrowserRenderScheduler.java 0e89820860c342f2c7ec694d144023b10301c2accdd078cb5167a06d0c3d5bcc
+port/web/runtime/quality/gpu-caps.js 0e89820860c342f2c7ec694d144023b10301c2accdd078cb5167a06d0c3d5bcc
+port/web/singleplayer/server-worker-bootstrap.js 0e89820860c342f2c7ec694d144023b10301c2accdd078cb5167a06d0c3d5bcc

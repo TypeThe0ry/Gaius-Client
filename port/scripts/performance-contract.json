@@ -1,0 +1,581 @@
+{
+  "schemaVersion": 14,
+  "releaseEvidence": {
+    "hardTargetProfiles": ["steady-6-4", "traversal-6-4"],
+    "stabilityProfiles": ["soak-sp-6-4", "soak-mp-6-4"],
+    "requiredMemoryProfiles": ["soak-sp-6-4"],
+    "diagnosticOnlyProfiles": ["steady-8-4", "steady-12-4", "traversal-8-4", "traversal-12-4"],
+    "uncappedMatrixProfiles": [
+      "steady-6-4", "steady-8-4", "steady-12-4",
+      "traversal-6-4", "traversal-8-4", "traversal-12-4"
+    ],
+    "acceptance": {
+      "maximumTwoSecondStalls": 0,
+      "maximumFreezeCount": 0,
+      "maximumCrashSignals": 0,
+      "messagePortP99MaxMs": 250,
+      "messagePortMaxMs": 2000,
+      "chunkBacklogPaths": [
+        "chunk.pendingTasks",
+        "chunk.compileBacklog",
+        "chunk.uploadBacklog"
+      ],
+      "memoryRequiredProfiles": ["soak-sp-6-4"]
+    }
+  },
+  "measurement": {
+    "frameSource": "BrowserGlfw.swapBuffers",
+    "frameSourceByProfile": {
+      "26.2": "BrowserGlfw.swapBuffers",
+      "26.3": "BrowserSdl.SDL_GL_SwapWindow"
+    },
+    "frameSampleCapacity": 65536,
+    "warmupMs": 30000,
+    "sampleMs": 300000,
+    "soakMs": 1800000,
+    "cleanupMs": 30000,
+    "sampleIntervalMs": 500,
+    "heapIntervalMs": 5000,
+    "postGcIntervalMs": 300000,
+    "heartbeatIntervalMs": 50,
+    "runtimeInvariantSampleCapacity": 4096,
+    "longTaskCapacity": 4096,
+    "freezeThresholdMs": 500,
+    "acceptanceStallThresholdMs": 2000,
+    "acceptanceStallCountMax": 0,
+    "queueHighWaterDurationMs": 10000,
+    "cdpCommandTimeoutMs": 15000,
+    "continuousVisualIntervalMs": 10000,
+    "watchdogGraceMs": 300000,
+    "minimumTraversalChunks": 16,
+    "minimumTraversalBlocks": 256,
+    "maximumTraversalStallMs": 10000,
+    "maximumStateStallMs": 1000
+  },
+  "startup": {
+    "timeoutMs": 900000,
+    "newWorldInteractiveMsMax": 15000,
+    "minimumLoadedChunks": 1,
+    "requiredConsecutiveTerrainFrames": 16,
+    "minimumTerrainWindowMs": 250,
+    "maximumTerrainFrameGapMs": 100,
+    "minimumBlockHitFrames": 3,
+    "minimumVisualSamples": 3,
+    "terrainFrameIntervalMs": 50,
+    "externalSmokeRequired": [
+      "world-readiness-smoke.mjs"
+    ]
+  },
+  "browserMemory": {
+    "global": "globalThis.__gaiusMemoryTelemetry.browserMemory",
+    "liveFields": ["liveBytes", "liveRegions", "associatedBuffers"],
+    "counterFields": [
+      "allocations",
+      "frees",
+      "registrations",
+      "reallocations",
+      "collectedAssociations",
+      "addressLookupMisses",
+      "allocationFailures",
+      "temporaryAllocationFailures",
+      "peakTemporaryBytes"
+    ],
+    "safetyRequiredFields": [
+      "maxLiveBytes",
+      "maxTemporaryBytes",
+      "peakTemporaryBytes",
+      "allocationFailures",
+      "temporaryAllocationFailures"
+    ],
+    "failureFields": ["allocationFailures", "temporaryAllocationFailures"],
+    "limits": {
+      "maxLiveBytes": 2147483648,
+      "maxTemporaryBytes": 16777216
+    },
+    "aggregateLimits": {
+      "maxLiveBytes": 3221225472,
+      "maxTemporaryBytes": 33554432
+    },
+    "postGcFinalWindows": 4,
+    "cleanupRequired": true,
+    "minimumAvailableRatio": 0.9,
+    "minimumDurationCoverageRatio": 0.98,
+    "maximumSampleGapRatio": 1.5
+  },
+  "heapMemory": {
+    "retainedGrowthPercentMax": 15,
+    "retainedGrowthBytesMax": 268435456,
+    "peakUsedBytesMax": 8589934592,
+    "plateauSlopeMiBPerMinuteMax": 1,
+    "minimumAvailableRatio": 0.9,
+    "minimumDurationCoverageRatio": 0.98,
+    "maximumSampleGapRatio": 1.5
+  },
+  "processRss": {
+    "source": "SystemInfo.getProcessInfo plus ps RSS",
+    "requiredDurationMs": 1800000,
+    "sampleIntervalMs": 15000,
+    "minimumAvailableRatio": 0.9,
+    "minimumDurationCoverageRatio": 0.98,
+    "maximumSampleGapRatio": 1.5,
+    "trendWindowCount": 4,
+    "processTypes": ["browser", "renderer", "gpu", "utility"],
+    "requiredProcessTypes": ["browser", "renderer", "gpu"],
+    "total": {
+      "growthPercentMax": 25,
+      "growthBytesMax": 536870912,
+      "peakBytesMax": 12884901888
+    },
+    "byType": {
+      "browser": {
+        "growthPercentMax": 25,
+        "growthBytesMax": 268435456,
+        "peakBytesMax": 2147483648
+      },
+      "renderer": {
+        "growthPercentMax": 25,
+        "growthBytesMax": 402653184,
+        "peakBytesMax": 8589934592
+      },
+      "gpu": {
+        "growthPercentMax": 25,
+        "growthBytesMax": 268435456,
+        "peakBytesMax": 2147483648
+      },
+      "utility": {
+        "growthPercentMax": 50,
+        "growthBytesMax": 134217728,
+        "peakBytesMax": 2147483648
+      }
+    },
+    "externalSmokeRequired": ["process-rss-memory-smoke.mjs"]
+  },
+  "visualOutput": {
+    "source": "Chrome Page.captureScreenshot compositor output",
+    "capturesPerPhase": 3,
+    "captureIntervalMs": 200,
+    "sampleWidth": 80,
+    "sampleHeight": 45,
+    "requiredSamples": 6,
+    "requiredPhases": ["pre-measurement", "post-measurement"],
+    "minimumSamplesPerPhase": 3,
+    "expectedWidth": 1280,
+    "expectedHeight": 720,
+    "minimumNonBlackRatio": 0.05,
+    "minimumLuminanceStdDev": 6,
+    "minimumColorBuckets": 24,
+    "maximumDominantColorRatio": 0.97,
+    "minimumCentralNonBlackRatio": 0.05,
+    "minimumCentralLuminanceStdDev": 6,
+    "minimumCentralColorBuckets": 16,
+    "maximumCentralDominantColorRatio": 0.97,
+    "minimumActiveTileCount": 6,
+    "minimumTraversalFingerprintRms": 2,
+    "externalSmokeRequired": ["visual-output-evidence-smoke.mjs"]
+  },
+  "gameplayAuthority": {
+    "source": "browser-transport-and-client-state",
+    "route": "singleplayer-worker",
+    "protocols": {
+      "774": {
+        "airBlockStateId": 0,
+        "packetIds": {
+          "outboundPlayerAction": 40,
+          "outboundUseItemOn": 63,
+          "inboundBlockChangedAck": 4,
+          "inboundBlockUpdate": 8
+        }
+      },
+      "776": {
+        "airBlockStateId": 0,
+        "packetIds": {
+          "outboundPlayerAction": 41,
+          "outboundUseItemOn": 66,
+          "inboundBlockChangedAck": 4,
+          "inboundBlockUpdate": 8
+        }
+      }
+    },
+    "confirmation": "clientbound-block-update-or-sequence-ack-plus-client-state-transition",
+    "requiredOperations": ["break", "place"],
+    "minimumSamplesPerOperation": 3,
+    "maxP95Millis": 250,
+    "maxP99Millis": 500,
+    "maxRollbacks": 0,
+    "requireTransportEvidence": true,
+    "requireStateTransitionEvidence": true,
+    "requireActiveWorkloadEvidence": true,
+    "zeroLatencyIsInvalid": true
+  },
+  "runtimeInvariants": {
+    "sectionTaskQueue": {
+      "backlogFixtureTasks": 1000,
+      "pollP99MillisMax": 0.25,
+      "fullScansPerPollMax": 0,
+      "externalSmokeRequired": ["section-task-queue-smoke.mjs"]
+    },
+    "targeting": {
+      "raycastsPerRenderedFrameMax": 1,
+      "maximumObservationLagFrames": 1,
+      "externalSmokeRequired": ["minecraft-262-link-gap-smoke.mjs"]
+    },
+    "worldgen": {
+      "telemetryMode": "task-pulsed",
+      "worldgenTelemetryMode": "task-pulsed",
+      "progressSlicesMin": 1,
+      "totalProgressPulsesMin": 1,
+      "checkpointYieldsMin": 1,
+      "checkpointOnlyYieldsMin": 1,
+      "checkpointQueueDepthMax": 8,
+      "checkpointOnlyQueueDepthMax": 8,
+      "networkWaitPulsesMax": 2,
+      "checkpointOnlyNetworkWaitPulsesMax": 2,
+      "schedulerTurnPulsesMax": 4096,
+      "minimumAdaptiveSliceMillis": 2,
+      "reentrantYieldDepthMax": 1,
+      "checkpointOnlyReentrantYieldDepthMax": 1,
+      "p99SliceElapsedMillisMax": 14,
+      "maxSliceElapsedMillisMax": 50,
+      "maxBudgetOverrunMillisMax": 8,
+      "p99YieldDelayMillisMax": 16.7,
+      "maxYieldDelayMillisMax": 50,
+      "checkpointOnlyP99YieldDelayMillisMax": 16.7,
+      "checkpointOnlyMaxYieldDelayMillisMax": 50
+    },
+    "webglMemory": {
+      "bufferShadowBudgetBytes": 67108864,
+      "derivedBaseVertexBudgetBytes": 33554432,
+      "derivedAlignedAttribBudgetBytes": 33554432,
+      "cleanupRequired": true,
+      "externalSmokeRequired": [
+        "browser-resource-lifecycle-smoke.mjs",
+        "browser-vao-reference-smoke.mjs"
+      ]
+    },
+    "renderPipeline": {
+      "uploadAllocationsPerFrameMax": 8,
+      "uploadRetryCancellationsMax": 0,
+      "activeUploadRetryTasksMax": 8,
+      "externalSmokeRequired": [
+        "render-pipeline-backpressure-smoke.mjs"
+      ]
+    },
+    "networkOutbound": {
+      "turnsMin": 1,
+      "framesPerTurnMax": 32,
+      "bytesPerTurnMax": 262144,
+      "millisPerTurnMax": 8,
+      "externalSmokeRequired": ["browser-outbound-backpressure-smoke.mjs"]
+    },
+    "gpuFences": {
+      "timeoutIsFatal": false,
+      "earlyResourceReuseMax": 0,
+      "duplicateDeletesMax": 0,
+      "waitFailuresMax": 0,
+      "contextLossesMax": 0,
+      "retireBacklogMax": 8,
+      "fenceAgeFramesMax": 120,
+      "controlledErrorsMax": 0
+    },
+    "framePacing": {
+      "counterSchemaVersion": 2,
+      "visibleFixedPositiveTimerMillisMax": 0,
+      "continuationResumeCountPerRequestMax": 1,
+      "continuationResumeCountPerRequestMin": 1,
+      "pendingYieldCountMax": 1,
+      "duplicateYieldCallbackCountMax": 0,
+      "externalSmokeRequired": ["frame-pacing-yield-smoke.mjs"]
+    }
+  },
+  "environment": {
+    "minimumDisplayHz": 120,
+    "viewport": {
+      "width": 1280,
+      "height": 720,
+      "deviceScaleFactor": 1
+    },
+    "foregroundRequired": true,
+    "maxFps": 260,
+    "maxFpsLabel": "Unlimited",
+    "unlimitedSentinel": 260,
+    "graphicsPreset": "fancy",
+    "autoDpr": false,
+    "uncappedEvidence": {
+      "requiredSwapInterval": 0,
+      "minimumSamples": 2,
+      "minimumUncappedYieldCount": 1,
+      "minimumMessageChannelYieldCount": 1,
+      "maximumFairYieldCount": 0,
+      "maximumSchedulerYieldCount": 0,
+      "maximumTimerYieldCount": 0,
+      "maximumVsyncYieldCount": 0,
+      "maximumPresentToRafCount": 0,
+      "maximumMessageChannelCreateFailureCount": 0,
+      "maximumMessageChannelPostFailureCount": 0,
+      "maximumMessageChannelRebuildCount": 0,
+      "maximumCancelledMessageTaskCount": 0,
+      "maximumWatchdogYieldCount": 0,
+      "requireFramePacingSettlement": true,
+      "settlementSchemaVersion": 1,
+      "settlementPollIntervalMillis": 8,
+      "settlementPollIntervalMillisMin": 5,
+      "settlementPollIntervalMillisMax": 10,
+      "settlementTimeoutMillis": 200,
+      "settlementTimeoutMillisMin": 150,
+      "settlementTimeoutMillisMax": 250,
+      "requiredFields": [
+        "swapInterval",
+        "uncappedYieldCount",
+        "vsyncYieldCount",
+        "visibleYieldCount",
+        "hiddenYieldCount",
+        "presentToRafCount",
+        "messageChannelYieldCount",
+        "fairYieldCount",
+        "schedulerYieldCount",
+        "timerYieldCount",
+        "yieldRequestCount",
+        "yieldCompletionCount",
+        "pendingYieldCount",
+        "maxPendingYieldCount",
+        "duplicateYieldCallbackCount",
+        "messageChannelCreateFailureCount",
+        "messageChannelPostFailureCount",
+        "messageChannelRebuildCount",
+        "cancelledMessageTaskCount",
+        "watchdogYieldCount"
+      ]
+    }
+  },
+  "queueHighWater": {
+    "chunk.pendingTasks": 8,
+    "chunk.compileBacklog": 8,
+    "chunk.uploadBacklog": 32,
+    "network.inboundQueuedBytes": 25165824,
+    "network.queuedBytes": 4194304,
+    "network.decodedPacketQueue": 256,
+    "worker.network.inboundQueuedBytes": 25165824,
+    "worker.network.queuedBytes": 4194304,
+    "worker.network.decodedPacketQueue": 256
+  },
+  "heartbeat": {
+    "pendingMax": 3,
+    "rttP99MaxMs": 50,
+    "rttMaxMs": 250,
+    "delayMaxMs": 250
+  },
+  "profiles": {
+    "steady-6-4": {
+      "evidenceRole": "release-hard-target",
+      "releaseEvidence": true,
+      "scenario": "steady",
+      "route": "singleplayer",
+      "renderDistance": 8,
+      "simulationDistance": 6,
+      "workload": "none",
+      "requireNewChunks": false,
+      "warmupMs": 30000,
+      "durationMs": 300000,
+      "fpsWindowMs": 300000,
+      "gates": {
+        "averageFpsMin": 200,
+        "onePercentLowFpsMin": 200,
+        "longFrames50PerMinuteMax": 5,
+        "coverageRatioMin": 0.98,
+        "p99FrameMsMax": 5,
+        "longestFrameMsMax": 50,
+        "stallCountAtLeast2sMax": 0,
+        "freezeCountMax": 0,
+        "targeting": true,
+        "runtimeInvariants": true,
+        "queueHighWater": false,
+        "memory": false,
+        "gameplayAuthority": false
+      }
+    },
+    "traversal-6-4": {
+      "evidenceRole": "release-hard-target",
+      "releaseEvidence": true,
+      "scenario": "new-chunk-traversal",
+      "route": "singleplayer",
+      "renderDistance": 8,
+      "simulationDistance": 6,
+      "workload": "traverse",
+      "requireNewChunks": true,
+      "warmupMs": 30000,
+      "durationMs": 300000,
+      "fpsWindowMs": 300000,
+      "gates": {
+        "averageFpsMin": 200,
+        "onePercentLowFpsMin": 200,
+        "longFrames50PerMinuteMax": 5,
+        "coverageRatioMin": 0.98,
+        "p99FrameMsMax": 5,
+        "longestFrameMsMax": 50,
+        "stallCountAtLeast2sMax": 0,
+        "freezeCountMax": 0,
+        "targeting": true,
+        "runtimeInvariants": true,
+        "queueHighWater": true,
+        "memory": false,
+        "gameplayAuthority": true
+      }
+    },
+    "steady-8-4": {
+      "evidenceRole": "diagnostic-stress",
+      "releaseEvidence": false,
+      "scenario": "steady",
+      "route": "singleplayer",
+      "renderDistance": 8,
+      "simulationDistance": 6,
+      "workload": "none",
+      "requireNewChunks": false,
+      "warmupMs": 30000,
+      "durationMs": 300000,
+      "fpsWindowMs": 300000,
+      "gates": {
+        "onePercentLowFpsMin": 45,
+        "p99FrameMsMax": 22.2,
+        "longestFrameMsMax": 100,
+        "stallCountAtLeast2sMax": 0,
+        "freezeCountMax": 0,
+        "targeting": true,
+        "queueHighWater": false,
+        "memory": false,
+        "gameplayAuthority": false
+      }
+    },
+    "steady-12-4": {
+      "evidenceRole": "diagnostic-stress",
+      "releaseEvidence": false,
+      "scenario": "steady",
+      "route": "singleplayer",
+      "renderDistance": 12,
+      "simulationDistance": 6,
+      "workload": "none",
+      "requireNewChunks": false,
+      "warmupMs": 30000,
+      "durationMs": 300000,
+      "fpsWindowMs": 300000,
+      "gates": {
+        "onePercentLowFpsMin": 30,
+        "p99FrameMsMax": 33.3,
+        "longestFrameMsMax": 2000,
+        "stallCountAtLeast2sMax": 0,
+        "freezeCountMax": 0,
+        "targeting": true,
+        "queueHighWater": false,
+        "memory": false,
+        "gameplayAuthority": false
+      }
+    },
+    "traversal-8-4": {
+      "evidenceRole": "diagnostic-stress",
+      "releaseEvidence": false,
+      "scenario": "new-chunk-traversal",
+      "route": "singleplayer",
+      "renderDistance": 8,
+      "simulationDistance": 6,
+      "workload": "traverse",
+      "requireNewChunks": true,
+      "warmupMs": 30000,
+      "durationMs": 300000,
+      "fpsWindowMs": 300000,
+      "gates": {
+        "onePercentLowFpsMin": 45,
+        "p99FrameMsMax": 22.2,
+        "longestFrameMsMax": 100,
+        "stallCountAtLeast2sMax": 0,
+        "freezeCountMax": 0,
+        "targeting": true,
+        "queueHighWater": true,
+        "memory": false,
+        "gameplayAuthority": true
+      }
+    },
+    "traversal-12-4": {
+      "evidenceRole": "diagnostic-stress",
+      "releaseEvidence": false,
+      "scenario": "new-chunk-traversal",
+      "route": "singleplayer",
+      "renderDistance": 12,
+      "simulationDistance": 6,
+      "workload": "traverse",
+      "requireNewChunks": true,
+      "warmupMs": 30000,
+      "durationMs": 300000,
+      "fpsWindowMs": 300000,
+      "gates": {
+        "onePercentLowFpsMin": 30,
+        "p99FrameMsMax": 33.3,
+        "longestFrameMsMax": 2000,
+        "stallCountAtLeast2sMax": 0,
+        "freezeCountMax": 0,
+        "targeting": true,
+        "queueHighWater": true,
+        "memory": false,
+        "gameplayAuthority": true
+      }
+    },
+    "soak-sp-6-4": {
+      "evidenceRole": "release-stability",
+      "releaseEvidence": true,
+      "scenario": "soak",
+      "route": "singleplayer",
+      "renderDistance": 8,
+      "simulationDistance": 6,
+      "workload": "traverse",
+      "requireNewChunks": true,
+      "warmupMs": 30000,
+      "durationMs": 300000,
+      "fpsWindowMs": 300000,
+      "soakMs": 1800000,
+      "gates": {
+        "averageFpsMin": 200,
+        "onePercentLowFpsMin": 200,
+        "longFrames50PerMinuteMax": 5,
+        "coverageRatioMin": 0.98,
+        "p99FrameMsMax": 5,
+        "longestFrameMsMax": 50,
+        "stallCountAtLeast2sMax": 0,
+        "freezeCountMax": 0,
+        "targeting": true,
+        "runtimeInvariants": true,
+        "queueHighWater": true,
+        "memory": true,
+        "gameplayAuthority": true
+      }
+    },
+    "soak-mp-6-4": {
+      "evidenceRole": "release-stability",
+      "releaseEvidence": true,
+      "driverSupported": false,
+      "scenario": "soak",
+      "route": "multiplayer-relay",
+      "renderDistance": 8,
+      "simulationDistance": 6,
+      "workload": "traverse",
+      "requireNewChunks": true,
+      "warmupMs": 30000,
+      "durationMs": 300000,
+      "fpsWindowMs": 300000,
+      "soakMs": 1800000,
+      "gates": {
+        "averageFpsMin": 200,
+        "onePercentLowFpsMin": 200,
+        "longFrames50PerMinuteMax": 5,
+        "coverageRatioMin": 0.98,
+        "p99FrameMsMax": 5,
+        "longestFrameMsMax": 50,
+        "stallCountAtLeast2sMax": 0,
+        "freezeCountMax": 0,
+        "targeting": true,
+        "runtimeInvariants": true,
+        "queueHighWater": true,
+        "memory": true,
+        "gameplayAuthority": true,
+        "decodedPacketQueue": true
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+# Literals that look like public IPv4 addresses but are not hosts: <repository path> <literal>.
+# Reserved network ranges the relay refuses to connect to.
+apps/bridge/dist/policy.js 100.64.0.0
+apps/bridge/dist/policy.js 127.0.0.0
+apps/bridge/dist/policy.js 169.254.0.0
+apps/bridge/dist/policy.js 192.0.0.0
+apps/bridge/dist/policy.js 198.18.0.0
+apps/bridge/dist/policy.js 224.0.0.0
+apps/bridge/dist/policy.js 240.0.0.0
+apps/bridge/policy.test.mjs 169.254.169.254
+# Browser and JDK version numbers.
+tools/check-public-network-secrets.mjs 141.0.0.0
+tools/check-public-network-secrets.mjs 25.0.4.1
+tools/check-public-network-secrets.mjs 25.0.4.101
+tools/check-public-network-secrets.test.mjs 21.0.9.10
+tools/check-public-network-secrets.test.mjs 25.0.4.1
+tools/check-public-network-secrets.test.mjs 25.0.4.101
+port/scripts/clipboard-bridge-smoke.mjs 141.0.0.0

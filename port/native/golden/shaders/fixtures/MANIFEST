@@ -1,0 +1,10 @@
+# Fixture modules of port/native/crates/gaius-shaderxlat/tests/fixtures.rs, one per SPIR-V patch:
+# the SPIR-V of vanilla 26.3 shader stages for the webgpu device profile. They are compiled from
+# Mojang's shader sources, so they are not committed (see "Test fixtures" in ../README.md); dump-corpus.sh copies
+# them into this directory from the corpus it dumps (spirv/<sha256>.spv), and git ignores them.
+# <sha256> <file>
+57a178fac0a7345edcbbc4b84a902f89d2ce31d41f1384a2ae2484b6cc9a53fd clouds.vert.spv
+f11d4216badb4f9e095b57943e0208b5d17a9d1d05ad8d3cef97c12d77da820a debug_points.vert.spv
+f5709ee16ffaa7e98245918228e6ce08b72dd21cfc3fed39684e9fd8af40ff0b oit_transmittance_terrain.frag.spv
+bcc117eb9f1fd861cfe5b8abfeb607c7321b60286c2722237da71b6cf2160ec6 panorama.frag.spv
+e92ac45d0d48a8bc54f08b67d73789ef8cd491c3a6efcc6dd11b0224bfe87ed7 solid_terrain.vert.spv

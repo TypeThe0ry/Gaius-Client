@@ -87,6 +87,16 @@ class PublicTreeCheckTest(unittest.TestCase):
         (self.root / "doc.md").write_text("Our " + "Bench" + "marks page.\n")
         self.assertTrue(any("blocked word" in f for f in self.findings()))
 
+    def test_term_exception_allows_one_word_in_one_file(self):
+        word = "Bench" + "marks"
+        digest = hashlib.sha256(("bench" + "mark").encode()).hexdigest()
+        (self.root / "gpu.js").write_text("// %s the GPU\n" % word)
+        (self.root / "other.js").write_text("// %s the GPU\n" % word)
+        (self.root / "patcher" / "term-exceptions.txt").write_text("gpu.js %s\n" % digest)
+        found = self.findings()
+        self.assertEqual(len(found), 1)
+        self.assertIn("other.js", found[0])
+
     def test_cjk_blocked_word(self):
         (self.root / "doc.md").write_text("性能" + "对" + "标" + "结果\n")
         self.assertTrue(any("CJK" in f for f in self.findings()))
@@ -96,6 +106,24 @@ class PublicTreeCheckTest(unittest.TestCase):
         extra.write_text("secret-host.example\n")
         (self.root / "cfg.json").write_text('{"host": "Secret-Host.example"}\n')
         self.assertTrue(self.findings(extra_terms_file=extra))
+
+    def test_blocked_phrase_is_found_from_its_digest(self):
+        phrase = "private-host." + "example"  # assembled so this file has no literal
+        digests = self.root / "patcher" / "blocked-term-hashes.txt"
+        digests.write_text(digests.read_text() + "%d %s phrase\n" % (len(phrase), hashlib.sha256(phrase.encode()).hexdigest()))
+        (self.root / "ok.md").write_text("not-private-host.example is a different host\n")
+        self.assertEqual(self.findings(), [])
+        (self.root / "cfg.json").write_text('{"host": "Private-Host.Example:25565"}\n')
+        self.assertTrue(any("blocked phrase" in f for f in self.findings()))
+
+    def test_ipv4_allowlist_is_per_file(self):
+        public = ".".join(["8", "8", "4", "4"])
+        (self.root / "a.js").write_text("const net = '%s';\n" % public)
+        (self.root / "b.js").write_text("const net = '%s';\n" % public)
+        (self.root / "patcher" / "ipv4-allowlist.txt").write_text("a.js %s\n" % public)
+        found = self.findings()
+        self.assertEqual(len(found), 1)
+        self.assertIn("b.js", found[0])
 
     def test_public_ipv4_literal_is_refused(self):
         public = ".".join(["8", "8", "4", "4"])  # assembled so this file has no literal

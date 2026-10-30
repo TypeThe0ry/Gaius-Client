@@ -1,0 +1,13 @@
+[package]
+name = "gaius-mesher"
+description = "Chunk section mesher that reproduces the vanilla SectionCompiler: block models, smooth lighting, fluids, tint, visibility and translucency sort."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gaius-kernel-abi.workspace = true
+
+[build-dependencies]
+serde_json = "1"

@@ -1,0 +1,161 @@
+# Registered differences of the class library conformance suite (runner/run.mjs).
+#
+# One entry per line: <variants> <key glob> <reason>. variants is a comma list of js, wasm,
+# wasm-strict, or * (all three); in the glob, * matches any run of characters, ? one character and
+# [...] a character class. A key is "<section>.<case>", "<section>#<line>" for the raw lines of a
+# repro, or "<section>.$status" (ok, trap, timeout, crash) for how the section ended. A
+# difference without an entry fails the run, and so does an entry that matched nothing (stale).
+# The observed values of every registered difference are in the run's report.json and
+# differences.txt.
+#
+# js = TeaVM 0.15 JavaScript (the product's js overlays, ADVANCED, postprocess-teavm-js.py);
+# wasm = TeaVM 0.15 WebAssembly GC (the product's wasmgc overlays, SIMPLE, JSPI);
+# wasm-strict = the same with TeaVM strict mode (the strict-mode evaluation, README).
+# FIX marks a difference that the product should remove (see README "Follow-ups").
+
+# --- Process defaults
+*  env.locale  TeaVM's default locale is its class library default en_GB; the browser builds never read a host locale (the JVM runs with en_US). Vanilla formats data with Locale.ROOT.
+*  env.timezone  TeaVM names the zero-offset default zone "GMT" (the JVM, started with -Duser.timezone=UTC, says "UTC"); the offsets agree.
+
+# --- HashMap / HashSet / ConcurrentHashMap iteration order (FIX)
+*  hashmap.*  TeaVM's THashMap (Harmony code) picks the bucket as hashCode() & (n - 1) without the JDK's h ^ (h >>> 16) spreading, inserts at the bucket head and rehashes without the JDK's order-preserving split, so every value-hash key set larger than a few entries iterates in another order than on HotSpot (THashSet, TConcurrentHashMap likewise; record, BigInteger and BigDecimal keys also hash differently). LinkedHashMap and TreeMap are unaffected.
+*  hashcode.record  Record.hashCode is unspecified; HotSpot's ObjectMethods computes 31 * h + hash(c) over the components, TeaVM combines them differently (also changes hashmap.record.*).
+*  hashcode.bigInteger  TeaVM's BigInteger.hashCode (Harmony) is not the JDK's.
+*  hashcode.bigDecimal  TeaVM's BigDecimal.hashCode (Harmony) is not the JDK's.
+
+# --- Character and case mapping
+*  character.*  TeaVM 0.15's Character tables are older Unicode data than JDK 25's (Unicode 16.0): counts per range differ for most properties, isAlphabetic is isLetter, and getNumericValue is -1 for superscripts and Roman numerals (sample.b2, sample.2160).
+wasm,wasm-strict  strings.upper.*  On WebAssembly GC, String.toUpperCase is TeaVM's Java code without the special casings of SpecialCasing.txt (ß -> SS, ligatures, ŉ, ΐ, Deseret) and without the Turkish dotted I; the JS build calls JavaScript's toUpperCase, which has them.
+wasm,wasm-strict  strings.lower.*  On WebAssembly GC, String.toLowerCase has no special casing (İ -> i̇, final sigma, Deseret); the JS build calls JavaScript's toLowerCase.
+wasm,wasm-strict  format.upper.default  %S upper-cases with the WebAssembly GC String.toUpperCase (ß stays ß, JDK "SS").
+wasm,wasm-strict  strings.equalsIgnoreCase.[05689]  The case consists of s.equalsIgnoreCase(s.toUpperCase(Locale.ROOT)): it follows the WebAssembly GC toUpperCase above.
+js  strings.equalsIgnoreCase.10  Follows JavaScript's full upper-casing of the Deseret pair (two code points that TeaVM's char-wise equalsIgnoreCase then compares unequal).
+*  strings.equalsIgnoreCase.2  equalsIgnoreCase("Iı", "II"): the JDK compares Character.toUpperCase per char (ı -> I), TeaVM does not map ı.
+*  strings.equalsIgnoreCase.11  equalsIgnoreCase of µ (U+00B5) against its upper case Μ: the JDK maps both to the same upper case, TeaVM does not.
+
+# --- Date
+*  date.toString.*  TeaVM's Date.toString returns JavaScript's Date.prototype.toString ("Thu Jan 01 1970 00:00:00 GMT+0000 (zone name localized by the host)"), not HotSpot's "EEE MMM dd HH:mm:ss zzz yyyy".
+*  date.fields.*  Before the 1582 cutover the JDK's Date uses the Julian calendar (year 1, January 3); TeaVM is proleptic Gregorian (January 1).
+
+# --- Float and Double strings
+*  floatstr.d.1  Double.toString is not the JDK 19+ shortest decimal: Double.MIN_VALUE prints 4.940656458412465E-324 (JDK 4.9E-324).
+*  floatstr.d.concat.1  As floatstr.d.1 (string concatenation calls Double.toString).
+*  floatstr.f.1  Float.toString is not the shortest decimal: Float.MIN_VALUE prints 1.4012985E-45 (JDK 1.4E-45).
+*  floatstr.f.concat.1  As floatstr.f.1.
+*  floatstr.d.44?52d02c7e14af6  Double.toString of 1.0E23 and 2.0E23 prints 9.999999999999999E22 and 1.9999999999999998E23 (not the shortest round-tripping decimal).
+*  floatstr.d.concat.44?52d02c7e14af6  As floatstr.d.44?52d02c7e14af6.
+*  floatstr.?.random.digest  Some of 2000 random doubles and floats print other digits (non-shortest toString, as above); the 160 listed individually agree.
+*  floatstr.d.roundTrip.1  Double.parseDouble("4.940656458412465E-324") returns 0.0: TeaVM's parser flushes the smallest subnormal.
+*  floatstr.*.17  parseDouble("2.2250738585072012e-308") rounds to the largest subnormal instead of Double.MIN_NORMAL: TeaVM's decimal parser is not correctly rounded at the normal/subnormal boundary.
+*  floatstr.*.5  Hexadecimal floating-point strings ("0x1.8p1") are not supported by TeaVM's parseDouble/parseFloat/valueOf: NumberFormatException.
+
+# --- String.format (java.util.Formatter)
+*  format.*.1  %d of Long.MIN_VALUE prints "--9223372036854775808": TeaVM negates the value and prepends '-', and -MIN_VALUE overflows.
+*  format.*.1[2468]  %.Nf rounding: the JDK rounds the digits of Double.toString HALF_UP (1.005 -> 1.01, 0.05 -> 0.1, 0.15 -> 0.2, 0.5/1.5/2.5/-0.5 -> 1 2 3 -1); TeaVM rounds the binary value half-even (1.00, 0.0, 0.2, 0 2 2 -0). Vanilla's %.1f/%.3f displays (F3 screen, timings) can differ at ties.
+*  format.*.20  %.3f of -0.0 prints 0.000 (JDK -0.000).
+*  format.*.28  %f of the infinities prints ∞ and -∞ (JDK Infinity and -Infinity).
+*  format.*.29  %e is not supported by TeaVM's Formatter: UnknownFormatConversionException.
+*  format.*.3[0-5]  %e, %E, %g and %a are not supported by TeaVM's Formatter: UnknownFormatConversionException.
+*  format.*.60  %n is not supported by TeaVM's Formatter: UnknownFormatConversionException (JDK: the line separator).
+*  format.*.65  A lone trailing % throws StringIndexOutOfBoundsException (JDK UnknownFormatConversionException).
+
+# --- Integer parsing
+*  ints.*.14  Integer/Long parsing of non-ASCII digits ("١٢", Arabic-Indic): the JDK accepts any Unicode decimal digit (Character.digit), TeaVM only ASCII: NumberFormatException.
+*  ints.parseUnsignedInt16.1  parseUnsignedInt("-0", 16) returns 0 in TeaVM; the JDK rejects the sign.
+
+# --- Math and StrictMath. TeaVM implements both with JavaScript's Math (V8's own algorithms, not fdlibm as StrictMath requires) or with short Java formulas; HotSpot's Math may use intrinsics, its StrictMath is fdlibm.
+*  math.Math.sin(*  Last-bit difference: JavaScript Math.sin, not HotSpot's intrinsic.
+*  math.Math.cos(*  Last-bit difference: JavaScript Math.cos.
+*  math.Math.tan(*  Last-bit difference: JavaScript Math.tan.
+*  math.Math.exp(*  Last-bit difference: JavaScript Math.exp.
+*  math.StrictMath.exp(*  Last-bit difference: StrictMath.exp is JavaScript Math.exp, not fdlibm.
+*  math.*.cosh(*  Last-bit difference in cosh (not fdlibm).
+*  math.*.log10(*  Last-bit difference in log10 at subnormal and other inputs (not fdlibm).
+*  math.Math.toDegrees(*  Last-bit difference: TeaVM computes x * 180 / PI, the JDK x * RADIANS_TO_DEGREES.
+*  math.Math.toRadians(*  Last-bit difference: TeaVM computes x * PI / 180, the JDK x * DEGREES_TO_RADIANS.
+*  math.*.expm1(*  TeaVM computes expm1(x) as exp(x) - 1, which cancels for small |x| (a subnormal x gives 0, and small x lose digits).
+*  math.*.log1p(*  TeaVM computes log1p(x) as log(1 + x), which cancels for small |x| (a subnormal x gives 0).
+*  math.*.sinh(*  TeaVM computes sinh(x) as (e^x - 1/e^x) / 2, which cancels for small |x| (a subnormal x gives 0).
+*  math.*.tanh(*  TeaVM's tanh is an exponential formula: last-bit differences, and 0 for subnormal and -0.0 inputs.
+*  math.*.hypot(*  TeaVM computes hypot as sqrt(x * x + y * y) without scaling: it underflows for tiny and overflows for huge arguments.
+*  math.*.IEEEremainder(*  TeaVM computes IEEEremainder(x, y) as x - (int) (x / y) * y: it truncates instead of rounding to nearest, overflows the int, and x REM 0 is not NaN.
+*  math.*.cbrt(*  TeaVM computes cbrt(x) as pow(x, 1/3) with the sign put back: not correctly rounded, cbrt(0.0) is -0.0, and subnormal results differ further on WebAssembly GC.
+js  math.*.rint(*  TeaVM's rint is round(): halves round away from zero instead of to even (rint(2.5) = 3.0, rint(-2.5) = -3.0), and 0.49999999999999994 rounds to 1.0. The WebAssembly GC builds compile Math/StrictMath.rint to f64.nearest (GaiusWasmMath), which rounds halves to even as the JDK does.
+*  math.Math.round(*  TeaVM computes Math.round(x) as (long) (x + signum(x) * 0.5): halves of negative numbers round away from zero (round(-2.5) = -3, JDK -2) and 0.49999999999999994 rounds to 1.
+*  math.Math.roundf(*  Math.round(float) as (int) (x + signum(x) * 0.5): it rounds 0.49999997f up and, on JS, wraps for large floats instead of saturating.
+*  math.Math.scalb3(*  scalb(1e300, 3) overflows to Infinity: TeaVM multiplies by 2^n through an intermediate that overflows.
+*  math.Math.scalbM1080(*  scalb into the subnormal range rounds twice (the JDK rounds once).
+*  math.Math.nextAfter(*  nextAfter(x, NaN) returns a neighbour of x instead of NaN.
+*  math.Math.ulp(*  FIX: Math.ulp(double) is wrong by a factor of 2^256 for many inputs (TeaVM's exponent arithmetic is off).
+*  math.Math.fma(*  Math.fma is not fused in TeaVM (a * b + c in double).
+js  math.Math.fmaf(*  The float fma of the JS build rounds once to double, not to float.
+wasm,wasm-strict  math.rem(*  FIX: double % on WebAssembly GC is computed as a - b * trunc(a / b): inexact for large quotients, x % 0 is x instead of NaN, x % Infinity is NaN instead of x, and -0.0 loses its sign. The JS build uses JavaScript's %, which is exact. Vanilla uses % on doubles (Mth.wrapDegrees, rotations).
+wasm,wasm-strict  math.remf(*  FIX: float % on WebAssembly GC has the same defect as double % (1.5f % 0.3f is 0).
+
+# --- Miscellaneous
+wasm,wasm-strict  misc.offlineUuid.*  FIX: UUID.nameUUIDFromBytes is wrong on WebAssembly GC, so every offline-player UUID differs. TeaVM's MD5 (TUUID.md5) computes K[i] = (int) (abs(sin(i + 1)) * 2^32), a cast that Java saturates; the JS output wraps it (x | 0) and gets the real MD5 by accident, the WebAssembly GC output saturates as Java requires (trunc_sat) and the digest is wrong.
+*  misc.uuid.fromString.*  UUID.fromString validation differs: TeaVM rejects short groups the JDK accepts ("1-2-3-4-5"), accepts 32 hex digits without dashes, throws IllegalArgumentException where the JDK throws NumberFormatException, and variant() of all-ones is 6 (JDK 7).
+*  misc.base64.invalid  TeaVM's Base64 decoder accepts an illegal character ('*') instead of throwing IllegalArgumentException (the value printed is the returned byte array).
+js  misc.arraycopy.bounds  The JS System.arraycopy throws IndexOutOfBoundsException, the JDK its subclass ArrayIndexOutOfBoundsException.
+
+# --- java.util.Random (FIX)
+*  random.seed*.nextIntBound  TeaVM's Random does not implement nextInt(bound): the RandomGenerator default masks nextInt() and rejects, where the JDK uses next(31) with r * bound >> 31 and modulo rejection, so every bounded draw differs. nextInt(), nextLong(), nextDouble(), nextFloat(), nextGaussian(), nextBoolean() agree.
+*  random.seed*.nextIntRange  nextInt(origin, bound) follows nextInt(bound) above.
+*  random.seed*.nextLongBound  nextLong(bound) and nextLong(origin, bound) are RandomGenerator defaults, not the JDK's Random algorithm.
+*  random.seed*.ints  Random.ints(n, origin, bound) uses the bounded draw above.
+*  random.seed*.mixed  The nextInt(17) draws of this sequence differ (nextInt(bound) above) and shift every later value.
+*  random.seed*.shuffle  Collections.shuffle(list, random) draws with nextInt(bound) above.
+*  random.seed*.nextBytes  TeaVM's nextBytes writes one byte of each nextInt() four times (JDK: the four bytes of the int).
+*  random.sweep.nextIntBound.digest  nextInt(bound) for bounds 1..1024 (above).
+
+# --- Repros from S1 and T0
+js  repro.bufcompare#*  The JS heap ByteBuffer's absolute accessors throw RuntimeException (a wrapped RangeError) or BufferUnderflow/OverflowException instead of IndexOutOfBoundsException for a negative index or one past the limit; TeaVMClasslibWasmGcPatcher fixes the WebAssembly GC direct buffers only. All in-range cases agree.
+js  repro.rescompare#*  The JS class-path resource stream ignores the offset of read(b, off, len) and checks no bounds (the defect patchWasmGcResourceRead fixed for WebAssembly GC), and read(b, off, 0) at the end returns -1 (JDK 0).
+wasm,wasm-strict  repro.rescompare#015  The WebAssembly GC resource stream's available() returns 0 (JDK: the remaining bytes); reads, skip and readAllBytes agree.
+*  repro.sumprobe#*  The stream= column: TeaVM's DoubleStream.sum adds naively (the JDK compensates); the strict= column (BrowserStrictMath.sum, which StrictMath263 uses in the 26.3 worldgen on both targets) equals the JVM.
+*  strictmath.raw.sum.digest  As repro.sumprobe: plain DoubleStream.sum; the strictmath.helper.sum lines equal the JVM.
+
+# --- Sorting
+*  sort.priorityQueue.n*  PriorityQueue: the order among equal keys is unspecified; TeaVM's heap sifts differently from the JDK's, so ties poll and iterate in another order (distinct keys poll in the same order; Arrays.sort, List.sort and Stream.sorted are stable and agree).
+
+# --- Raw casts of the JavaScript output (StrictMath263 rewrites them in the 26.3 worldgen)
+js  strictmath.raw.*  The plain casts of TeaVM's JS output: (int)/(long) of a double wrap instead of saturating, (float) of a long rounds twice through double, and floats are not rounded to float. The strictmath.helper.* lines (BrowserStrictMath) equal the JVM on every runtime.
+js  trunc.*  TeaVM's JS output casts double/float to int with x | 0 (wraps modulo 2^32, so 2^31 -> MIN_VALUE and char/short/byte narrow from that), to long with BigInt.asIntN (wraps modulo 2^64; postprocess-teavm-js.py only fixes NaN and the infinities), leaves float values unrounded and rounds (float) of a long twice. The WebAssembly GC output uses trunc_sat and matches Java everywhere.
+
+# --- Strings and charsets
+*  strings.decodeUtf8.5  TeaVM's UTF-8 decoder drops the byte after a truncated sequence (JDK: U+FFFD, then 'A').
+*  strings.decodeUtf8.6  TeaVM decodes the overlong NUL C0 80 to U+0000 (JDK: two U+FFFD).
+*  strings.utf8.?  Encoding an unpaired surrogate: TeaVM's UTF-8 encoder drops it or the rest of the string (JDK: '?').
+*  strings.latin1.4  Encoding an unpaired surrogate to ISO-8859-1: TeaVM drops it (JDK: '?').
+*  strings.utf16.?  Encoding an unpaired surrogate to UTF-16BE: TeaVM writes '?' as one byte (JDK: U+FFFD).
+*  strings.indexOf  "hello".indexOf("", 9) is -1 in TeaVM (JDK 5: fromIndex is clamped to the length).
+*  strings.isBlank  isBlank of a string of Unicode spaces (U+2000 class) is false in TeaVM (JDK: Character.isWhitespace).
+*  strings.reverse.3  StringBuilder.reverse() splits surrogate pairs (the JDK keeps each pair together).
+*  strings.split.5  "abc".split("") keeps a leading empty string in TeaVM (JDK 8+ drops a leading empty match).
+*  strings.stringBuilder.setLength  StringBuilder.setLength beyond the length throws IndexOutOfBoundsException in TeaVM (JDK: pads with U+0000).
+
+# --- Implicit checks (Traps). Non-strict TeaVM emits no null, bounds or cast checks.
+wasm  trap.npe-*  Non-strict WebAssembly GC: a null dereference traps (RuntimeError) and ends the thread instead of throwing NullPointerException; strict mode throws it (wasm-strict equals the JVM). `throw null` raises StackOverflowError.
+js  trap.npe-*  Non-strict JS: a null dereference is a JavaScript TypeError that TeaVM wraps as RuntimeException, so catch (NullPointerException) misses it.
+wasm  trap.aioobe-*  Non-strict WebAssembly GC: an array access out of bounds traps (RuntimeError); strict mode throws ArrayIndexOutOfBoundsException.
+js  trap.aioobe-*  Non-strict JS: no bounds check; a load past the end reads 0, a store is dropped.
+wasm  trap.cce.*  Non-strict WebAssembly GC: a failing cast traps (illegal cast); strict mode throws ClassCastException.
+js  trap.cce.*  Non-strict JS: no cast check; the cast succeeds.
+*  trap.cce-array.result  TeaVM checks no cast to an array type, even in strict mode.
+*  trap.arraystore.result  TeaVM never checks array stores (no ArrayStoreException), even in strict mode.
+wasm  trap.resource-read-null.*  read(null, 0, 1) on a resource stream: null dereference, as trap.npe-* (strict throws NullPointerException).
+js  trap.resource-read-null.*  As trap.npe-* on JS.
+wasm  trap.format-missing-argument.$status  TeaVM's Formatter reads the argument array without a bounds check: on non-strict WebAssembly GC the missing argument traps.
+*  trap.format-missing-argument.result  JDK MissingFormatArgumentException; TeaVM: ArrayIndexOutOfBoundsException in strict WebAssembly GC, RuntimeException (wrapped TypeError) on JS, a trap on non-strict WebAssembly GC.
+wasm,wasm-strict  trap.*div-*  FIX: TeaVM's WebAssembly GC backend emits i32/i64 div_s and rem_s without zero or overflow checks, even in strict mode: division by zero traps instead of throwing ArithmeticException, and MIN_VALUE / -1 traps instead of returning MIN_VALUE (Math.floorDiv too). (MIN_VALUE % -1 is defined in WebAssembly and agrees.)
+wasm,wasm-strict  trap.irem-zero.*  FIX: integer remainder by zero traps (as trap.*div-*).
+wasm,wasm-strict  trap.lrem-zero.*  FIX: long remainder by zero traps (as trap.*div-*).
+js  trap.idiv-zero.result  Non-strict JS: int division by zero yields 0 ((a / b) | 0), no ArithmeticException.
+js  trap.irem-zero.result  Non-strict JS: int remainder by zero yields 0.
+js  trap.ldiv-zero.result  JS: long division by zero is a BigInt RangeError, wrapped as RuntimeException (JDK ArithmeticException).
+js  trap.lrem-zero.result  JS: long remainder by zero is a BigInt RangeError, wrapped as RuntimeException.
+wasm,wasm-strict  trap.negative-array-size.*  new int[-1] traps on WebAssembly GC ("requested new array is too large"), even in strict mode (JDK NegativeArraySizeException).
+js  trap.negative-array-size.result  JS: new int[-1] is a JavaScript RangeError, wrapped as RuntimeException.
+wasm,wasm-strict  trap.stack-overflow.*  V8's "Maximum call stack size exceeded" is a JavaScript RangeError that WebAssembly catch clauses do not see: the thread dies instead of throwing StackOverflowError.
+js  trap.stack-overflow.result  JS: the RangeError is wrapped as RuntimeException, not StackOverflowError.
+wasm,wasm-strict  trap.string-index.result  String.substring(2, 1) throws IndexOutOfBoundsException on WebAssembly GC (JDK StringIndexOutOfBoundsException, a subclass).

@@ -1,0 +1,82 @@
+{
+  "generation": "blaze3d-backend-1",
+  "description": "WebGPU behind vanilla 26.2's blaze3d backend SPI (GpuBackend -> GpuDevice -> GpuDeviceBackend), the generation between the single-device blaze3d of 1.21.11 and renderpearl. A delegating adapter onto port/gpu/webgpu-core; the backend receives GLSL, which the core's blaze3d GLSL front-end compiles.",
+  "package": "dev.gaius.mc.seams.blaze3dbackend1",
+  "sources": "src/main/java",
+  "tests": {
+    "sources": "src/test/java",
+    "mains": [
+      "dev.gaius.mc.seams.blaze3dbackend1.B1EnumsTest",
+      "dev.gaius.mc.seams.blaze3dbackend1.GlslLocationsTest",
+      "dev.gaius.mc.seams.blaze3dbackend1.B1DeviceFeaturesTest"
+    ]
+  },
+  "entry": {
+    "backend": "dev.gaius.mc.seams.blaze3dbackend1.B1Backend",
+    "backendsToTry": "dev.gaius.mc.seams.blaze3dbackend1.B1Backends.backendsToTry"
+  },
+  "registration": {
+    "target": "net.minecraft.client.PreferredGraphicsApi.getBackendsToTry",
+    "patch": "Minecraft262BrowserPatcher.patchPreferredGraphicsApi",
+    "targets": [
+      "wasmgc"
+    ],
+    "wired": true
+  },
+  "shaders": "glsl",
+  "shaderFront": "blaze3d-glsl-strict",
+  "depthZeroToOne": true,
+  "frameYield": "org.lwjgl.glfw.GLFW.glfwSwapBuffers",
+  "requiredEntries": [
+    "org/lwjgl/glfw/GLFW.glfwCreateWindow",
+    "org/lwjgl/glfw/GLFW.glfwSwapBuffers",
+    "org/lwjgl/glfw/GLFW.glfwSwapInterval"
+  ],
+  "fingerprint": {
+    "file": "port/mc/profiles/{profile}/spi.fingerprint",
+    "closurePackages": [
+      "com/mojang/blaze3d/buffers/",
+      "com/mojang/blaze3d/pipeline/",
+      "com/mojang/blaze3d/shaders/",
+      "com/mojang/blaze3d/systems/",
+      "com/mojang/blaze3d/textures/"
+    ],
+    "implements": [
+      "com/mojang/blaze3d/buffers/GpuFence",
+      "com/mojang/blaze3d/pipeline/CompiledRenderPipeline",
+      "com/mojang/blaze3d/systems/CommandEncoderBackend",
+      "com/mojang/blaze3d/systems/GpuBackend",
+      "com/mojang/blaze3d/systems/GpuDeviceBackend",
+      "com/mojang/blaze3d/systems/GpuQueryPool",
+      "com/mojang/blaze3d/systems/GpuSurfaceBackend",
+      "com/mojang/blaze3d/systems/RenderPass$UniformUploader",
+      "com/mojang/blaze3d/systems/RenderPassBackend",
+      "com/mojang/blaze3d/systems/TransientMemory"
+    ],
+    "extends": [
+      "com/mojang/blaze3d/buffers/GpuBuffer",
+      "com/mojang/blaze3d/textures/GpuSampler",
+      "com/mojang/blaze3d/textures/GpuTexture",
+      "com/mojang/blaze3d/textures/GpuTextureView"
+    ],
+    "instantiates": [
+      "com/mojang/blaze3d/buffers/GpuBufferSlice",
+      "com/mojang/blaze3d/buffers/GpuBufferSlice$MappedView",
+      "com/mojang/blaze3d/opengl/GlBackend",
+      "com/mojang/blaze3d/systems/BackendCreationException",
+      "com/mojang/blaze3d/systems/DeviceFeatures",
+      "com/mojang/blaze3d/systems/DeviceInfo",
+      "com/mojang/blaze3d/systems/DeviceLimits",
+      "com/mojang/blaze3d/systems/GpuDevice",
+      "com/mojang/blaze3d/systems/HintsAndWorkarounds",
+      "com/mojang/blaze3d/systems/SurfaceException"
+    ],
+    "watch": [
+      "com/mojang/blaze3d/pipeline/RenderPipeline",
+      "com/mojang/blaze3d/preprocessor/GlslPreprocessor",
+      "com/mojang/blaze3d/systems/RenderPass",
+      "com/mojang/blaze3d/vertex/VertexFormat",
+      "com/mojang/blaze3d/vulkan/glsl/GlslCompiler"
+    ]
+  }
+}

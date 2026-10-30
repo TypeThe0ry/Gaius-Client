@@ -1,0 +1,18 @@
+# WebAssembly GC-only patches that a GAIUS_TEAVM_TARGET=js overlay build skips: their
+# PatchRegistry spec names only the wasmgc target ("<KIND> wasmgc"), and the registry prints
+# "PATCH_TARGET_SKIPPED <patchId> target=js" (patchkit lint checks this list against the specs).
+# check-build-log-skips.mjs (G4) requires a js build log to skip exactly the ids
+# listed here for its profile, so the JavaScript build keeps its output: a patch
+# that changes it cannot be marked wasm-only, and a wasm-only patch cannot reach
+# the JavaScript build by losing the mark.  Each one must leave the JavaScript
+# build exactly as it was (the frozen fallback of v0.4.0).
+#
+# <patchId> | <profiles: * or comma-separated ids> | <reason>
+Minecraft262BrowserPatcher.patchTerrainSectionUniformBlock | >=26.2 | 26.2's frozen JavaScript build already supports its terrain path; this Blaze3D UBO registration is only required by the WasmGC pipeline (its spec names 26.2, but the 26.3 chain runs the registration too and the registry checks the target first, so a 26.3 JavaScript log skips it as well)
+MinecraftClientPatcher.patchMinecraftRunFrameBoundary | * | JSPI frame boundary at the head of Minecraft.run (design D4); the JavaScript build yields after each present instead
+MinecraftClientPatcher.patchTickPacketParity | * | off-by-default tick-exact acquisition and replay belongs only to the WasmGC server diagnostic
+Minecraft12111BrowserPatcher.patchInitRendererDeviceFactory | 1.21.11 | the blaze3d-direct-0 WebGPU seam is registered on WebAssembly GC only; the JavaScript build keeps vanilla's GlDevice
+Minecraft12111BrowserPatcher.patchLineWidthVertexFormatAlignment | 1.21.11 | the vertex layout of the WebGPU seam, which the JavaScript build does not register
+MinecraftClientPatcher.patchSectionBufferBuilderPoolTelemetry | >=26.2 | sizes vanilla's section builder pool for WasmGC's cooperative compile threads via the WasmGC BrowserMemory; the JavaScript build keeps vanilla's pool sizing
+MinecraftClientPatcher.patchClimateRTreeBrowserFlatIndex | * | exact flat copy of the multi-noise biome RTree for the WasmGC server; the JavaScript build keeps its BrowserClimate double distance (the registration is unguarded, so a 1.21.11 JavaScript log skips it too although its spec names >=26.2)
+MinecraftClientPatcher.patchSingleplayerHostCompression | * | the host connection of the WasmGC server Worker is uncompressed like vanilla singleplayer; the JavaScript build keeps its compressed host connection

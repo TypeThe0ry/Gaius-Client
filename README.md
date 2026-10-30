@@ -1,9 +1,11 @@
 # Gaius-Client
 
 Gaius is an unofficial browser client compatible with Minecraft: Java Edition
-26.3, 26.2 and 1.21.11 (WebAssembly and WebGPU). This repository is the public home of the
-**Gaius Patcher**, which builds a personal copy of Gaius on your own computer
-from your own copy of the game, and of the Gaius issue tracker.
+26.3, 26.2 and 1.21.11 (WebAssembly and WebGPU). This repository holds Gaius's
+own source code (the browser runtime and UI, the Rust kernels, the bytecode
+patches and the build scripts), the **Gaius Patcher**, which builds a personal
+copy of Gaius on your own computer from your own copy of the game, and the
+Gaius issue tracker. The source matches Gaius release v0.4.0-pre.5.
 
 https://dsc.gg/gaius
 

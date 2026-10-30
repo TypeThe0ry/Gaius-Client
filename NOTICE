@@ -1,0 +1,122 @@
+Gaius
+Copyright (c) 2026 TypeTheory
+Licensed under the MIT License (see LICENSE).
+
+This distribution includes the following third-party software. The corresponding
+license texts are included in LICENSES/.
+
+TeaVM — Apache-2.0
+Copyright Alexey Andreev and TeaVM contributors.
+The browser class-library overrides under port/overrides/classlib are derived
+from TeaVM 0.15 sources and retain file-level Apache-2.0 notices.
+
+Apache Harmony — Apache-2.0
+Copyright The Apache Software Foundation.
+The Harmony-derived collection portions retain their source notices.
+
+Gson — Apache-2.0
+Copyright Google Inc.
+The browser overrides of UnsafeAllocator and SqlTypesSupport are derived from
+Gson and retain the attribution in their source headers.
+
+SLF4J — MIT
+Copyright QOS.ch Sarl (Switzerland).
+The browser helper override is derived from SLF4J.
+
+jopt-simple — MIT
+Copyright Paul Holser.
+The browser Columns helper is derived from jopt-simple.
+
+LWJGL — BSD-3-Clause
+Copyright the LWJGL contributors.
+The browser replacement classes and the BrowserMemoryBackend UTF-8 encoder
+retain LWJGL attribution in their source headers.
+
+mojang-logging — MIT
+Copyright Mojang Studios.
+The browser LogUtils replacement retains its source attribution.
+
+shaderc — Apache-2.0
+The browser shader toolchain includes a WebAssembly build of shaderc.
+
+glslang — BSD-3-Clause
+The shaderc build includes glslang sources.
+
+SPIRV-Tools — Apache-2.0
+The shaderc build includes SPIRV-Tools sources.
+
+SPIRV-Headers — MIT
+Copyright The Khronos Group Inc.
+The shader toolchain includes the Khronos SPIR-V header definitions.
+
+SPIRV-Cross — Apache-2.0
+The browser shader toolchain includes a WebAssembly build of SPIRV-Cross.
+
+JZlib — BSD-3-Clause
+Copyright JCraft, Inc. (Atsuhiko Yamanaka and contributors).
+The Java overlay uses JZlib 1.1.3.
+
+ICU4J — Unicode-3.0
+Copyright Unicode, Inc.
+The client profiles use ICU4J data and classes under the Unicode license.
+
+Rust WebAssembly runtime dependencies
+The following registry crates occur in the normal wasm32 dependency graphs of
+the gaius-light-wasm, gaius-mesher-wasm, gaius-noise-wasm, gaius-png-wasm,
+gaius-worldgen-wasm, and gaius-shaderxlat-wasm packages. Versions and license
+expressions are recorded from port/native/Cargo.lock and the cached crate
+manifests used by the build.
+
+adler2 2.0.1 — 0BSD OR MIT OR Apache-2.0
+arrayvec 0.7.8 — MIT OR Apache-2.0
+bit-set 0.10.0 — Apache-2.0 OR MIT
+bit-vec 0.9.1 — Apache-2.0 OR MIT
+bitflags 2.13.2 — MIT OR Apache-2.0
+block-buffer 0.10.4 — MIT OR Apache-2.0
+cfg-if 1.0.5 — MIT OR Apache-2.0
+codespan-reporting 0.13.1 — Apache-2.0
+crc32fast 1.5.0 — MIT OR Apache-2.0
+crypto-common 0.1.7 — MIT OR Apache-2.0
+digest 0.10.7 — MIT OR Apache-2.0
+equivalent 1.0.2 — Apache-2.0 OR MIT
+fdeflate 0.3.7 — MIT OR Apache-2.0
+fixedbitset 0.5.7 — MIT OR Apache-2.0
+flate2 1.1.9 — MIT OR Apache-2.0
+foldhash 0.1.5 — Zlib
+foldhash 0.2.0 — Zlib
+generic-array 0.14.7 — MIT
+half 2.7.1 — MIT OR Apache-2.0
+hashbrown 0.15.5 — MIT OR Apache-2.0
+hashbrown 0.17.1 — MIT OR Apache-2.0
+indexmap 2.14.2 — Apache-2.0 OR MIT
+libm 0.2.16 — MIT
+log 0.4.34 — MIT OR Apache-2.0
+md-5 0.10.6 — MIT OR Apache-2.0
+miniz_oxide 0.8.9 — MIT OR Zlib OR Apache-2.0
+naga 30.0.1 — MIT OR Apache-2.0
+naga-types 30.0.1 — MIT OR Apache-2.0
+num-traits 0.2.19 — MIT OR Apache-2.0
+once_cell 1.21.4 — MIT OR Apache-2.0
+petgraph 0.8.3 — MIT OR Apache-2.0
+png 0.18.1 — MIT OR Apache-2.0
+rustc-hash 1.1.0 — Apache-2.0 OR MIT
+simd-adler32 0.3.10 — MIT
+spirv 0.4.0+sdk-1.4.341.0 — Apache-2.0
+thiserror 2.0.21 — MIT OR Apache-2.0
+typenum 1.20.1 — MIT OR Apache-2.0
+unicode-width 0.2.2 — MIT OR Apache-2.0
+zerocopy 0.8.59 — BSD-2-Clause OR Apache-2.0 OR MIT
+
+Cargo.lock also contains build-time and procedural-macro packages used to
+compile these crates. They are not linked into the browser wasm modules; their
+license metadata remains in the lockfile and cached package manifests.
+
+License text index
+- LICENSES/Apache-2.0.txt — Apache License 2.0
+- LICENSES/BSD-2-Clause.txt — BSD 2-Clause
+- LICENSES/BSD-3-Clause.txt — BSD 3-Clause
+- LICENSES/MIT.txt — MIT
+- LICENSES/0BSD.txt — Zero-Clause BSD
+- LICENSES/Zlib.txt — zlib License
+- LICENSES/Unicode-3.0.txt — Unicode License Version 3
+- LICENSES/Rust-wasm-notices.txt — upstream license notices for the 39 runtime crates

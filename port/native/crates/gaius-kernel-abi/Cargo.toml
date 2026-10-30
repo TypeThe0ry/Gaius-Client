@@ -1,0 +1,9 @@
+[package]
+name = "gaius-kernel-abi"
+description = "Job and result framing shared by the Gaius wasm kernels and their JS workers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

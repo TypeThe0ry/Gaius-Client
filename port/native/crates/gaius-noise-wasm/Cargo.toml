@@ -1,0 +1,17 @@
+[package]
+name = "gaius-noise-wasm"
+description = "wasm32 batch entry points for gaius-noise."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gaius-kernel-abi.workspace = true
+gaius-noise.workspace = true
+
+[dev-dependencies]
+serde_json = "1"
