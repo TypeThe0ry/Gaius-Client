@@ -125,6 +125,15 @@ class PublicTreeCheckTest(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("b.js", found[0])
 
+    def test_version_numbers_and_reserved_ranges_are_not_addresses(self):
+        version = ".".join(["141", "0", "0", "0"])
+        jdk = ".".join(["25", "0", "4", "101"])
+        reserved = ".".join(["198", "18", "0", "0"])
+        (self.root / "ua.js").write_text("ua = 'Chrome/%s'; jdk = 'jdk-%s'; net = '%s';\n" % (version, jdk, reserved))
+        self.assertEqual(self.findings(), [])
+        (self.root / "bare.js").write_text("host = '%s';\n" % version)
+        self.assertTrue(any("bare.js" in f for f in self.findings()))
+
     def test_source_patch_may_hold_only_added_lines(self):
         header = "gaius-source-patch 1\nbase " + "a" * 64 + "\nresult " + "b" * 64 + "\n"
         patch = self.root / "patcher" / "patches" / "26.3" / "x.gpatch"

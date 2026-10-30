@@ -229,19 +229,41 @@ def check_tree(root: Path, args: argparse.Namespace) -> list[str]:
         for match in IPV4.finditer(text):
             address = match.group(0)
             if all(int(part) <= 255 for part in match.groups()) and address not in ALLOWED_IPV4:
+                line_start = text.rfind("\n", 0, match.start()) + 1
+                if is_version_number(address, text[line_start:match.start()]):
+                    continue
                 if not is_documentation_or_private(address) and (rel, address) not in ipv4_allow:
                     findings.append(f"{rel}: IPv4 literal {address}")
     return findings
 
 
+# The same exceptions as tools/check-public-network-secrets.mjs: a four-part
+# number right after a JDK name is a Java version (jdk-25.0.4.101), and one
+# right after a browser token is a browser version (Chrome/141.0.0.0).
+JAVA_VERSION_PREFIX = re.compile(r"(?:jdk|jre|java|temurin|corretto|zulu|graalvm)[\s_.=:@v-]*$", re.I)
+BROWSER_VERSION_PREFIX = re.compile(r"(?:chrome|chromium|headlesschrome|crios|edg|edga|edgios|opr)/$", re.I)
+
+
 def is_documentation_or_private(address: str) -> bool:
+    """Reserved, private and documentation ranges, as the repository's own check counts them."""
     a, b, *_ = (int(part) for part in address.split("."))
     return (
-        a == 10
-        or (a == 192 and b == 168)
+        a in (0, 10, 127)
+        or a >= 224
+        or (a == 100 and 64 <= b <= 127)
+        or (a == 169 and b == 254)
         or (a == 172 and 16 <= b <= 31)
-        or address.startswith(("192.0.2.", "198.51.100.", "203.0.113."))
+        or (a == 192 and b in (0, 168))
+        or (a == 198 and b in (18, 19, 51))
+        or (a == 203 and b == 0)
     )
+
+
+def is_version_number(address: str, prefix: str) -> bool:
+    feature, interim, *_ = (int(part) for part in address.split("."))
+    if 9 <= feature <= 40 and interim <= 9 and JAVA_VERSION_PREFIX.search(prefix):
+        return True
+    return bool(BROWSER_VERSION_PREFIX.search(prefix))
 
 
 def main(argv: list[str]) -> int:
