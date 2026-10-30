@@ -2,6 +2,20 @@ name: Feature request
 description: Suggest an idea or improvement
 labels: ["enhancement", "triage"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Read the [issue rules](https://github.com/TypeThe0ry/Gaius-Client/blob/main/CONTRIBUTING.md) first. Requests for downloads or builds are closed.
+        请先阅读 [issue 规范](https://github.com/TypeThe0ry/Gaius-Client/blob/main/CONTRIBUTING.md)。索要下载或构建的 issue 会被关闭。
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Before you post / 发帖前确认
+      options:
+        - label: This is not a request for a download, a build or a hosted copy. / 这不是索要下载、构建或托管副本的请求。
+          required: true
+        - label: This request contains no game files, builds, decompiled game code, or links to them. / 本请求不含游戏文件、构建、反编译的游戏代码或它们的链接。
+          required: true
   - type: textarea
     id: idea
     attributes:

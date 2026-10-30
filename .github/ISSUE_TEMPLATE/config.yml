@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Looking for a download? / 想要下载？
+    url: https://github.com/TypeThe0ry/Gaius-Client/blob/main/DISCLAIMER.md
+    about: Gaius provides no downloads or builds, and issues asking for them are closed. / Gaius 不提供下载或构建，索要的 issue 会被关闭。
+  - name: Rights holders / 权利人联系
+    url: https://github.com/TypeThe0ry/Gaius-Client/blob/main/DISCLAIMER.md#rights-holders
+    about: Report content that infringes your rights. / 报告侵犯你权利的内容。
   - name: Discord
     url: https://dsc.gg/gaius
     about: Questions and general discussion
