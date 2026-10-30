@@ -1,0 +1,36 @@
+{
+  "description": "Asset objects the browser build packs. Mirrors the selection in port/scripts/fetch-version.sh; keep the two in step until that script reads this file.",
+  "exact": [
+    "minecraft/sounds.json",
+    "minecraft/font/include/unifont.json",
+    "minecraft/font/include/unifont_pua.json",
+    "minecraft/font/unifont.zip",
+    "minecraft/font/unifont_jp.zip",
+    "minecraft/font/unifont_pua.zip",
+    "minecraft/sounds/ui/toast/in.ogg",
+    "minecraft/sounds/ui/toast/out.ogg",
+    "minecraft/sounds/ui/toast/challenge_complete.ogg",
+    "minecraft/sounds/ui/stonecutter/cut1.ogg",
+    "minecraft/sounds/ui/stonecutter/cut2.ogg"
+  ],
+  "prefixes": [
+    {"prefix": "minecraft/textures/gui/title/background/"},
+    {"prefix": "minecraft/sounds/block/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/random/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/dig/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/step/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/mob/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/entity/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/item/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/damage/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/liquid/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/fire/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/portal/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/minecart/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/enchant/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/fireworks/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/event/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/note/", "suffix": ".ogg"},
+    {"prefix": "minecraft/sounds/tile/", "suffix": ".ogg"}
+  ]
+}
