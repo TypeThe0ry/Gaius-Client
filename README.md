@@ -31,12 +31,13 @@ downloads the game, and the build it writes is for your own use only.
 java patcher/GaiusPatcher.java doctor      # check Java, memory, disk and your installation
 java patcher/GaiusPatcher.java terms       # read the terms of use
 java patcher/GaiusPatcher.java fetch 26.3  # collect and verify the files for one version
+java patcher/GaiusPatcher.java prepare 26.3  # apply Gaius's source patches to your own classes
 ```
 
 Install and start each version once in the official launcher first. Before
 it reads any game file, the patcher asks you to accept its
-[terms of use](patcher/TERMS.md). Today it implements `doctor` and `fetch`;
-`build` is being wired up. Full instructions: [patcher/README.md](patcher/README.md).
+[terms of use](patcher/TERMS.md). Today it implements `doctor`, `fetch` and
+`prepare`; `build` is being wired up. Full instructions: [patcher/README.md](patcher/README.md).
 
 **Do not share, upload or host your build.** If friends want to play, each of
 them runs the patcher with their own copy of the game.

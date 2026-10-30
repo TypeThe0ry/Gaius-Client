@@ -21,12 +21,23 @@ computer, from your own copy of the game. It is compatible with Java Edition
    keep; they come straight from the Mojang address in your own version
    metadata, or from a file you pass with `--mappings`. Nothing goes through a
    Gaius server.
-2. **Applies the Gaius patches** to that jar on your machine.
-3. **Compiles** the patched game for the browser with TeaVM.
-4. **Writes your build**: a site folder and a single HTML file.
+2. **Prepares the few sources that change official classes.** Gaius changes
+   about ten official classes (`patcher/source-patches.json`). Their Gaius
+   versions are published only as source patches, which hold the lines Gaius
+   wrote and the line ranges they replace, never a line of official code.
+   `prepare` decompiles each class from your own fetched files with
+   [Vineflower](https://github.com/Vineflower/vineflower) (Apache-2.0,
+   downloaded once from Maven Central and checked against the SHA-256 pinned
+   in `source-patches.json`, or passed with `--decompiler`), checks the
+   decompiled text against the SHA-256 the patch records, applies the patch
+   and checks the result the same way. The decompiled classes stay in your
+   work directory.
+3. **Applies the Gaius bytecode patches** to the jar on your machine.
+4. **Compiles** the patched game for the browser with TeaVM.
+5. **Writes your build**: a site folder and a single HTML file.
 
-Steps 2 to 4 are being wired up; today the patcher implements `doctor` and
-`fetch`.
+Steps 3 to 5 are being wired up; today the patcher implements `doctor`,
+`fetch` and `prepare`.
 
 ## Versions
 
@@ -68,7 +79,11 @@ its files are on disk.
 java patcher/GaiusPatcher.java doctor
 java patcher/GaiusPatcher.java terms
 java patcher/GaiusPatcher.java fetch 26.3
+java patcher/GaiusPatcher.java prepare 26.3
 ```
+
+For 1.21.11, which ships obfuscated, remap the client
+(`port/scripts/remap-client.sh`) before `prepare`.
 
 | Option | Meaning |
 | --- | --- |
@@ -77,6 +92,8 @@ java patcher/GaiusPatcher.java fetch 26.3
 | `--offline` | Never use the network |
 | `--accept-terms` | Accept the [terms of use](TERMS.md) without the prompt |
 | `--work <dir>` | Where to write the collected files |
+| `--decompiler <jar>` | `prepare`: your copy of the pinned decompiler, instead of downloading it |
+| `--into <dir>` | `prepare`: write the patched sources under this directory instead of the source tree |
 
 ## What may be public
 
@@ -101,6 +118,26 @@ python3 patcher/tools/public_tree_check.py /tmp/gaius-public \
   --vanilla-jar port/work/26.3/client-original.jar \
   --asset-index port/work/26.3/assets/indexes/34.json
 ```
+
+## Source patches (maintainers)
+
+`patcher/patches/<version>/<id>.gpatch` are generated, never edited by hand.
+On a machine with the official game files, after `fetch` (and the remap for
+1.21.11):
+
+```sh
+python3 patcher/tools/make_source_patches.py --pin-decompiler vineflower-<version>.jar  # once per decompiler update
+python3 patcher/tools/make_source_patches.py 26.2 26.3 1.21.11
+python3 patcher/tools/make_source_patches.py 26.2 26.3 1.21.11 --check
+```
+
+The tool decompiles through the patcher itself (`GaiusPatcher decompile`), so
+the bases are the ones users get. It refuses a patch that would carry a line
+of official code: an added line that also appears in the decompiled class of
+any version it processed. Keep such a line where it is in the decompiled
+class, or, if it is not official code (a declaration Gaius must repeat),
+add the SHA-256 of its stripped text to the entry's `reviewedLines`. The
+public tree check refuses any `.gpatch` that holds removed or context lines.
 
 ## Publishing
 

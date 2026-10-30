@@ -10,3 +10,16 @@ fetch-manifest.json
 
 __pycache__/
 *.pyc
+
+# Written by `prepare` from your own game files; never commit them.
+/port/mc/shared/canonical/client/java/com/mojang/blaze3d/opengl/VertexArrayCache.java
+/port/mc/shared/canonical/client/java/net/minecraft/client/resources/model/sprite/TextureSlots.java
+/port/mc/shared/canonical/client/java/net/minecraft/client/sounds/SoundEngineExecutor.java
+/port/mc/shared/canonical/client/java/net/minecraft/server/packs/VanillaPackResources.java
+/port/mc/shared/legacy-12111/client/java/com/mojang/blaze3d/opengl/VertexArrayCache.java
+/port/mc/shared/legacy-12111/client/java/net/minecraft/client/renderer/block/model/TextureSlots.java
+/port/mc/shared/legacy-12111/client/java/net/minecraft/client/sounds/SoundEngineExecutor.java
+/port/mc/shared/legacy-12111/client/java/net/minecraft/server/packs/VanillaPackResources.java
+/port/mc/shared/renderpearl-1/client/java/net/minecraft/server/packs/FixedPathPackResources.java
+/port/overrides/client/src/main/java/net/minecraft/SystemReport.java
+/port/overrides/libraries/mojang-logging/src/main/java/com/mojang/logging/LogUtils.java

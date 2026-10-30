@@ -11,11 +11,13 @@
  * Nothing this program writes leaves the user's machine, and it never
  * contacts a Gaius server. Official game files come only from the user's own
  * launcher installation: the user must have installed and started each
- * version in the official launcher. The one download is the 1.21.11
+ * version in the official launcher. The one game download is the 1.21.11
  * obfuscation mappings, which the launcher does not keep; they come straight
  * from the Mojang URL in the user's own version metadata. Every file is
  * checked against the SHA-1 that the version profile (port/versions/<id>.json)
- * pins.
+ * pins. The only other download is the open-source decompiler that `prepare`
+ * runs, from Maven Central, checked against the SHA-256 pinned in
+ * patcher/source-patches.json.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -40,6 +42,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -70,6 +73,8 @@ public final class GaiusPatcher {
             int status = switch (parsed.command) {
                 case "doctor" -> Doctor.run(parsed);
                 case "fetch" -> Fetch.run(parsed);
+                case "prepare" -> Prepare.run(parsed);
+                case "decompile" -> Decompile.run(parsed);
                 case "terms" -> Terms.show(parsed);
                 case "selftest" -> SelfTest.run();
                 case "version", "--version" -> {
@@ -111,6 +116,8 @@ public final class GaiusPatcher {
                 Commands:
                   doctor                 Check Java, memory, disk space and your game installation
                   fetch <version>        Collect and verify the official files for one version
+                  prepare <version>      Decompile the few official classes Gaius changes from the
+                                         fetched files and apply Gaius's source patches to them
                   terms                  Show the terms of use and whether you accepted them
                   selftest               Run the built-in offline checks
                   version                Print the patcher version
@@ -121,6 +128,8 @@ public final class GaiusPatcher {
                   --work <dir>           Where fetched files are written (default: per version)
                   --mappings <file>      Use this client_mappings file for 1.21.11 instead of
                                          downloading it from Mojang
+                  --decompiler <jar>     Use this copy of the pinned decompiler instead of
+                                         downloading it from Maven Central
                   --offline              Never use the network
                   --accept-terms         Accept the terms of use (patcher/TERMS.md) without
                                          the interactive prompt
@@ -221,10 +230,7 @@ public final class GaiusPatcher {
             VersionProfile profile = VersionProfile.load(profiles, args.positional.get(0));
             Terms.require(args, profiles);
             Path minecraftDir = Locations.minecraftDir(args);
-            Path work = Locations.workRoot(args, profiles).resolve(profile.id);
-            if (args.options.containsKey("work")) {
-                work = Paths.get(args.options.get("work")).toAbsolutePath().normalize();
-            }
+            Path work = Locations.workDir(args, profiles, profile);
             Sources sources = new Sources(minecraftDir, profile.id, args.flags.contains("offline"));
             createDirectories(work);
 
@@ -741,6 +747,24 @@ public final class GaiusPatcher {
             return parent == null ? Paths.get("") : parent;
         }
 
+        /** The fetched files of one version: --work, else <work root>/<id>. */
+        static Path workDir(Args args, Path profiles, VersionProfile profile) {
+            String explicit = args.options.get("work");
+            if (explicit != null) {
+                return Paths.get(explicit).toAbsolutePath().normalize();
+            }
+            return workRoot(args, profiles).resolve(profile.id);
+        }
+
+        /** The source tree the patch targets are written into: the parent of patcher/. */
+        static Path sourceRoot(Path profiles) {
+            Path parent = patcherDir(profiles).toAbsolutePath().getParent();
+            if (parent == null) {
+                throw new PatcherException("cannot tell where the source tree is; pass --into <dir>");
+            }
+            return parent;
+        }
+
         static Path workRoot(Args args, Path profiles) {
             String explicit = args.options.get("work-root");
             if (explicit != null) {
@@ -827,6 +851,456 @@ public final class GaiusPatcher {
         }
     }
 
+    // -------------------------------------------------------- source patches
+
+    /**
+     * A few Gaius sources change official classes. They are published only as
+     * edit scripts (patcher/patches/<version>/<id>.gpatch) that hold the lines
+     * Gaius wrote and the line ranges they replace, never official code.
+     * `prepare` decompiles each class from the user's own fetched game files
+     * with a decompiler pinned by SHA-256, checks the decompiled text against
+     * the SHA-256 the script records, applies the script and checks the result
+     * the same way, so every user gets the file Gaius builds with.
+     */
+    static final class Prepare {
+        static int run(Args args) {
+            Setup setup = Setup.of(args, "prepare");
+            List<SourcePatches.Entry> entries = setup.patches.forVersion(setup.profile.id);
+            if (entries.isEmpty()) {
+                System.out.println("No source patches for " + setup.profile.id + ".");
+                return 0;
+            }
+            Path into = args.options.containsKey("into")
+                    ? Paths.get(args.options.get("into")).toAbsolutePath().normalize()
+                    : Locations.sourceRoot(setup.profiles);
+            Map<SourcePatches.Entry, String> bases = setup.decompile(entries);
+            int written = 0;
+            int unchanged = 0;
+            for (SourcePatches.Entry entry : entries) {
+                Path scriptFile = setup.patches.scriptFile(setup.profile.id, entry);
+                if (!Files.isRegularFile(scriptFile)) {
+                    throw new PatcherException("missing source patch " + scriptFile + "; reinstall the patcher");
+                }
+                EditScript script = EditScript.parse(readString(scriptFile), scriptFile.toString());
+                byte[] result = script.apply(bases.get(entry), entry.id() + " for " + setup.profile.id)
+                        .getBytes(StandardCharsets.UTF_8);
+                Path target = into.resolve(Safe.relative(entry.target()));
+                if (Files.isRegularFile(target)) {
+                    if (Hashes.sha256(target).equals(Hashes.sha256(result))) {
+                        unchanged++;
+                        continue;
+                    }
+                    throw new PatcherException(target + " exists and differs from the patched " + entry.id()
+                            + ". Delete it (or restore it from the repository) and run prepare again.");
+                }
+                createDirectories(target.getParent());
+                try {
+                    Files.write(target, result);
+                } catch (IOException error) {
+                    throw new UncheckedIOException(error);
+                }
+                written++;
+            }
+            System.out.println("Prepared " + entries.size() + " patched sources for " + setup.profile.id + " ("
+                    + written + " written, " + unchanged + " already up to date) in " + into);
+            return 0;
+        }
+    }
+
+    /** Maintainer helper: writes the decompiled bases of one version for make_source_patches.py. */
+    static final class Decompile {
+        static int run(Args args) {
+            Setup setup = Setup.of(args, "decompile");
+            String out = args.options.get("out");
+            if (out == null) {
+                throw new PatcherException("usage: decompile <version> --out <dir>");
+            }
+            Path dir = Paths.get(out).toAbsolutePath().normalize();
+            Map<SourcePatches.Entry, String> bases = setup.decompile(setup.patches.forVersion(setup.profile.id));
+            for (Map.Entry<SourcePatches.Entry, String> base : bases.entrySet()) {
+                writeString(dir.resolve(base.getKey().id() + ".java"), base.getValue());
+            }
+            System.out.println("Decompiled " + bases.size() + " classes of " + setup.profile.id + " into " + dir);
+            return 0;
+        }
+    }
+
+    /** What prepare and decompile share: the profile, the fetched files and the decompiler. */
+    record Setup(Args args, Path profiles, VersionProfile profile, Path work, SourcePatches patches) {
+        static Setup of(Args args, String command) {
+            if (args.positional.isEmpty()) {
+                throw new PatcherException("usage: " + command + " <version>");
+            }
+            Path profiles = Locations.profilesDir(args);
+            VersionProfile profile = VersionProfile.load(profiles, args.positional.get(0));
+            Terms.require(args, profiles);
+            Path work = Locations.workDir(args, profiles, profile);
+            if (!Files.isRegularFile(work.resolve("client-original.jar"))) {
+                throw new PatcherException("no fetched files in " + work + "; run `fetch " + profile.id + "` first");
+            }
+            return new Setup(args, profiles, profile, work, SourcePatches.load(args, profiles));
+        }
+
+        Map<SourcePatches.Entry, String> decompile(List<SourcePatches.Entry> entries) {
+            Path decompiler = patches.decompilerJar(args, Locations.workRoot(args, profiles));
+            Path clientJar = clientJar();
+            List<Path> libraries = libraryJars();
+            Map<SourcePatches.Entry, String> bases = new LinkedHashMap<>();
+            for (SourcePatches.Entry entry : entries) {
+                Path jar = entry.jar().equals("client") ? clientJar : libraryJar(entry.jar());
+                List<Path> context = new ArrayList<>();
+                if (!jar.equals(clientJar)) {
+                    context.add(clientJar);
+                }
+                for (Path library : libraries) {
+                    if (!library.equals(jar)) {
+                        context.add(library);
+                    }
+                }
+                System.out.println("  decompiling " + entry.className().replace('/', '.'));
+                bases.put(entry, patches.decompile(decompiler, jar, entry.className(), context,
+                        work.resolve("decompiled").resolve(entry.id())));
+            }
+            return bases;
+        }
+
+        /** The named client: the official jar, or for an obfuscated release the remapped one. */
+        Path clientJar() {
+            if (!profile.needsMappings()) {
+                Path jar = work.resolve("client-original.jar");
+                requireEqual("SHA-1 of " + jar, profile.clientSha1, Hashes.sha1(jar));
+                return jar;
+            }
+            Path named = work.resolve("client-named.jar");
+            if (!Files.isRegularFile(named)) {
+                throw new PatcherException(profile.id + " ships obfuscated; remap it first so " + named
+                        + " exists (port/scripts/remap-client.sh)");
+            }
+            return named;
+        }
+
+        List<Path> libraryJars() {
+            Path root = work.resolve("libraries");
+            if (!Files.isDirectory(root)) {
+                return List.of();
+            }
+            try (var stream = Files.walk(root)) {
+                return stream.filter(path -> path.getFileName().toString().endsWith(".jar"))
+                        .sorted()
+                        .toList();
+            } catch (IOException error) {
+                throw new UncheckedIOException(error);
+            }
+        }
+
+        /** "library:com/mojang/logging" is the one jar under libraries/com/mojang/logging/. */
+        Path libraryJar(String spec) {
+            String prefix = spec.substring("library:".length());
+            Path dir = work.resolve("libraries").resolve(Safe.relative(prefix));
+            List<Path> jars = new ArrayList<>();
+            for (Path jar : libraryJars()) {
+                if (jar.startsWith(dir)) {
+                    jars.add(jar);
+                }
+            }
+            if (jars.size() != 1) {
+                throw new PatcherException("expected one library jar under " + dir + ", found " + jars.size()
+                        + "; run `fetch " + profile.id + "` again");
+            }
+            return jars.get(0);
+        }
+    }
+
+    /** patcher/source-patches.json: the pinned decompiler and the patched classes. */
+    static final class SourcePatches {
+        record Entry(String id, String target, String className, String jar, List<String> versions) {}
+
+        final Path config;
+        final String decompilerUrl;
+        final String decompilerSha256;
+        final List<String> decompilerOptions = new ArrayList<>();
+        final List<Entry> entries = new ArrayList<>();
+
+        SourcePatches(Path config, Map<String, Object> json) {
+            this.config = config;
+            Map<String, Object> decompiler = Json.object(json, "decompiler");
+            decompilerUrl = Json.string(decompiler, "url");
+            decompilerSha256 = decompiler.get("sha256") instanceof String s ? s : null;
+            for (Object option : Json.array(decompiler, "options")) {
+                decompilerOptions.add(String.valueOf(option));
+            }
+            Set<String> ids = new LinkedHashSet<>();
+            for (Object value : Json.array(json, "patches")) {
+                Map<String, Object> patch = Json.asObject(value, "patch");
+                List<String> versions = new ArrayList<>();
+                for (Object version : Json.array(patch, "versions")) {
+                    versions.add(String.valueOf(version));
+                }
+                Entry entry = new Entry(Json.string(patch, "id"), Json.string(patch, "target"),
+                        Json.string(patch, "class"), Json.string(patch, "jar"), List.copyOf(versions));
+                if (!entry.id().matches("[A-Za-z0-9._-]+") || !ids.add(entry.id())) {
+                    throw new PatcherException(config + ": bad or repeated patch id " + entry.id());
+                }
+                if (!entry.className().matches("[A-Za-z0-9_/$]+")) {
+                    throw new PatcherException(config + ": bad class name " + entry.className());
+                }
+                if (!entry.jar().equals("client") && !entry.jar().startsWith("library:")) {
+                    throw new PatcherException(config + ": bad jar " + entry.jar());
+                }
+                Safe.relative(entry.target());
+                entries.add(entry);
+            }
+        }
+
+        static SourcePatches load(Args args, Path profiles) {
+            Path config = args.options.containsKey("source-patches")
+                    ? Paths.get(args.options.get("source-patches")).toAbsolutePath().normalize()
+                    : Locations.patcherDir(profiles).resolve("source-patches.json");
+            if (!Files.isRegularFile(config)) {
+                throw new PatcherException("the source patch list is missing (" + config + "); reinstall the patcher");
+            }
+            return new SourcePatches(config, Json.asObject(Json.parse(readString(config)), config.toString()));
+        }
+
+        List<Entry> forVersion(String version) {
+            List<Entry> matching = new ArrayList<>();
+            for (Entry entry : entries) {
+                if (entry.versions().contains(version)) {
+                    matching.add(entry);
+                }
+            }
+            return matching;
+        }
+
+        Path scriptFile(String version, Entry entry) {
+            return config.resolveSibling("patches").resolve(version).resolve(entry.id() + ".gpatch");
+        }
+
+        /** --decompiler, else a verified copy in the work root, else Maven Central; always checked by SHA-256. */
+        Path decompilerJar(Args args, Path workRoot) {
+            if (decompilerSha256 == null || !decompilerSha256.matches("[0-9a-f]{64}")) {
+                throw new PatcherException("the decompiler is not pinned yet in " + config
+                        + " (decompiler.sha256); this patcher cannot prepare sources");
+            }
+            String explicit = args.options.get("decompiler");
+            if (explicit != null) {
+                Path jar = Paths.get(explicit).toAbsolutePath().normalize();
+                requireEqual("SHA-256 of " + jar, decompilerSha256, Hashes.sha256(jar));
+                return jar;
+            }
+            String name = decompilerUrl.substring(decompilerUrl.lastIndexOf('/') + 1);
+            Path cached = workRoot.resolve("tools").resolve(Safe.relative(name));
+            if (Files.isRegularFile(cached) && decompilerSha256.equals(Hashes.sha256(cached))) {
+                return cached;
+            }
+            if (args.flags.contains("offline")) {
+                throw new PatcherException("the decompiler is not in " + cached.getParent()
+                        + " and --offline is set; pass --decompiler <jar>");
+            }
+            System.out.println("  downloading the decompiler from " + URI.create(decompilerUrl).getHost());
+            createDirectories(cached.getParent());
+            Path partial = cached.resolveSibling(name + ".part");
+            try {
+                HttpClient client = HttpClient.newBuilder()
+                        .followRedirects(HttpClient.Redirect.NORMAL)
+                        .proxy(ProxySelector.getDefault())
+                        .connectTimeout(Duration.ofSeconds(20))
+                        .build();
+                HttpResponse<Path> response = client.send(HttpRequest.newBuilder(URI.create(decompilerUrl))
+                        .timeout(Duration.ofMinutes(5)).GET().build(), HttpResponse.BodyHandlers.ofFile(partial));
+                if (response.statusCode() != 200) {
+                    throw new PatcherException("could not download the decompiler: HTTP " + response.statusCode());
+                }
+                String actual = Hashes.sha256(partial);
+                if (!decompilerSha256.equals(actual)) {
+                    Files.deleteIfExists(partial);
+                    throw new PatcherException("SHA-256 mismatch for the decompiler from " + decompilerUrl
+                            + ": expected " + decompilerSha256 + ", got " + actual);
+                }
+                Files.move(partial, cached, StandardCopyOption.REPLACE_EXISTING);
+                return cached;
+            } catch (IOException error) {
+                throw new PatcherException("could not download the decompiler: " + error);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new PatcherException("interrupted");
+            }
+        }
+
+        /**
+         * Decompiles one class (with its nested classes) of {@code jar}. The
+         * class files are copied into scratch/in, the other jars are passed as
+         * libraries, and the decompiler writes scratch/out.
+         */
+        String decompile(Path decompiler, Path jar, String className, List<Path> context, Path scratch) {
+            deleteTree(scratch);
+            Path in = scratch.resolve("in");
+            Path out = scratch.resolve("out");
+            createDirectories(out);
+            int copied = 0;
+            try (ZipFile zip = new ZipFile(jar.toFile())) {
+                for (ZipEntry entry : Collections.list(zip.entries())) {
+                    String name = entry.getName();
+                    if (name.equals(className + ".class")
+                            || (name.startsWith(className + "$") && name.endsWith(".class"))) {
+                        Path file = in.resolve(Safe.relative(name));
+                        createDirectories(file.getParent());
+                        try (InputStream stream = zip.getInputStream(entry)) {
+                            Files.copy(stream, file);
+                        }
+                        if (name.equals(className + ".class")) {
+                            copied++;
+                        }
+                    }
+                }
+            } catch (IOException error) {
+                throw new UncheckedIOException(error);
+            }
+            if (copied != 1) {
+                throw new PatcherException(className + " is not in " + jar);
+            }
+            List<String> command = new ArrayList<>();
+            command.add(Paths.get(System.getProperty("java.home"), "bin", "java").toString());
+            command.add("-jar");
+            command.add(decompiler.toString());
+            command.addAll(decompilerOptions);
+            for (Path library : context) {
+                command.add("-e=" + library);
+            }
+            command.add(in.toString());
+            command.add(out.toString());
+            Path log = scratch.resolve("decompiler.log");
+            try {
+                Process process = new ProcessBuilder(command).redirectErrorStream(true)
+                        .redirectOutput(log.toFile()).start();
+                int status = process.waitFor();
+                if (status != 0) {
+                    throw new PatcherException("the decompiler failed on " + className + " (exit " + status
+                            + "); see " + log);
+                }
+            } catch (IOException error) {
+                throw new UncheckedIOException(error);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new PatcherException("interrupted");
+            }
+            Path source = out.resolve(Safe.relative(className + ".java"));
+            if (!Files.isRegularFile(source)) {
+                throw new PatcherException("the decompiler wrote no " + className + ".java; see " + log);
+            }
+            return readString(source);
+        }
+
+        static void deleteTree(Path dir) {
+            if (!Files.exists(dir)) {
+                return;
+            }
+            try (var stream = Files.walk(dir)) {
+                for (Path path : stream.sorted(Collections.reverseOrder()).toList()) {
+                    Files.delete(path);
+                }
+            } catch (IOException error) {
+                throw new UncheckedIOException(error);
+            }
+        }
+    }
+
+    /**
+     * A .gpatch file. It turns one decompiled class into one Gaius source
+     * without carrying any line of the original:
+     *
+     * <pre>
+     * gaius-source-patch 1
+     * base &lt;SHA-256 of the decompiled text&gt;
+     * result &lt;SHA-256 of the patched text&gt;
+     * @@ &lt;first base line, from 0&gt; &lt;base lines replaced&gt;
+     * +&lt;a line Gaius wrote&gt;
+     * </pre>
+     *
+     * Texts are split on '\n' only, so the result is byte-exact. Hunks are in
+     * base order and do not overlap.
+     */
+    static final class EditScript {
+        static final String MAGIC = "gaius-source-patch 1";
+
+        record Hunk(int start, int count, List<String> lines) {}
+
+        final String baseSha256;
+        final String resultSha256;
+        final List<Hunk> hunks;
+
+        EditScript(String baseSha256, String resultSha256, List<Hunk> hunks) {
+            this.baseSha256 = baseSha256;
+            this.resultSha256 = resultSha256;
+            this.hunks = hunks;
+        }
+
+        static EditScript parse(String text, String name) {
+            String[] lines = text.split("\n", -1);
+            if (lines.length < 4 || !lines[0].equals(MAGIC) || !lines[lines.length - 1].isEmpty()) {
+                throw new PatcherException(name + " is not a gaius source patch");
+            }
+            String base = header(lines[1], "base ", name);
+            String result = header(lines[2], "result ", name);
+            List<Hunk> hunks = new ArrayList<>();
+            Hunk current = null;
+            int end = 0;
+            for (int i = 3; i < lines.length - 1; i++) {
+                String line = lines[i];
+                if (line.startsWith("+") && current != null) {
+                    current.lines().add(line.substring(1));
+                } else if (line.matches("@@ \\d{1,7} \\d{1,7}")) {
+                    String[] parts = line.split(" ");
+                    current = new Hunk(Integer.parseInt(parts[1]), Integer.parseInt(parts[2]), new ArrayList<>());
+                    if (current.start() < end) {
+                        throw new PatcherException(name + ": hunks overlap or are out of order at line " + (i + 1));
+                    }
+                    end = current.start() + current.count();
+                    hunks.add(current);
+                } else {
+                    throw new PatcherException(name + ": unexpected line " + (i + 1)
+                            + " (a source patch holds only @@ headers and + lines)");
+                }
+            }
+            return new EditScript(base, result, hunks);
+        }
+
+        private static String header(String line, String prefix, String name) {
+            if (!line.startsWith(prefix) || !line.substring(prefix.length()).matches("[0-9a-f]{64}")) {
+                throw new PatcherException(name + ": expected '" + prefix + "<sha256>'");
+            }
+            return line.substring(prefix.length());
+        }
+
+        String apply(String base, String what) {
+            String actual = Hashes.sha256(base.getBytes(StandardCharsets.UTF_8));
+            if (!actual.equals(baseSha256)) {
+                throw new PatcherException("the decompiled " + what + " is not the text the patch was made for"
+                        + " (SHA-256 " + actual + ", expected " + baseSha256 + "). Use the pinned decompiler on"
+                        + " unmodified official files.");
+            }
+            String[] lines = base.split("\n", -1);
+            List<String> out = new ArrayList<>();
+            int next = 0;
+            for (Hunk hunk : hunks) {
+                if (hunk.start() + hunk.count() > lines.length) {
+                    throw new PatcherException("the patch for " + what + " reaches past the end of the base");
+                }
+                out.addAll(Arrays.asList(lines).subList(next, hunk.start()));
+                out.addAll(hunk.lines());
+                next = hunk.start() + hunk.count();
+            }
+            out.addAll(Arrays.asList(lines).subList(next, lines.length));
+            String result = String.join("\n", out);
+            String resultActual = Hashes.sha256(result.getBytes(StandardCharsets.UTF_8));
+            if (!resultActual.equals(resultSha256)) {
+                throw new PatcherException("patching " + what + " gave SHA-256 " + resultActual + ", expected "
+                        + resultSha256 + "; the patch is damaged");
+            }
+            return result;
+        }
+    }
+
     static final class Classpath {
         /**
          * Joins jars the way the bash build scripts read classpath.txt:
@@ -864,8 +1338,16 @@ public final class GaiusPatcher {
 
     static final class Hashes {
         static String sha1(Path file) {
+            return digest("SHA-1", file);
+        }
+
+        static String sha256(Path file) {
+            return digest("SHA-256", file);
+        }
+
+        static String digest(String algorithm, Path file) {
             try (InputStream in = Files.newInputStream(file)) {
-                MessageDigest digest = MessageDigest.getInstance("SHA-1");
+                MessageDigest digest = MessageDigest.getInstance(algorithm);
                 byte[] buffer = new byte[1 << 16];
                 for (int read; (read = in.read(buffer)) > 0; ) {
                     digest.update(buffer, 0, read);
@@ -1192,6 +1674,21 @@ public final class GaiusPatcher {
             check("sha256 of abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
                     .equals(Hashes.sha256("abc".getBytes(StandardCharsets.US_ASCII))));
 
+            String base = "a\nb\nc\n";
+            String patched = "z\na\nx\ny\nc\n";
+            String text = EditScript.MAGIC + "\nbase " + Hashes.sha256(base.getBytes(StandardCharsets.UTF_8))
+                    + "\nresult " + Hashes.sha256(patched.getBytes(StandardCharsets.UTF_8))
+                    + "\n@@ 0 0\n+z\n@@ 1 1\n+x\n+y\n";
+            EditScript script = EditScript.parse(text, "test");
+            check("source patch applies", patched.equals(script.apply(base, "test")));
+            check("source patch checks its base", throwsPatcher(() -> script.apply("a\nb\n", "test")));
+            check("source patch refuses removed lines",
+                    throwsPatcher(() -> EditScript.parse(text + "-b\n", "test")));
+            check("source patch refuses context lines",
+                    throwsPatcher(() -> EditScript.parse(text + " c\n", "test")));
+            check("source patch refuses overlapping hunks",
+                    throwsPatcher(() -> EditScript.parse(text + "@@ 1 0\n", "test")));
+
             check("bash path drive", "/d/gaius/a.jar".equals(Classpath.bashPath("D:\\gaius\\a.jar")));
             check("bash path posix", "/home/u/a.jar".equals(Classpath.bashPath("/home/u/a.jar")));
 
@@ -1258,7 +1755,8 @@ public final class GaiusPatcher {
         final Map<String, String> options = new LinkedHashMap<>();
         final Set<String> flags = new LinkedHashSet<>();
         static final Set<String> VALUE_OPTIONS =
-                Set.of("minecraft-dir", "profiles", "work", "work-root", "mappings");
+                Set.of("minecraft-dir", "profiles", "work", "work-root", "mappings", "decompiler",
+                        "source-patches", "into", "out");
 
         static Args parse(String[] argv) {
             Args args = new Args();

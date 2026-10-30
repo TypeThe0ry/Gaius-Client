@@ -125,6 +125,19 @@ class PublicTreeCheckTest(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("b.js", found[0])
 
+    def test_source_patch_may_hold_only_added_lines(self):
+        header = "gaius-source-patch 1\nbase " + "a" * 64 + "\nresult " + "b" * 64 + "\n"
+        patch = self.root / "patcher" / "patches" / "26.3" / "x.gpatch"
+        patch.parent.mkdir(parents=True)
+        patch.write_text(header + "@@ 3 1\n+our line\n")
+        self.assertEqual(self.findings(), [])
+        patch.write_text(header + "@@ 3 1\n-an official line\n+our line\n")
+        self.assertTrue(any("x.gpatch" in f and "line 5" in f for f in self.findings()))
+        patch.write_text(header + "@@ 3 1\n context\n")
+        self.assertTrue(any("x.gpatch" in f for f in self.findings()))
+        patch.write_text("--- a/Foo.java\n+++ b/Foo.java\n")
+        self.assertTrue(any("not a gaius source patch" in f for f in self.findings()))
+
     def test_public_ipv4_literal_is_refused(self):
         public = ".".join(["8", "8", "4", "4"])  # assembled so this file has no literal
         (self.root / "cfg.json").write_text('{"a": "127.0.0.1", "b": "10.0.0.2", "c": "%s"}\n' % public)

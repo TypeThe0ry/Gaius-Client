@@ -20,6 +20,9 @@ repository's CI). A tree fails when any file:
   * contains a public IPv4 literal that patcher/ipv4-allowlist.txt does not
     list for that file (network constants and version numbers that only look
     like addresses).
+  * is a source patch (.gpatch) that holds anything but its header, hunk
+    headers and added lines. Removed and context lines would be official
+    code, so a source patch may never carry them.
 
 Exit status 0 means every check passed; 1 lists every finding.
 """
@@ -148,6 +151,19 @@ def vanilla_hashes(jars: list[Path], indexes: list[Path], hash_files: list[Path]
     return hashes
 
 
+SOURCE_PATCH_HEADER = re.compile(r"gaius-source-patch 1\nbase [0-9a-f]{64}\nresult [0-9a-f]{64}\n")
+HUNK_HEADER = re.compile(r"@@ \d{1,7} \d{1,7}")
+
+
+def source_patch_problem(text: str) -> str | None:
+    if not SOURCE_PATCH_HEADER.match(text) or not text.endswith("\n"):
+        return "is not a gaius source patch"
+    for number, line in enumerate(text.split("\n")[3:-1], start=4):
+        if not line.startswith("+") and not HUNK_HEADER.fullmatch(line):
+            return f"line {number} is neither a hunk header nor an added line"
+    return None
+
+
 def in_vanilla_package(path: PurePosixPath) -> bool:
     parts = path.parts
     return any(parts[i:i + 2] == package for package in VANILLA_PACKAGES for i in range(len(parts) - 1))
@@ -201,6 +217,10 @@ def check_tree(root: Path, args: argparse.Namespace) -> list[str]:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             continue
+        if relative.suffix == ".gpatch":
+            problem = source_patch_problem(text)
+            if problem:
+                findings.append(f"{rel}: source patch {problem}")
         hit = terms.find(text, frozenset(term_allow.get(rel, ())))
         if hit:
             findings.append(f"{rel}: contains {hit}")
