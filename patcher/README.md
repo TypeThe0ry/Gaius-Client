@@ -86,6 +86,15 @@ python3 patcher/tools/public_tree_check.py /tmp/gaius-public \
   --asset-index port/work/26.3/assets/indexes/34.json
 ```
 
+## Publishing
+
+The public repository is
+[TypeThe0ry/Gaius-Client](https://github.com/TypeThe0ry/Gaius-Client). The
+`Public sync` workflow of the private repository exports the allowlisted files
+whenever they change on `main`, runs the tests and the public tree check on
+the exported tree, and only then pushes it to the public `main`. Make changes
+in the private repository; each sync replaces the public tree.
+
 ## Tests
 
 ```sh
