@@ -1,0 +1,285 @@
+{
+  "schemaVersion": 1,
+  "protocol": "stored-biomes-6x6",
+  "seeds": [
+    "12345",
+    "987654321"
+  ],
+  "chunkOrder": [
+    "3,-10",
+    "0,0",
+    "-10,-5"
+  ],
+  "entries": [
+    {
+      "profile": "1.21.11",
+      "seed": "12345",
+      "provenance": {
+        "profile": "1.21.11",
+        "semantics": {
+          "code": 0,
+          "floorMode": "cast-adjust",
+          "synth": "f64",
+          "densityGraph": "router-f64",
+          "irVersion": 1
+        },
+        "compatibility": "legacy-router",
+        "seed": "12345",
+        "rounds": 1,
+        "chunks": [
+          "3,-10",
+          "0,0",
+          "-10,-5"
+        ],
+        "jarSha256": "13f52c73daae5c2542d103ddb55835b718b437a35cccda6481e67f2abce04c55",
+        "sources": {
+          "exporter": "9f383dc093733261cb6b1686cde6946d1e74b7cf6c17e060017279573361a704",
+          "source": "85c34dcee21f6806fbd1050bb4f376dabe8d8d0acd6b8a1b92bc066d86519e0f"
+        }
+      },
+      "irSha256": "fff8bd3e50e676f76960f06a809cf1783d7e851bd55a697da739847dec01851e",
+      "chunks": [
+        {
+          "name": "chunk_-10_-5.ref",
+          "sha256": "d8a1f908473a4947ee2bb039f5cc58689a31217a35896fa0218797cfd57996a5",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_0_0.ref",
+          "sha256": "90297b43db232cbd1dccebe970a156016d0db9c022ea9e819ad49a19fdfbbf55",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_3_-10.ref",
+          "sha256": "04a2effc063afa3e1a055c10880d1bd9f578214ea20673a65de638f5c3ff594a",
+          "bytes": 1201672
+        }
+      ]
+    },
+    {
+      "profile": "26.2",
+      "seed": "12345",
+      "provenance": {
+        "profile": "26.2",
+        "semantics": {
+          "code": 1,
+          "floorMode": "math-floor",
+          "synth": "f64",
+          "densityGraph": "router-f64",
+          "irVersion": 1
+        },
+        "compatibility": "direct",
+        "seed": "12345",
+        "rounds": 1,
+        "chunks": [
+          "3,-10",
+          "0,0",
+          "-10,-5"
+        ],
+        "jarSha256": "a5a268e45d6a29d4669bee53d20848fa8aec4baceee130dec552e883267b26d2",
+        "sources": {
+          "exporter": "947632c3b332948c5201a19eef2281c6fabf5ae25dbcaccc653e40e72834bff2",
+          "source": "cf391d6898d723d73dbb743b9065f9a9196d110f5a279806e6b1ea8f943872cb"
+        }
+      },
+      "irSha256": "214e667f19f0e065aefa0778c834e5a81165ef096d714c058ca2d46bac19fe25",
+      "chunks": [
+        {
+          "name": "chunk_-10_-5.ref",
+          "sha256": "7dbac88b3da849f68c7197b7d1243973a7680c25ba50032c0cb22e242e06a248",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_0_0.ref",
+          "sha256": "a0a07e1667e2ca07ff2c5f1fe2649065ab7517f489d2d05e8b796e21845ac536",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_3_-10.ref",
+          "sha256": "1d539e76a7b63026cd2b97f83075f42d05e882113c146109d755ccc99b33c8cb",
+          "bytes": 1201672
+        }
+      ]
+    },
+    {
+      "profile": "26.3",
+      "seed": "12345",
+      "provenance": {
+        "profile": "26.3",
+        "semantics": {
+          "code": 2,
+          "floorMode": "math-floor",
+          "synth": "f32",
+          "densityGraph": "sampler-f32",
+          "irVersion": 1
+        },
+        "compatibility": "direct",
+        "seed": "12345",
+        "rounds": 1,
+        "chunks": [
+          "3,-10",
+          "0,0",
+          "-10,-5"
+        ],
+        "jarSha256": "cd91fa1c9c1671a9da18f06537416b20a80f804bbe886801c3e4444420479d13",
+        "sources": {
+          "exporter": "9b71060db62c72db56e2684c2d3f19a1dc565ff57374755aff8a8e078ae95fd7",
+          "source": "2305cafa60b2b7c8fdf824bc1282263aed1fb6d382489a6a4af76ce810815d2f"
+        }
+      },
+      "irSha256": "2652019d58b1d7cc22b8901b366a5119d965943301c2c7bd748d25938e5b5e99",
+      "chunks": [
+        {
+          "name": "chunk_-10_-5.ref",
+          "sha256": "43107a70c54d40ac8c44d9453bc3c429e6d97879bb969a637f52df28b33a3731",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_0_0.ref",
+          "sha256": "fd6fbe47e5e97e1947c58c64ed2fcbd3634dc4762ef3a7e9d45df0ac19cfe44e",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_3_-10.ref",
+          "sha256": "732e4364f8b4e70465e1ae0e92ddb6d0530c9c224034e600c3767ff59b5be93c",
+          "bytes": 1201672
+        }
+      ]
+    },
+    {
+      "profile": "1.21.11",
+      "seed": "987654321",
+      "provenance": {
+        "profile": "1.21.11",
+        "semantics": {
+          "code": 0,
+          "floorMode": "cast-adjust",
+          "synth": "f64",
+          "densityGraph": "router-f64",
+          "irVersion": 1
+        },
+        "compatibility": "legacy-router",
+        "seed": "987654321",
+        "rounds": 1,
+        "chunks": [
+          "3,-10",
+          "0,0",
+          "-10,-5"
+        ],
+        "jarSha256": "13f52c73daae5c2542d103ddb55835b718b437a35cccda6481e67f2abce04c55",
+        "sources": {
+          "exporter": "9f383dc093733261cb6b1686cde6946d1e74b7cf6c17e060017279573361a704",
+          "source": "85c34dcee21f6806fbd1050bb4f376dabe8d8d0acd6b8a1b92bc066d86519e0f"
+        }
+      },
+      "irSha256": "b9c0d861981f2a4abd040aa201adf93ae2a109a0ce5c9af540f991d5aabc4b8e",
+      "chunks": [
+        {
+          "name": "chunk_-10_-5.ref",
+          "sha256": "36df600f10fdd7a26e7de74cabab9873ef7d8fdda88748b534e0894818b5886c",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_0_0.ref",
+          "sha256": "c630bc22564ed8e083f04edb2b3e96b73f7eedc884c43083e2ec5a1f0aa7c258",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_3_-10.ref",
+          "sha256": "313e5c01409bbf8e5792bebb9e4ad51817b5062b8bffef60efacbe5d0f96119c",
+          "bytes": 1201672
+        }
+      ]
+    },
+    {
+      "profile": "26.2",
+      "seed": "987654321",
+      "provenance": {
+        "profile": "26.2",
+        "semantics": {
+          "code": 1,
+          "floorMode": "math-floor",
+          "synth": "f64",
+          "densityGraph": "router-f64",
+          "irVersion": 1
+        },
+        "compatibility": "direct",
+        "seed": "987654321",
+        "rounds": 1,
+        "chunks": [
+          "3,-10",
+          "0,0",
+          "-10,-5"
+        ],
+        "jarSha256": "a5a268e45d6a29d4669bee53d20848fa8aec4baceee130dec552e883267b26d2",
+        "sources": {
+          "exporter": "947632c3b332948c5201a19eef2281c6fabf5ae25dbcaccc653e40e72834bff2",
+          "source": "cf391d6898d723d73dbb743b9065f9a9196d110f5a279806e6b1ea8f943872cb"
+        }
+      },
+      "irSha256": "572a8fdbcdfee2fa881b8d8c9721421beec057b324391de367bdd90a619a6e36",
+      "chunks": [
+        {
+          "name": "chunk_-10_-5.ref",
+          "sha256": "b1078a6e19a1798a83b601b9c4c6322a766976c6d6b4b552bb1a415dd5f434ea",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_0_0.ref",
+          "sha256": "b30d9a59a11de60c734d4d8077cf3a767799c829d4ade79ec67d8421657668ef",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_3_-10.ref",
+          "sha256": "a918ba6a2a069ccba83ea00fa4386f2de9f62b3f783c02e56a15990105325e31",
+          "bytes": 1201672
+        }
+      ]
+    },
+    {
+      "profile": "26.3",
+      "seed": "987654321",
+      "provenance": {
+        "profile": "26.3",
+        "semantics": {
+          "code": 2,
+          "floorMode": "math-floor",
+          "synth": "f32",
+          "densityGraph": "sampler-f32",
+          "irVersion": 1
+        },
+        "compatibility": "direct",
+        "seed": "987654321",
+        "rounds": 1,
+        "chunks": [
+          "3,-10",
+          "0,0",
+          "-10,-5"
+        ],
+        "jarSha256": "cd91fa1c9c1671a9da18f06537416b20a80f804bbe886801c3e4444420479d13",
+        "sources": {
+          "exporter": "9b71060db62c72db56e2684c2d3f19a1dc565ff57374755aff8a8e078ae95fd7",
+          "source": "2305cafa60b2b7c8fdf824bc1282263aed1fb6d382489a6a4af76ce810815d2f"
+        }
+      },
+      "irSha256": "81c897343ab55348b8b6320c1936c1691b0d2cfaefd5c6e4f0c1f78a4eaed6f2",
+      "chunks": [
+        {
+          "name": "chunk_-10_-5.ref",
+          "sha256": "c09a5a0b439cdbd62e9c85bdf55fc733c04303122a9e0823c7dfd3cca55cf721",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_0_0.ref",
+          "sha256": "4f97d98a176d293d24cce67154b29274f51cd57e1923eea8ba2d195e005de84b",
+          "bytes": 1201672
+        },
+        {
+          "name": "chunk_3_-10.ref",
+          "sha256": "75d38097f40a0f83d7a207822e514ccab28d869d42a1519cdb1ae4fe9502e244",
+          "bytes": 1201672
+        }
+      ]
+    }
+  ]
+}

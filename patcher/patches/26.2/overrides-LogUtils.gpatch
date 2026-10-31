@@ -1,0 +1,108 @@
+gaius-source-patch 2
+base e4c5901c344a62ddf17f5e59c69940db56fc4a1e2fd967f4e95009c5b11ec55b
+result f1778ef05338f60c96ea979e00a5a85b47ca6c2672f0c99cf7a37c84e588fad7
+@@ 0 0
++/*
++ * Copyright (c) Mojang Studios
++ * SPDX-License-Identifier: MIT
++ *
++ * Derived from mojang-logging's LogUtils API.
++ * Modified for Gaius: use a fixed browser logger without stack walking.
++ */
+=1 1
+@@ 2 1
++import java.util.Collections;
++import java.util.Iterator;
+@@ 4 5
+@@ 12 2
+@@ 15 0
++/**
++ * Browser-safe LogUtils: no java.lang.StackWalker, no log4j-core configuration
++ * surface. Logger names are fixed because the browser runtime cannot walk the
++ * Java call stack.
++ */
+@@ 17 2
++    public static final Marker FATAL_MARKER = new GaiusMarker(FATAL_MARKER_ID);
+=1 1
++    private static final String FALLBACK_LOGGER_NAME = "Minecraft";
+=1 1
++    public LogUtils() {
+=22 1
+@@ 21 1
++        return true;
+@@ 24 6
++    public static void configureRootLoggingLevel(org.slf4j.event.Level level) {
++        // The browser logger is a fixed console logger; nothing to configure.
+@@ 32 8
++    public static Object defer(Supplier<Object> supplier) {
++        return supplier.get();
+@@ 42 7
+=53 1
++        return LoggerFactory.getLogger(FALLBACK_LOGGER_NAME);
+=22 1
+=1 1
++    /** Minimal marker; the browser logger ignores markers entirely. */
++    private static final class GaiusMarker implements Marker {
++        private static final long serialVersionUID = 1L;
+=1 1
++        private final String name;
+=1 1
++        GaiusMarker(String name) {
++            this.name = name;
+=48 1
+=1 1
++        public String getName() {
++            return name;
+=48 1
+=1 1
++        public void add(Marker reference) {
++            // No children in the browser marker.
+=48 1
+=1 1
++        public boolean remove(Marker reference) {
++            return false;
+=48 1
+=1 1
++        public boolean hasChildren() {
++            return false;
+=48 1
+=1 1
++        public boolean hasReferences() {
++            return false;
+=48 1
+=1 1
++        public Iterator<Marker> iterator() {
++            return Collections.emptyIterator();
+=48 1
+=1 1
++        public boolean contains(Marker other) {
++            return equals(other);
+=48 1
+=1 1
++        public boolean contains(String otherName) {
++            return name.equals(otherName);
+=48 1
+=1 1
+~44 8
++        public boolean equals(Object other) {
++            if (this == other) {
++                return true;
+=47 1
++            if (other == null || !(other instanceof Marker)) {
++                return false;
+=47 1
++            return name.equals(((Marker) other).getName());
+=48 1
+=1 1
+~44 8
++        public int hashCode() {
++            return name.hashCode();
+=48 1
+=1 1
+~44 8
+~45 8
++            return name;
+=48 1
+=22 1
+=56 1
+@@ 50 8

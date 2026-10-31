@@ -1,1 +1,12 @@
-# Binary files allowed in the public tree: <repository path> <sha256>.
+# Binary or large files allowed in the public tree: <repository path> <sha256>.
+# Kernel mirror metadata (method lists and bytecode hashes, no game code) and Gaius test fixtures.
+port/mc/profiles/1.21.11/kernel-mirror.lock 439cc4f59254588430904f977f1f4c167535f0cd31c16c7816639d781c829cc3
+port/mc/profiles/26.2/kernel-mirror.lock 5ee10d65233bae54ea91f9670b80e078b608a2ef020c0c3fafb5c212a0209f87
+port/mc/profiles/26.3/kernel-mirror.lock 204b2b3441a8a9d8a6df23196f3d5e0c713aa13dfd57484beaaee5e13acd3d76
+port/native/kernel-mirror.toml 95c23973ba696e3687be24d68ba50cc8f16e19c497aa17e7ca3013dca3d26c65
+port/native/crates/gaius-shaderxlat/tests/frontend/legacy.frag.spv e2f0621e6ee896520d21065725a5359d2ac05bf6e582b27f492687597f5e35cf
+port/native/crates/gaius-shaderxlat/tests/frontend/legacy.vert.spv 963af15b03718aed41c4060bc62aa06e8fffb6fb1f1727d2be662c894c8d9fea
+port/native/crates/gaius-shaderxlat/tests/frontend/link.frag.spv 45e7a239522effe48a33efe922f3857630ebe3209e5a88b29049fcd37da6bae4
+port/native/crates/gaius-shaderxlat/tests/frontend/link.vert.spv 2055afb350f478a918688e07616781e2c909726fd5af86f94f24aef91640365b
+port/native/crates/gaius-shaderxlat/tests/frontend/reads_missing.frag.spv bce933e4416aff4c8b3d3c799df3d903f6d2917dbfda50f0b14f85e4940cb7d6
+port/tests/classlib/res/dev/gaius/classlib/repro/data.bin 43f9b5d59eb108817176c6f65c2c6203a22f2ae8bc28b7a1dde45947678c5042

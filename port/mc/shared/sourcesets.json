@@ -1,0 +1,54 @@
+{
+  "description": "Vanilla-facing source sets of port/mc/shared. A profile compiles the shared roots (port/src/main/java, port/overrides/client/src/main/java), then every set whose selects match its port/versions/*.json fields, in this order, then the target roots. port/tools/sourcesets/sourcesets.mjs resolves and stages them; see README.md.",
+  "canonical": "canonical",
+  "canonicalRenderSeam": "blaze3d-backend-1",
+  "compileExcludes": [
+    {
+      "selects": {"clientDistribution": ["obfuscated-with-mappings"]},
+      "paths": [
+        "dev/gaius/browser/PlatformSmoke.java",
+        "dev/gaius/browser/BrowserProfile.java",
+        "dev/gaius/browser/BrowserProfileScreen.java",
+        "dev/gaius/browser/BrowserSectionAudit.java"
+      ]
+    },
+    {
+      "selects": "*",
+      "targets": ["wasmgc"],
+      "paths": ["dev/gaius/browser/PlatformSmoke.java"]
+    },
+    {
+      "selects": {"renderSeam": ["renderpearl-1"]},
+      "paths": ["dev/gaius/browser/kernel/worldgen/CarverNoiseState262.java"]
+    },
+    {
+      "selects": {"patchSet": ["legacy-12111"]},
+      "paths": ["dev/gaius/browser/BrowserRenderCollections.java"]
+    }
+  ],
+  "profileFields": [
+    {
+      "kind": "src",
+      "path": "dev/gaius/browser/kernel/mesh/MeshProfile.java",
+      "token": "__GAIUS_MESH_PROFILE__",
+      "field": "kernelSemantics.code"
+    }
+  ],
+  "sets": [
+    {
+      "name": "canonical",
+      "selects": "*",
+      "description": "Written against the canonical render seam generation (the oldest non-LTS generation of the support window); profile fields are bound for every profile and types are relocated for newer generations."
+    },
+    {
+      "name": "renderpearl-1",
+      "selects": {"renderSeam": ["renderpearl-1"]},
+      "description": "The renderpearl-1 generation: semantic adapters, remaining generation-specific sources, excludes, and type relocations."
+    },
+    {
+      "name": "legacy-12111",
+      "selects": {"patchSet": ["legacy-12111"]},
+      "description": "The compat set of the LTS profile: retained ABI-specific files and excludes, with individually reviewed similarity exceptions."
+    }
+  ]
+}

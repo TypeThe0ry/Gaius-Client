@@ -1,0 +1,304 @@
+gaius-source-patch 2
+base 7033ec4cdc8533c4cec10f900edb467aedf1a28b5fc0609ad7e6ef3202abb050
+result d13bb10aca0a2cbb9d4d3a5482f2d3564647f41b361e79fc68f91c7fa92c6eb8
+@@ 6 3
++import java.util.LinkedHashMap;
+@@ 15 0
++import org.lwjgl.opengl.GL30;
+@@ 18 0
++/** Minecraft 26.2 vertex-array binding with bounded browser VAO caches. */
+@@ 19 2
++    private static final int MAX_CACHED_WEBGL_VAOS = 2048;
++    private static final int HOT_CACHE_SIZE = 256;
++    private static final int HOT_CACHE_MASK = HOT_CACHE_SIZE - 1;
+=1 1
++    public static VertexArrayCache create(
++            GLCapabilities capabilities,
++            GlDebugLabel debugLabels,
++            Set<String> enabledExtensions) {
++        if (capabilities.GL_ARB_vertex_attrib_binding
++                && GlDevice.USE_GL_ARB_vertex_attrib_binding) {
+@@ 22 3
++            return new Separate(debugLabels);
+@@ 26 0
++        return new Emulated(debugLabels);
+@@ 28 5
++    public abstract VertexArray bindVertexArray(
++            @Nullable VertexFormat[] vertexBindings,
++            @Nullable GpuBufferSlice[] vertexBuffers,
++            @Nullable VertexArray lastBoundVertexArray);
+@@ 34 71
++    private static final class Separate extends VertexArrayCache {
++        private final BrowserVaoCache cache = new BrowserVaoCache();
+@@ 108 1
++        private Separate(GlDebugLabel debugLabels) {
+@@ 112 1
++                this.needsMesaWorkaround = version.contains("25.0.0")
++                        || version.contains("25.0.1")
++                        || version.contains("25.0.2");
+@@ 119 5
++        public VertexArray bindVertexArray(
++                @Nullable VertexFormat[] vertexBindings,
++                @Nullable GpuBufferSlice[] vertexBuffers,
++                @Nullable VertexArray lastBoundVertexArray) {
++            VertexArray vertexArray = this.cache.get(vertexBindings);
+@@ 125 20
++                int id = GL30.glGenVertexArrays();
++                GL30.glBindVertexArray(id);
++                int attributeLocation = 0;
++                for (int bindingIndex = 0; bindingIndex < vertexBindings.length; bindingIndex++) {
++                    VertexFormat binding = vertexBindings[bindingIndex];
++                    if (binding == null) {
++                        continue;
+=97 1
++                    for (VertexFormatElement element : binding.getElements()) {
++                        if (element == null) {
++                            continue;
+=87 1
++                        GlStateManager._enableVertexAttribArray(attributeLocation);
++                        int externalFormat = GlConst.toGlExternalId(element.format());
++                        int type = GlConst.toGlType(element.format());
++                        int components = GlConst.glFormatChannelCount(externalFormat);
++                        if (GlConst.isGlFormatInteger(externalFormat)) {
++                            ARBVertexAttribBinding.glVertexAttribIFormat(
++                                    attributeLocation, components, type, element.offset());
+=91 1
++                            ARBVertexAttribBinding.glVertexAttribFormat(
++                                    attributeLocation,
++                                    components,
++                                    type,
++                                    GlConst.isFormatNormalized(element.format()),
++                                    element.offset());
+=87 1
++                        ARBVertexAttribBinding.glVertexAttribBinding(
++                                attributeLocation, bindingIndex);
++                        attributeLocation++;
+=97 1
++                    ARBVertexAttribBinding.glVertexBindingDivisor(
++                            bindingIndex, binding.getStepRate());
+=60 1
++                bindSeparateBuffers(vertexBindings, vertexBuffers, false);
++                VertexArray created = new VertexArray(id, vertexBindings);
++                this.debugLabels.applyLabel(created);
++                this.cache.put(vertexBindings, created);
++                return created;
+=63 1
+@@ 146 4
++            GL30.glBindVertexArray(vertexArray.id);
+~58 12
++                bindSeparateBuffers(vertexBindings, vertexBuffers, this.needsMesaWorkaround);
+=63 1
+~62 12
+=25 1
+@@ 151 2
++        private static void bindSeparateBuffers(
++                VertexFormat[] vertexBindings,
++                GpuBufferSlice[] vertexBuffers,
++                boolean unbindFirst) {
++            for (int index = 0; index < vertexBuffers.length; index++) {
++                GpuBufferSlice slice = vertexBuffers[index];
++                if (slice == null) {
++                    continue;
+=60 1
++                GlBuffer buffer = (GlBuffer) slice.buffer();
++                if (unbindFirst) {
++                    ARBVertexAttribBinding.glBindVertexBuffer(index, 0, 0L, 0);
+@@ 154 30
+~178 16
++                        index,
++                        buffer.handle(),
++                        slice.offset(),
++                        vertexBindings[index].getVertexSize());
+=63 1
+=25 2
+@@ 185 2
++    private static final class Emulated extends VertexArrayCache {
++        private final BrowserVaoCache cache = new BrowserVaoCache();
+=36 1
+=1 1
++        private Emulated(GlDebugLabel debugLabels) {
+=39 1
+=25 1
+=1 1
+=42 1
++        public VertexArray bindVertexArray(
++                @Nullable VertexFormat[] vertexBindings,
++                @Nullable GpuBufferSlice[] vertexBuffers,
++                @Nullable VertexArray lastBoundVertexArray) {
++            VertexArray vertexArray = this.cache.get(vertexBindings);
+=48 1
++                int id = GL30.glGenVertexArrays();
++                GL30.glBindVertexArray(id);
+=51 1
++                VertexArray created = new VertexArray(id, vertexBindings);
++                this.debugLabels.applyLabel(created);
++                this.cache.put(vertexBindings, created);
++                return created;
+=63 1
+=1 1
++            GL30.glBindVertexArray(vertexArray.id);
+~58 12
+~59 16
+=63 1
+~62 12
+=25 1
+=1 1
+=66 1
++                VertexFormat[] vertexBindings,
++                boolean enable,
++                GpuBufferSlice[] vertexBuffers) {
+=69 1
++            for (int bindingIndex = 0; bindingIndex < vertexBindings.length; bindingIndex++) {
++                VertexFormat binding = vertexBindings[bindingIndex];
++                if (binding == null) {
++                    continue;
+=60 1
++                GpuBufferSlice slice = vertexBuffers[bindingIndex];
++                GlBuffer buffer = (GlBuffer) slice.buffer();
+~75 16
++                int vertexSize = binding.getVertexSize();
++                for (VertexFormatElement element : binding.getElements()) {
++                    long totalOffset = slice.offset() + element.offset();
++                    int externalFormat = GlConst.toGlExternalId(element.format());
++                    int type = GlConst.toGlType(element.format());
++                    int components = GlConst.glFormatChannelCount(externalFormat);
+~85 20
+~86 24
+=97 1
++                    if (GlConst.isGlFormatInteger(externalFormat)) {
++                        GlStateManager._vertexAttribIPointer(
++                                attributeIndex, components, type, vertexSize, totalOffset);
+~23 20
++                        GlStateManager._vertexAttribPointer(
++                                attributeIndex,
++                                components,
++                                type,
++                                GlConst.isFormatNormalized(element.format()),
++                                vertexSize,
++                                totalOffset);
+=97 1
++                    GL33C.glVertexAttribDivisor(attributeIndex, binding.getStepRate());
+~96 20
+=60 1
+=63 1
+=25 2
+=1 1
++    private static final class BrowserVaoCache {
++        private final LinkedHashMap<VertexArrayKey, VertexArray> entries =
++                new LinkedHashMap<>(64, 0.75F, true);
++        private final VertexArrayKey lookupKey = new VertexArrayKey();
++        private final VertexArrayKey[] hotKeys = new VertexArrayKey[HOT_CACHE_SIZE];
++        private final VertexArray[] hotVertexArrays = new VertexArray[HOT_CACHE_SIZE];
++        private final byte[] hotAccessCounts = new byte[HOT_CACHE_SIZE];
+=1 1
++        private VertexArray get(VertexFormat[] vertexBindings) {
++            VertexArrayKey lookup = this.lookupKey.set(vertexBindings);
++            int hotIndex = hotIndex(lookup.hashCode());
++            VertexArrayKey hotKey = this.hotKeys[hotIndex];
++            VertexArray vertexArray = this.hotVertexArrays[hotIndex];
++            if (vertexArray != null && lookup.equals(hotKey)) {
++                int accessCount = (this.hotAccessCounts[hotIndex] & 255) + 1;
++                this.hotAccessCounts[hotIndex] = (byte) accessCount;
++                if ((accessCount & 63) == 0) {
++                    this.entries.get(hotKey);
+=60 1
+=62 2
+=1 1
++            vertexArray = this.entries.get(lookup);
++            if (vertexArray != null) {
++                cacheHot(vertexArray.cacheKey, vertexArray);
+=63 1
+~62 12
+=25 1
+=1 1
++        private void put(VertexFormat[] vertexBindings, VertexArray vertexArray) {
++            VertexArrayKey key = new VertexArrayKey(vertexBindings);
++            vertexArray.cacheKey = key;
++            this.entries.put(key, vertexArray);
++            cacheHot(key, vertexArray);
++            if (this.entries.size() <= MAX_CACHED_WEBGL_VAOS) {
++                return;
+=63 1
+=1 1
++            var iterator = this.entries.entrySet().iterator();
++            if (iterator.hasNext()) {
++                VertexArray evicted = iterator.next().getValue();
++                iterator.remove();
++                clearHot(evicted);
++                GL30.glDeleteVertexArrays(evicted.id);
+=63 1
+=25 1
+=1 1
++        private void cacheHot(VertexArrayKey key, VertexArray vertexArray) {
++            int hotIndex = hotIndex(key.hashCode());
++            this.hotKeys[hotIndex] = key;
++            this.hotVertexArrays[hotIndex] = vertexArray;
++            this.hotAccessCounts[hotIndex] = 0;
+=25 1
+=1 1
++        private void clearHot(VertexArray vertexArray) {
++            VertexArrayKey key = vertexArray.cacheKey;
++            if (key == null) {
++                return;
+=63 1
++            int hotIndex = hotIndex(key.hashCode());
++            if (this.hotVertexArrays[hotIndex] == vertexArray) {
++                this.hotKeys[hotIndex] = null;
++                this.hotVertexArrays[hotIndex] = null;
++                this.hotAccessCounts[hotIndex] = 0;
+=63 1
+=25 1
+=1 1
++        private static int hotIndex(int hashCode) {
++            return (hashCode ^ hashCode >>> 16) & HOT_CACHE_MASK;
+=25 2
+=1 1
++    private static final class VertexArrayKey {
++        private VertexFormat[] vertexBindings;
++        private int hashCode;
+=1 1
++        private VertexArrayKey() {
+=25 1
+=1 1
++        private VertexArrayKey(VertexFormat[] vertexBindings) {
++            set(vertexBindings.clone());
+=25 1
+=1 1
++        private VertexArrayKey set(VertexFormat[] vertexBindings) {
++            this.vertexBindings = vertexBindings;
++            int hash = 1;
++            for (VertexFormat vertexBinding : vertexBindings) {
++                hash = 31 * hash + System.identityHashCode(vertexBinding);
+=63 1
++            this.hashCode = hash;
++            return this;
+=25 1
+=1 1
+=42 1
++        public boolean equals(Object object) {
++            if (this == object) {
++                return true;
+=63 1
++            if (!(object instanceof VertexArrayKey other)
++                    || this.vertexBindings.length != other.vertexBindings.length) {
++                return false;
+=63 1
++            for (int index = 0; index < this.vertexBindings.length; index++) {
++                if (this.vertexBindings[index] != other.vertexBindings[index]) {
++                    return false;
+=60 1
+=63 1
++            return true;
+=25 1
+=1 1
+=42 1
++        public int hashCode() {
++            return this.hashCode;
+@@ 195 0
++        private VertexArrayKey cacheKey;
+@@ 196 1
++        private VertexArray(int id, @Nullable VertexFormat[] vertexBindings) {
+@@ 199 3
+~199 20
++                    .map(VertexFormat::toString)
+~201 20

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "profile": "26.3",
+  "kernels": {
+    "ore": {
+      "enabled": false,
+      "reasons": [
+        "PROFILE_DEFAULT_OFF"
+      ]
+    },
+    "noise": {
+      "enabled": true,
+      "reasons": []
+    },
+    "mesher": {
+      "enabled": true,
+      "reasons": []
+    },
+    "light": {
+      "enabled": true,
+      "reasons": []
+    },
+    "worldgen": {
+      "enabled": true,
+      "reasons": []
+    },
+    "shaderxlat": {
+      "enabled": true,
+      "reasons": []
+    }
+  }
+}

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gaius JSPI semantic suite</title>
+</head>
+<body>
+<pre id="out">loading</pre>
+<script src="gaius-wasm-gc-runtime.js"></script>
+<script src="gaius-jspi.js"></script>
+<script>
+// The browser page of port/tests/jspi (run-chrome.mjs): the production loader, gaius-jspi.js
+// and the suite module, wired as gaius-wasm-boot.js wires the client.
+(function () {
+  "use strict";
+  var out = document.getElementById("out");
+  var errors = globalThis.__jspiSuiteErrors = [];
+  globalThis.__jspiSuiteParams = {};
+  var jspi = null;
+  var teavm = null;
+  globalThis.TeaVM.wasmGC.load("classes.wasm", {
+    installImports: function (imports) {
+      var scheduler = globalThis.GaiusJspi.createScheduler();
+      globalThis.__gaiusJspiScheduler = scheduler;
+      jspi = globalThis.GaiusJspi.installJspi(imports, scheduler,
+        function () { return teavm.instance.exports; },
+        function (error) { console.log("THREAD ERROR " + String(error && error.message || error)); });
+      globalThis.GaiusJspi.routeEventQueue(imports, scheduler);
+    }
+  }).then(function (loaded) {
+    teavm = loaded;
+    out.textContent = "running";
+    return jspi.startMain([]);
+  }).then(function () {
+    var s = globalThis.__jspiSuite;
+    out.textContent = s && s.summary ? s.summary : "main returned";
+  }, function (error) {
+    errors.push(String(error && error.stack || error));
+    out.textContent = "failed: " + errors[0];
+  });
+})();
+</script>
+</body>
+</html>

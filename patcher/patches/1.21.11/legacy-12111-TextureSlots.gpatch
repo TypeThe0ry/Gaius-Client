@@ -1,0 +1,100 @@
+gaius-source-patch 2
+base 93b0a8746711334dbe01c41bf01a1e093395a9a42dba47ef9dbc001e56e22d83
+result 3012d39e845f8c19bdcbe4382badde101ebf57f456c814562b7a034176fc987b
+@@ 2 1
+@@ 6 8
++import java.util.Collections;
++import java.util.LinkedHashMap;
+@@ 15 2
+@@ 18 1
+@@ 21 2
+@@ 24 0
++/** Texture-slot parsing with a narrow compatibility path for modern resource packs. */
+@@ 27 0
+=1 1
+@@ 28 0
++    private final Material fallbackParticle;
+@@ 29 2
++    TextureSlots(Map<String, Material> resolvedValues) {
++        this.resolvedValues = resolvedValues;
++        this.fallbackParticle = resolvedValues.values().stream().findFirst().orElse(null);
+@@ 33 4
++    public Material getMaterial(String name) {
++        if (isTextureReference(name)) {
++            name = name.substring(1);
+=36 1
++        Material material = resolvedValues.get(name);
++        // Blockbench-generated models often omit particle despite having a
++        // complete texture table. Vanilla then renders their break particles
++        // with the missing sprite. Use the first resolved model texture only
++        // for particle; all other missing slots remain strict and visible.
++        return material != null || !"particle".equals(name) ? material : fallbackParticle;
+=31 1
+@@ 38 1
++    public static TextureSlots.Data parseTextureMap(JsonObject textures) {
++        TextureSlots.Data.Builder builder = new TextureSlots.Data.Builder();
++        for (Map.Entry<String, JsonElement> entry : textures.entrySet()) {
++            parseEntry(entry.getKey(), textureValue(entry.getValue(), entry.getKey()), builder);
+=36 1
++        return builder.build();
+@@ 41 2
++    private static String textureValue(JsonElement value, String slot) {
++        if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()) {
++            return value.getAsString();
+=36 1
++        // Blockbench and 1.21.6+ packs can attach rendering hints such as
++        // force_translucent around a standard sprite identifier. Gaius does not
++        // implement those optional hints yet, but the sprite remains valid.
++        if (value.isJsonObject()) {
++            JsonObject object = value.getAsJsonObject();
++            JsonElement sprite = object.get("sprite");
++            if (sprite != null && sprite.isJsonPrimitive()
++                    && sprite.getAsJsonPrimitive().isString()) {
++                return sprite.getAsString();
+=62 1
+=36 1
++        throw new JsonParseException("Texture slot '" + slot + "' must be a string or sprite object");
+@@ 45 6
++    private static void parseEntry(String slot, String value, TextureSlots.Data.Builder builder) {
++        if (isTextureReference(value)) {
++            builder.addReference(slot, value.substring(1));
++            return;
+=36 1
++        Identifier id = Identifier.tryParse(value);
++        if (id == null) {
++            throw new JsonParseException("Invalid texture reference: " + value);
+=36 1
++        builder.addTexture(slot, new Material(ModelManager.BLOCK_OR_ITEM, id));
+=31 1
+@@ 52 1
++    private static boolean isTextureReference(String value) {
++        return !value.isEmpty() && value.charAt(0) == REFERENCE_CHAR;
+@@ 55 8
++    public interface SlotContents {
+=31 1
+@@ 64 2
++    static final record Reference(String target) implements SlotContents {
+@@ 68 2
++    static final record Value(Material material) implements SlotContents {
+=31 1
+=1 1
++    public static final record Data(Map<String, SlotContents> values) {
++        public static final Data EMPTY = new Data(Map.of());
+@@ 72 1
++            private final Map<String, SlotContents> textureMap = new LinkedHashMap<>();
+@@ 74 2
++            public Builder addReference(String slot, String target) {
++                textureMap.put(slot, new Reference(target));
+@@ 79 2
++            public Builder addTexture(String slot, Material material) {
++                textureMap.put(slot, new Value(material));
+@@ 84 85
++            public Data build() {
++                return textureMap.isEmpty()
++                        ? EMPTY
++                        : new Data(Collections.unmodifiableMap(new LinkedHashMap<>(textureMap)));
+=62 1
+=36 1
+=31 1
+=175 1
+@@ 170 7

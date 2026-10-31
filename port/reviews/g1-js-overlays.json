@@ -1,0 +1,471 @@
+{
+  "schemaVersion": 1,
+  "target": "js",
+  "reviewDate": "2026-10-09",
+  "baselineRevision": "aeffd07cc824247c334bdc31745fc1855e39bf3c",
+  "reviewedCandidateRevision": "d3704886a3b6025c9b036cfaa7911108fcaec5ea",
+  "memorySourceRevision": "76f5936ccf7c0388fad9394de6daf27bb264872c",
+  "evidenceDirectory": "<work-dir>\\evidence\\integ7\\g1",
+  "pngTargetGateReportSha256": "5d31df3f335c95779f69f77eca5f8e63a8d722bc5b34788b2806a0f1b74818e2",
+  "checks": [
+    "All three JS overlays are freshly rebuilt using cached dependencies and bounded javac, without TeaVM.",
+    "png-target-gate-smoke.mjs inspects each actual STBImage class: first call decodePng, zero PNG gate calls, accelerated branches or pre-decode copies.",
+    "The JS BrowserPng constant is false and tryDecode returns null without invoking anything, regardless of opt-in.",
+    "Wasm availability checks enabled and ready before copying input; the runtime fixture verifies default-off boot and decoding.",
+    "Memory integration adds the no-op JS ownership API and Wasm-only low-memory defaults; every changed nested class is listed explicitly.",
+    "Integration batch 2 adds only the opt-in WebGL2 emulation adapter to the JS overlays: BrowserOpenGL call hooks, four nested/helper class changes and two new BrowserOpenGLPerf classes. Reviewed profile deltas against the previous reviewed candidate are exactly these six keys per profile; reviewfix, worldgen, literals and Pages changes add no JS overlay delta.",
+    "Game-rules handoff: the client-named jar's Minecraft.class (doWorldLoad forwards vanilla's Optional<GameRules>) and Main.class (the dedicated-server factory feeds it to DedicatedServer) change on the profiles whose IntegratedServer takes that argument; every other overlay key is unchanged against the previous reviewed candidate.",
+    "Whole-page freeze fix: only runtime classes change against the previous reviewed candidate: TLockSupport in the classlib jar of every profile, and BrowserSdlDom, BrowserSdlEvents, BrowserSdlEvents$Source and BrowserSdlEvents$DomSource in the lwjgl-sdl overlay of 26.3; javap of each previous and new class shows only the guarded present/sleep yields and the game-loop boundary; client-named jars are unchanged. The javap diffs were redone with real content: the extracted baseline and candidate class files are hash-checked against beforeSha256/afterSha256 of every entry, javap -p -c -s -constants output (CRLF removed, constant-pool indexes and offsets normalised, branch targets and exception ranges named by their target instruction) is compared member by member, and the differences are exactly the members listed in the reasons (freezeJavapEvidenceDirectory).",
+    "Stronghold ring parity (owner decision 2026-10-09): the JS target now applies patchChunkGeneratorStructureStateBrowserLazyRings instead of the fast-ring patch. The only new JS overlay delta is net/minecraft/world/level/chunk/ChunkGeneratorStructureState.class (one key per profile, changed 14 -> 15, nothing added or removed). javap -p -c of the old reviewed class, the new class and the vanilla class (constant-pool indices and spacing normalised) shows the new class differs from vanilla in generateRingPositions only, and the search lambda is vanilla's again; structure-rings-parity.mjs --target js passes on all three profiles (768/768 positions and 9558/9558 contains() answers equal vanilla) and runs the very bytes of the overlay class (identical to the wasmgc patchkit class). BrowserRingPositions is a TeaVM source in port/src/main/java, so it adds no overlay key.",
+    "Stronghold ring integration: the candidate is rebuilt on top of the whole-page freeze state with the patch moved into the worldgen domain package; against the previous reviewed candidate exactly ChunkGeneratorStructureState.class changes per profile (nothing added or removed), and its hash equals the one reviewed on the rings branch for every profile."
+  ],
+  "profiles": {
+    "1.21.11": {
+      "baselineSnapshotSha256": "e560e2f28e250a6f55bc9cf9b8a91525a05f86d5125607e6676a8de064b6c94b",
+      "candidateSnapshotSha256": "6e20511d429b22d5a37e0b73e9cce66dfa2a532aa4e85de22417e3af2c79bbc5",
+      "baselineKeys": 46564,
+      "candidateKeys": 46568,
+      "changed": 16,
+      "removed": 0,
+      "added": 4,
+      "entries": [
+        {
+          "key": "client-named-1.21.11-gaius.jar!net/minecraft/world/level/chunk/ChunkGeneratorStructureState.class",
+          "beforeSha256": "9e8c1ef2c11de649715fce1687e62aabbaf0bbb5ac5cea02eacd4a920551bc7f",
+          "afterSha256": "e61af76908d90d3e976b7b4b9f829487bf7e94b088109a70bbc7f8f920fd1853",
+          "reason": "Owner decision (2026-10-09): the JS target applies patchChunkGeneratorStructureStateBrowserLazyRings instead of the fast-ring patch, so the frozen JS class (the generateRingPositions search lambda returned the start chunk without vanilla's biome search, moving 699 of 768 stronghold positions) is replaced by one that keeps vanilla's search. Against the vanilla class only generateRingPositions differs: Util.backgroundExecutor().forName(..) plus CompletableFuture.supplyAsync become BrowserRingPositions.defer(search, startChunkX, startChunkZ) and Util.sequence becomes BrowserRingPositions.sequence(list, 112); the search lambda, loop and random draws are vanilla's. structure-rings-parity.mjs --target js: 768/768 positions and 9558/9558 contains() answers identical to vanilla per profile (6 seeds). The helper is a TeaVM source (port/src/main/java), not an overlay."
+        },
+        {
+          "key": "libraries/io/netty/netty-transport/4.2.7.Final/netty-transport-4.2.7.Final.jar!io/netty/channel/browser/BrowserWebSocketChannel.class",
+          "beforeSha256": "c4ca0cede99a67b910b00bc4fb126a0eece3f7b399667b565948df4d13790686",
+          "afterSha256": "7f948d63e32185dc0f03461e50c8045a8ff39f23ef81855fd3da88cc1b384ffd",
+          "reason": "Owner-approved backward-compatible relay handshake declaration; legacy sessions remain supported."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.3.3/lwjgl-opengl-3.3.3.jar!org/lwjgl/opengl/BrowserOpenGL$MappedBuffer.class",
+          "beforeSha256": "9d0f0e3262d2cd4a0bb06f19952b9d95d3b1587e9e0130a844247fef77e18043",
+          "afterSha256": "fdacdc5fc780517d081053a08169db6b38b1d53e63c4458ecd11afd192ad987e",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.3.3/lwjgl-opengl-3.3.3.jar!org/lwjgl/opengl/BrowserOpenGL$MinecraftStateDetails.class",
+          "beforeSha256": "e0cf30a77f339d678e634fe1b601cc6b832fa54b6786188dc91a4e0ae5ac1338",
+          "afterSha256": "68b0d0d7ae3c8b0de99a9a7fae2b2ac59e869e393e5deca495fddf367fd6af68",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.3.3/lwjgl-opengl-3.3.3.jar!org/lwjgl/opengl/BrowserOpenGL$UniformScratch.class",
+          "beforeSha256": "1e5872355b0cd8e4f44ec88cb1920e498087a34f081bd70d509f294879638979",
+          "afterSha256": "d6ee04e57b50cd28b9ce1c4a68e224db0215b00d5aff60fe76b652e071ed898c",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.3.3/lwjgl-opengl-3.3.3.jar!org/lwjgl/opengl/BrowserOpenGL.class",
+          "beforeSha256": "b26cdb66a7f6d3c592a1de13519ca9d71a5fcf6e7eb91e6e835c931f23e0a828",
+          "afterSha256": "787928ec1f053e4813278d4eba1151597d0f2814f27daf3681e7fd87f59a2d29",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. WebGL2 emulation experiments (opt-in, default off) route texture, program, VAO, uniform-location and upload calls through BrowserOpenGLPerf hooks, which are no-ops unless an experiment is enabled."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.3.3/lwjgl-opengl-3.3.3.jar!org/lwjgl/opengl/BrowserOpenGLPerf$CacheInvalidator.class",
+          "beforeSha256": null,
+          "afterSha256": "4887b5065b9cb68a2f9f414dbb120eef85c5331fa67e88d239a5cd14e34fdd0d",
+          "reason": "Opt-in WebGL2 emulation experiments (default off): helper class of the BrowserOpenGLPerf adapter reached only through its hooks in BrowserOpenGL."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.3.3/lwjgl-opengl-3.3.3.jar!org/lwjgl/opengl/BrowserOpenGLPerf.class",
+          "beforeSha256": null,
+          "afterSha256": "c26616cc4e687ac770ba4ccb86559053dbe461430d580fcf24935ff558a5dea6",
+          "reason": "Opt-in WebGL2 emulation experiments (default off): helper class of the BrowserOpenGLPerf adapter reached only through its hooks in BrowserOpenGL."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.3.3/lwjgl-stb-3.3.3.jar!org/lwjgl/stb/BrowserPng.class",
+          "beforeSha256": null,
+          "afterSha256": "7b09c1ea1d701823a24ef479057db23c9dcbabf0d848496a36f542469145b761",
+          "reason": "Owner-approved default-off PNG support. JS compile-time availability is false; Rust decoding is WasmGC-only."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.3.3/lwjgl-stb-3.3.3.jar!org/lwjgl/stb/PngPixels.class",
+          "beforeSha256": null,
+          "afterSha256": "f0fbd42d7b183587888dfca719059af10a669e91b2ff71b096729d45853486c6",
+          "reason": "Owner-approved PNG payload materializer. Unreachable from JS STBImage because the accelerated branch is eliminated."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.3.3/lwjgl-stb-3.3.3.jar!org/lwjgl/stb/STBImage$BitReader.class",
+          "beforeSha256": "28851f53e54195a5408fedcd32416106b3df4f7594bc8f912a69566f7bc20895",
+          "afterSha256": "3a17b2bed5fd1b61b926dee70a1fdca1f7ef93cbbb00d968266882ca6f45226f",
+          "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.3.3/lwjgl-stb-3.3.3.jar!org/lwjgl/stb/STBImage$DecodedPng.class",
+          "beforeSha256": "3436ff35e348d24ec4c7c0ad6067d12da082157823b0ce8fa744431aa0af7660",
+          "afterSha256": "e1ba389459f1ee734bcb64e58da7e0f182658f9475d2ce9d5a1c46ad77070bc7",
+          "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.3.3/lwjgl-stb-3.3.3.jar!org/lwjgl/stb/STBImage.class",
+          "beforeSha256": "421f787ff8494c2f8ad3c4b350d3500e65cfd8585cea052aec4f6cce76ca78f6",
+          "afterSha256": "6fa2a313b13304141a57bd9bc514583a30a1ba0e97993f96746769ea33ba9f4b",
+          "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar!org/lwjgl/system/BrowserMemory$BufferReference.class",
+          "beforeSha256": "88ebb29c7debb546623f484c986840fa3bd2c6cc8919033a5a8e7c7a34878ded",
+          "afterSha256": "a0a1e8866a2dd0ada076ab3a3b9b8c06e2719c0c46a5ca7b4cbe3b139205e16a",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar!org/lwjgl/system/BrowserMemory$Region.class",
+          "beforeSha256": "d91fd6c65042cd2e58935f68e51962832e77b606ec5db8143c8273cb3c82ff32",
+          "afterSha256": "17b75529ce2a2939e3f14400b08ccba46ec52b2c3f40fbabede754e32d3f39e9",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar!org/lwjgl/system/BrowserMemory$RegionOwnership.class",
+          "beforeSha256": "5b15d20a163084040e8e350e6b6cb417bfe73963f34337502f717417a19f71ba",
+          "afterSha256": "8f941bb6b758aa08df3710816d569d86797ff3e24321561fb78b6819e910cebd",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar!org/lwjgl/system/BrowserMemory.class",
+          "beforeSha256": "38f1048787c6e5358c74f3df79f478674124d4d503b1206a4221c38d49abdb36",
+          "afterSha256": "f0778ea9be4b70475a15748bf91c1e7bd36eef4ec1ec1255f6354e6df6c9bb94",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "teavm-classlib-0.15.0-gaius.jar!dev/gaius/browser/BrowserFilePersistence.class",
+          "beforeSha256": "eef9a45da53a95646c69ec288cd53027acd02c6c8665a5598979035e84c4fad2",
+          "afterSha256": "3776c31f564a7a08a724d8cf763784bcd46fe402a32587d27f1e8acf17da785a",
+          "reason": "Memory integration uses the Wasm-only quality memory tier for initial defaults; persisted options and file/screenshot persistence remain intact. Nested debug changes are accepted."
+        },
+        {
+          "key": "teavm-classlib-0.15.0-gaius.jar!org/teavm/classlib/java/nio/file/TFiles.class",
+          "beforeSha256": "76d38b8c8073593d8999242be6b36d2936009d18efae3a0a825d6970403377e1",
+          "afterSha256": "0905a4906e3213caef0b56bcf783d066d61df447d5f1eb21855a27f3d87212c9",
+          "reason": "Owner-approved JVM NIO directory-conformance fix; retained default filesystem path."
+        },
+        {
+          "key": "teavm-classlib-0.15.0-gaius.jar!org/teavm/classlib/java/util/concurrent/locks/TLockSupport.class",
+          "beforeSha256": "7f9d0e692fce979e7c45e5ef7742b20484a506e834065efd9e959960484b6dcc",
+          "afterSha256": "ca4d8bfdc355d648ef16954c870bd0c571b2be968047ec9b71b9472ef661f6ae",
+          "reason": "fix for whole-page main-loop freeze (surface acquired but not presented); see out/freeze evidence. javap -p -c -s -constants of the baseline class (sha256 = beforeSha256) and of the candidate class (sha256 = afterSha256), CRLF removed, constant-pool indexes and instruction offsets normalised, compared member by member (out/integ8/javap); identical in the three profiles. One method changes and one is added (13 -> 14 methods; fields, flags and annotations unchanged): sleepMillis gains a catch (RuntimeException) handler that runs the same parkedThreads cleanup and returns when the new private static helper isNonThreadingSuspension finds TeaVM's refusal text 'Suspension point reached from non-threading context' in the exception message (a null or any other message rethrows); the existing InterruptedException handler and the finally cleanup keep their code and only their exception-table ranges and labels shift."
+        }
+      ]
+    },
+    "26.2": {
+      "baselineSnapshotSha256": "70f085c3c6fe8a9fbc7fbad9502976b7c89867ab8276c8bfddded68d9e5fd263",
+      "candidateSnapshotSha256": "9c6c80d4d236335b023efd826953b7e78185fcc470b7fadbc03906cda1769267",
+      "baselineKeys": 53395,
+      "candidateKeys": 53399,
+      "changed": 18,
+      "removed": 0,
+      "added": 4,
+      "entries": [
+        {
+          "key": "libraries/io/netty/netty-transport/4.2.15.Final/netty-transport-4.2.15.Final.jar!io/netty/channel/browser/BrowserWebSocketChannel.class",
+          "beforeSha256": "c4ca0cede99a67b910b00bc4fb126a0eece3f7b399667b565948df4d13790686",
+          "afterSha256": "7f948d63e32185dc0f03461e50c8045a8ff39f23ef81855fd3da88cc1b384ffd",
+          "reason": "Owner-approved backward-compatible relay handshake declaration; legacy sessions remain supported."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGL$MappedBuffer.class",
+          "beforeSha256": "9d0f0e3262d2cd4a0bb06f19952b9d95d3b1587e9e0130a844247fef77e18043",
+          "afterSha256": "fdacdc5fc780517d081053a08169db6b38b1d53e63c4458ecd11afd192ad987e",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGL$MinecraftStateDetails.class",
+          "beforeSha256": "e0cf30a77f339d678e634fe1b601cc6b832fa54b6786188dc91a4e0ae5ac1338",
+          "afterSha256": "68b0d0d7ae3c8b0de99a9a7fae2b2ac59e869e393e5deca495fddf367fd6af68",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGL$UniformScratch.class",
+          "beforeSha256": "1e5872355b0cd8e4f44ec88cb1920e498087a34f081bd70d509f294879638979",
+          "afterSha256": "d6ee04e57b50cd28b9ce1c4a68e224db0215b00d5aff60fe76b652e071ed898c",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGL.class",
+          "beforeSha256": "a20b53fd11d0d5be09b9487605c6a698ee31cc9799c3ba1a634c8760180eab54",
+          "afterSha256": "b88c8c8eab85caa7491c20af64c45985b4e391c6cc54882e967ef712f3698699",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. WebGL2 emulation experiments (opt-in, default off) route texture, program, VAO, uniform-location and upload calls through BrowserOpenGLPerf hooks, which are no-ops unless an experiment is enabled."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGLPerf$CacheInvalidator.class",
+          "beforeSha256": null,
+          "afterSha256": "4887b5065b9cb68a2f9f414dbb120eef85c5331fa67e88d239a5cd14e34fdd0d",
+          "reason": "Opt-in WebGL2 emulation experiments (default off): helper class of the BrowserOpenGLPerf adapter reached only through its hooks in BrowserOpenGL."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGLPerf.class",
+          "beforeSha256": null,
+          "afterSha256": "c26616cc4e687ac770ba4ccb86559053dbe461430d580fcf24935ff558a5dea6",
+          "reason": "Opt-in WebGL2 emulation experiments (default off): helper class of the BrowserOpenGLPerf adapter reached only through its hooks in BrowserOpenGL."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.4.1/lwjgl-stb-3.4.1.jar!org/lwjgl/stb/BrowserPng.class",
+          "beforeSha256": null,
+          "afterSha256": "7b09c1ea1d701823a24ef479057db23c9dcbabf0d848496a36f542469145b761",
+          "reason": "Owner-approved default-off PNG support. JS compile-time availability is false; Rust decoding is WasmGC-only."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.4.1/lwjgl-stb-3.4.1.jar!org/lwjgl/stb/PngPixels.class",
+          "beforeSha256": null,
+          "afterSha256": "90384dee88446ee50e50b51004dcff200da743279fe8d3915f45bee81f396cd1",
+          "reason": "Owner-approved PNG payload materializer. Unreachable from JS STBImage because the accelerated branch is eliminated."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.4.1/lwjgl-stb-3.4.1.jar!org/lwjgl/stb/STBImage$BitReader.class",
+          "beforeSha256": "28851f53e54195a5408fedcd32416106b3df4f7594bc8f912a69566f7bc20895",
+          "afterSha256": "3a17b2bed5fd1b61b926dee70a1fdca1f7ef93cbbb00d968266882ca6f45226f",
+          "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.4.1/lwjgl-stb-3.4.1.jar!org/lwjgl/stb/STBImage$DecodedPng.class",
+          "beforeSha256": "3436ff35e348d24ec4c7c0ad6067d12da082157823b0ce8fa744431aa0af7660",
+          "afterSha256": "e1ba389459f1ee734bcb64e58da7e0f182658f9475d2ce9d5a1c46ad77070bc7",
+          "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.4.1/lwjgl-stb-3.4.1.jar!org/lwjgl/stb/STBImage.class",
+          "beforeSha256": "006544b598a2f50a9ff61c7ad31f454b874595c2db759130d8284d69c24169c2",
+          "afterSha256": "35b6b62130ccca2fb4847299d373238c53f69d9bdb96fb4d904ae501d0d58de8",
+          "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.4.1/lwjgl-3.4.1-unsafe.jar!org/lwjgl/system/BrowserMemory$BufferReference.class",
+          "beforeSha256": "88ebb29c7debb546623f484c986840fa3bd2c6cc8919033a5a8e7c7a34878ded",
+          "afterSha256": "a0a1e8866a2dd0ada076ab3a3b9b8c06e2719c0c46a5ca7b4cbe3b139205e16a",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.4.1/lwjgl-3.4.1-unsafe.jar!org/lwjgl/system/BrowserMemory$Region.class",
+          "beforeSha256": "d91fd6c65042cd2e58935f68e51962832e77b606ec5db8143c8273cb3c82ff32",
+          "afterSha256": "17b75529ce2a2939e3f14400b08ccba46ec52b2c3f40fbabede754e32d3f39e9",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.4.1/lwjgl-3.4.1-unsafe.jar!org/lwjgl/system/BrowserMemory$RegionOwnership.class",
+          "beforeSha256": "5b15d20a163084040e8e350e6b6cb417bfe73963f34337502f717417a19f71ba",
+          "afterSha256": "8f941bb6b758aa08df3710816d569d86797ff3e24321561fb78b6819e910cebd",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.4.1/lwjgl-3.4.1-unsafe.jar!org/lwjgl/system/BrowserMemory.class",
+          "beforeSha256": "38f1048787c6e5358c74f3df79f478674124d4d503b1206a4221c38d49abdb36",
+          "afterSha256": "f0778ea9be4b70475a15748bf91c1e7bd36eef4ec1ec1255f6354e6df6c9bb94",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "teavm-classlib-0.15.0-gaius.jar!dev/gaius/browser/BrowserFilePersistence.class",
+          "beforeSha256": "eef9a45da53a95646c69ec288cd53027acd02c6c8665a5598979035e84c4fad2",
+          "afterSha256": "3776c31f564a7a08a724d8cf763784bcd46fe402a32587d27f1e8acf17da785a",
+          "reason": "Memory integration uses the Wasm-only quality memory tier for initial defaults; persisted options and file/screenshot persistence remain intact. Nested debug changes are accepted."
+        },
+        {
+          "key": "teavm-classlib-0.15.0-gaius.jar!org/teavm/classlib/java/nio/file/TFiles.class",
+          "beforeSha256": "76d38b8c8073593d8999242be6b36d2936009d18efae3a0a825d6970403377e1",
+          "afterSha256": "0905a4906e3213caef0b56bcf783d066d61df447d5f1eb21855a27f3d87212c9",
+          "reason": "Owner-approved JVM NIO directory-conformance fix; retained default filesystem path."
+        },
+        {
+          "key": "client-named-26.2-gaius.jar!net/minecraft/client/Minecraft.class",
+          "beforeSha256": "aaee0e4a788cf074afa0d7038c6f73c6997b51e6bf8c72c074d75f5b8e33d1dc",
+          "afterSha256": "c45505804f0acb3b27e29d5074ab2ec3e5bf072cc51218db8ec86681ac191d07",
+          "reason": "Game rules of a new world: on the profiles whose Minecraft.doWorldLoad receives vanilla's Optional<GameRules>, the Worker handoff forwards that argument (BrowserSingleplayerClient.open overload) so the rules chosen on the Create World screen reach the integrated server Worker. javap of the previous and the new class differ only by the inserted aload 4, the open descriptor and the shifted exception-table offsets."
+        },
+        {
+          "key": "client-named-26.2-gaius.jar!net/minecraft/server/Main.class",
+          "beforeSha256": "98ea16496a2d1c98375db8e4b6627d1df41c28db904d42fdb58f3d335bb45de8",
+          "afterSha256": "4605b3d0df3d6aa1f0c8d636d519ba4b5467884ac4c821e6ab177dd6cd9827b7",
+          "reason": "Game rules of a new world: the dedicated-server factory passes BrowserIntegratedServerMain.initialGameRules(world features) to DedicatedServer where it passed Optional.empty(), the argument in which vanilla's integrated server receives the Create World rules. javap of the previous and the new class differ only by that replaced call."
+        },
+        {
+          "key": "client-named-26.2-gaius.jar!net/minecraft/world/level/chunk/ChunkGeneratorStructureState.class",
+          "beforeSha256": "24dad4fa30b49288585fadf93a35a36149a3f3cefd704a95a0fdd27f094b4a18",
+          "afterSha256": "e65c81a93df6e9719052c4220b1e4f9fb129659db4134afee5b9ea097f304dc7",
+          "reason": "Owner decision (2026-10-09): the JS target applies patchChunkGeneratorStructureStateBrowserLazyRings instead of the fast-ring patch, so the frozen JS class (the generateRingPositions search lambda returned the start chunk without vanilla's biome search, moving 702 of 768 stronghold positions) is replaced by one that keeps vanilla's search. Against the vanilla class only generateRingPositions differs: Util.backgroundExecutor().forName(..) plus CompletableFuture.supplyAsync become BrowserRingPositions.defer(search, startChunkX, startChunkZ) and Util.sequence becomes BrowserRingPositions.sequence(list, 112); the search lambda, loop and random draws are vanilla's. structure-rings-parity.mjs --target js: 768/768 positions and 9558/9558 contains() answers identical to vanilla per profile (6 seeds). The helper is a TeaVM source (port/src/main/java), not an overlay."
+        },
+        {
+          "key": "teavm-classlib-0.15.0-gaius.jar!org/teavm/classlib/java/util/concurrent/locks/TLockSupport.class",
+          "beforeSha256": "7f9d0e692fce979e7c45e5ef7742b20484a506e834065efd9e959960484b6dcc",
+          "afterSha256": "ca4d8bfdc355d648ef16954c870bd0c571b2be968047ec9b71b9472ef661f6ae",
+          "reason": "fix for whole-page main-loop freeze (surface acquired but not presented); see out/freeze evidence. javap -p -c -s -constants of the baseline class (sha256 = beforeSha256) and of the candidate class (sha256 = afterSha256), CRLF removed, constant-pool indexes and instruction offsets normalised, compared member by member (out/integ8/javap); identical in the three profiles. One method changes and one is added (13 -> 14 methods; fields, flags and annotations unchanged): sleepMillis gains a catch (RuntimeException) handler that runs the same parkedThreads cleanup and returns when the new private static helper isNonThreadingSuspension finds TeaVM's refusal text 'Suspension point reached from non-threading context' in the exception message (a null or any other message rethrows); the existing InterruptedException handler and the finally cleanup keep their code and only their exception-table ranges and labels shift."
+        }
+      ]
+    },
+    "26.3": {
+      "baselineSnapshotSha256": "0e737f04db252c747eaad72971e4086dc4434adef75d3c96f0d46a28b976b28f",
+      "candidateSnapshotSha256": "a393ed7cb0ebab6e67921d7949fa648fe83820a711b2e83b906da4c2a9cb9adb",
+      "baselineKeys": 56850,
+      "candidateKeys": 56854,
+      "changed": 22,
+      "removed": 0,
+      "added": 4,
+      "entries": [
+        {
+          "key": "libraries/io/netty/netty-transport/4.2.16.Final/netty-transport-4.2.16.Final.jar!io/netty/channel/browser/BrowserWebSocketChannel.class",
+          "beforeSha256": "c4ca0cede99a67b910b00bc4fb126a0eece3f7b399667b565948df4d13790686",
+          "afterSha256": "7f948d63e32185dc0f03461e50c8045a8ff39f23ef81855fd3da88cc1b384ffd",
+          "reason": "Owner-approved backward-compatible relay handshake declaration; legacy sessions remain supported."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.3/lwjgl-opengl-3.4.3.jar!org/lwjgl/opengl/BrowserOpenGL$MappedBuffer.class",
+          "beforeSha256": "9d0f0e3262d2cd4a0bb06f19952b9d95d3b1587e9e0130a844247fef77e18043",
+          "afterSha256": "fdacdc5fc780517d081053a08169db6b38b1d53e63c4458ecd11afd192ad987e",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.3/lwjgl-opengl-3.4.3.jar!org/lwjgl/opengl/BrowserOpenGL$MinecraftStateDetails.class",
+          "beforeSha256": "e0cf30a77f339d678e634fe1b601cc6b832fa54b6786188dc91a4e0ae5ac1338",
+          "afterSha256": "68b0d0d7ae3c8b0de99a9a7fae2b2ac59e869e393e5deca495fddf367fd6af68",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.3/lwjgl-opengl-3.4.3.jar!org/lwjgl/opengl/BrowserOpenGL$UniformScratch.class",
+          "beforeSha256": "1e5872355b0cd8e4f44ec88cb1920e498087a34f081bd70d509f294879638979",
+          "afterSha256": "d6ee04e57b50cd28b9ce1c4a68e224db0215b00d5aff60fe76b652e071ed898c",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.3/lwjgl-opengl-3.4.3.jar!org/lwjgl/opengl/BrowserOpenGL.class",
+          "beforeSha256": "a20b53fd11d0d5be09b9487605c6a698ee31cc9799c3ba1a634c8760180eab54",
+          "afterSha256": "b88c8c8eab85caa7491c20af64c45985b4e391c6cc54882e967ef712f3698699",
+          "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. WebGL2 emulation experiments (opt-in, default off) route texture, program, VAO, uniform-location and upload calls through BrowserOpenGLPerf hooks, which are no-ops unless an experiment is enabled."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.3/lwjgl-opengl-3.4.3.jar!org/lwjgl/opengl/BrowserOpenGLPerf$CacheInvalidator.class",
+          "beforeSha256": null,
+          "afterSha256": "4887b5065b9cb68a2f9f414dbb120eef85c5331fa67e88d239a5cd14e34fdd0d",
+          "reason": "Opt-in WebGL2 emulation experiments (default off): helper class of the BrowserOpenGLPerf adapter reached only through its hooks in BrowserOpenGL."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.3/lwjgl-opengl-3.4.3.jar!org/lwjgl/opengl/BrowserOpenGLPerf.class",
+          "beforeSha256": null,
+          "afterSha256": "c26616cc4e687ac770ba4ccb86559053dbe461430d580fcf24935ff558a5dea6",
+          "reason": "Opt-in WebGL2 emulation experiments (default off): helper class of the BrowserOpenGLPerf adapter reached only through its hooks in BrowserOpenGL."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.4.3/lwjgl-stb-3.4.3.jar!org/lwjgl/stb/BrowserPng.class",
+          "beforeSha256": null,
+          "afterSha256": "7b09c1ea1d701823a24ef479057db23c9dcbabf0d848496a36f542469145b761",
+          "reason": "Owner-approved default-off PNG support. JS compile-time availability is false; Rust decoding is WasmGC-only."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.4.3/lwjgl-stb-3.4.3.jar!org/lwjgl/stb/PngPixels.class",
+          "beforeSha256": null,
+          "afterSha256": "90384dee88446ee50e50b51004dcff200da743279fe8d3915f45bee81f396cd1",
+          "reason": "Owner-approved PNG payload materializer. Unreachable from JS STBImage because the accelerated branch is eliminated."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.4.3/lwjgl-stb-3.4.3.jar!org/lwjgl/stb/STBImage$BitReader.class",
+          "beforeSha256": "28851f53e54195a5408fedcd32416106b3df4f7594bc8f912a69566f7bc20895",
+          "afterSha256": "3a17b2bed5fd1b61b926dee70a1fdca1f7ef93cbbb00d968266882ca6f45226f",
+          "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.4.3/lwjgl-stb-3.4.3.jar!org/lwjgl/stb/STBImage$DecodedPng.class",
+          "beforeSha256": "3436ff35e348d24ec4c7c0ad6067d12da082157823b0ce8fa744431aa0af7660",
+          "afterSha256": "e1ba389459f1ee734bcb64e58da7e0f182658f9475d2ce9d5a1c46ad77070bc7",
+          "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-stb/3.4.3/lwjgl-stb-3.4.3.jar!org/lwjgl/stb/STBImage.class",
+          "beforeSha256": "006544b598a2f50a9ff61c7ad31f454b874595c2db759130d8284d69c24169c2",
+          "afterSha256": "35b6b62130ccca2fb4847299d373238c53f69d9bdb96fb4d904ae501d0d58de8",
+          "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.4.3/lwjgl-3.4.3.jar!org/lwjgl/system/BrowserMemory$BufferReference.class",
+          "beforeSha256": "88ebb29c7debb546623f484c986840fa3bd2c6cc8919033a5a8e7c7a34878ded",
+          "afterSha256": "a0a1e8866a2dd0ada076ab3a3b9b8c06e2719c0c46a5ca7b4cbe3b139205e16a",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.4.3/lwjgl-3.4.3.jar!org/lwjgl/system/BrowserMemory$Region.class",
+          "beforeSha256": "d91fd6c65042cd2e58935f68e51962832e77b606ec5db8143c8273cb3c82ff32",
+          "afterSha256": "17b75529ce2a2939e3f14400b08ccba46ec52b2c3f40fbabede754e32d3f39e9",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.4.3/lwjgl-3.4.3.jar!org/lwjgl/system/BrowserMemory$RegionOwnership.class",
+          "beforeSha256": "5b15d20a163084040e8e350e6b6cb417bfe73963f34337502f717417a19f71ba",
+          "afterSha256": "8f941bb6b758aa08df3710816d569d86797ff3e24321561fb78b6819e910cebd",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl/3.4.3/lwjgl-3.4.3.jar!org/lwjgl/system/BrowserMemory.class",
+          "beforeSha256": "38f1048787c6e5358c74f3df79f478674124d4d503b1206a4221c38d49abdb36",
+          "afterSha256": "f0778ea9be4b70475a15748bf91c1e7bd36eef4ec1ec1255f6354e6df6c9bb94",
+          "reason": "Memory integration compatibility surface: JS claimOwner is a no-op and the original JS allocator remains in place. Nested class changes reflect source/debug offsets."
+        },
+        {
+          "key": "teavm-classlib-0.15.0-gaius.jar!dev/gaius/browser/BrowserFilePersistence.class",
+          "beforeSha256": "eef9a45da53a95646c69ec288cd53027acd02c6c8665a5598979035e84c4fad2",
+          "afterSha256": "3776c31f564a7a08a724d8cf763784bcd46fe402a32587d27f1e8acf17da785a",
+          "reason": "Memory integration uses the Wasm-only quality memory tier for initial defaults; persisted options and file/screenshot persistence remain intact. Nested debug changes are accepted."
+        },
+        {
+          "key": "teavm-classlib-0.15.0-gaius.jar!org/teavm/classlib/java/nio/file/TFiles.class",
+          "beforeSha256": "76d38b8c8073593d8999242be6b36d2936009d18efae3a0a825d6970403377e1",
+          "afterSha256": "0905a4906e3213caef0b56bcf783d066d61df447d5f1eb21855a27f3d87212c9",
+          "reason": "Owner-approved JVM NIO directory-conformance fix; retained default filesystem path."
+        },
+        {
+          "key": "client-named-26.3-gaius.jar!net/minecraft/client/Minecraft.class",
+          "beforeSha256": "c76baa7ed83ff2e1decde31f4352191f9efc2869e11d453e7137f2857fcc6347",
+          "afterSha256": "214227ddcc48f893210e8a263bbfd02f07e3d1f927d0609da13ae3208a848625",
+          "reason": "Game rules of a new world: on the profiles whose Minecraft.doWorldLoad receives vanilla's Optional<GameRules>, the Worker handoff forwards that argument (BrowserSingleplayerClient.open overload) so the rules chosen on the Create World screen reach the integrated server Worker. javap of the previous and the new class differ only by the inserted aload 4, the open descriptor and the shifted exception-table offsets."
+        },
+        {
+          "key": "client-named-26.3-gaius.jar!net/minecraft/server/Main.class",
+          "beforeSha256": "ea74388d61ae2b40aa60b334914fc74cfbcad776cfac541d008669de2d0743d1",
+          "afterSha256": "4b9c967ee8cf86f11933f667624f3b242989d2a913a66dd6b0fad654cd8345b3",
+          "reason": "Game rules of a new world: the dedicated-server factory passes BrowserIntegratedServerMain.initialGameRules(world features) to DedicatedServer where it passed Optional.empty(), the argument in which vanilla's integrated server receives the Create World rules. javap of the previous and the new class differ only by that replaced call."
+        },
+        {
+          "key": "client-named-26.3-gaius.jar!net/minecraft/world/level/chunk/ChunkGeneratorStructureState.class",
+          "beforeSha256": "a1c959ea89378b7d23e4b31ca8e9bd9f7fd66afecb20bcba40e5e2b7cfd64bcc",
+          "afterSha256": "abcca11d39283f50e68946d9960079d1313c1a2f163412ba9923ab0c32906767",
+          "reason": "Owner decision (2026-10-09): the JS target applies patchChunkGeneratorStructureStateBrowserLazyRings instead of the fast-ring patch, so the frozen JS class (the generateRingPositions search lambda returned the start chunk without vanilla's biome search, moving 702 of 768 stronghold positions) is replaced by one that keeps vanilla's search. Against the vanilla class only generateRingPositions differs: Util.backgroundExecutor().forName(..) plus CompletableFuture.supplyAsync become BrowserRingPositions.defer(search, startChunkX, startChunkZ) and Util.sequence becomes BrowserRingPositions.sequence(list, 112); the search lambda, loop and random draws are vanilla's. structure-rings-parity.mjs --target js: 768/768 positions and 9558/9558 contains() answers identical to vanilla per profile (6 seeds). The helper is a TeaVM source (port/src/main/java), not an overlay."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-sdl/3.4.3/lwjgl-sdl-3.4.3.jar!org/lwjgl/sdl/BrowserSdlDom.class",
+          "beforeSha256": "91de854eafd04c3e5601735bc543a18d066fc001b7509297a78dda133d6b78d1",
+          "afterSha256": "eb5fcf2e961766648f0b2883717c9e49d64133d9c59d7c9a3ab6d53b59fb2a6a",
+          "reason": "fix for whole-page main-loop freeze (surface acquired but not presented); see out/freeze evidence. javap -p -c -s -constants of the baseline class (sha256 = beforeSha256) and of the candidate class (sha256 = afterSha256), CRLF removed, constant-pool indexes and instruction offsets normalised, compared member by member (out/integ8/javap); two static int fields (presentCount, presentCountAtLoopBoundary) and eight methods are added (9 -> 11 fields, 48 -> 56 methods) and two methods change. swapWindow gains presentCount++ at its start. presentYield wraps the unchanged yieldAfterPresent call in a catch (RuntimeException) that, for the same non-threading suspension refusal (new isNonThreadingSuspension), calls recordSkippedPresentYield (a @JSBody counter, globalThis.__gaiusSkippedPresentYields) and otherwise rethrows. The new loopBoundary() returns at once when HostLoop.jspi() is true (WebAssembly GC/JSPI build), when presentCount differs from presentCountAtLoopBoundary (a frame was presented since the previous boundary; the mark is updated) and when HostLoop.inNoSuspendFrame() is true; otherwise it yields one timer turn (@Async yieldLoopTurn through yieldLoopTurn(AsyncCallback), its lambda and the @JSBody scheduleLoopTurn, setTimeout(resume, 0)), swallows only the same refusal and counts the yield (recordLoopBoundaryYield, globalThis.__gaiusLoopBoundaryYields). Every other method, field, flag and annotation is unchanged."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-sdl/3.4.3/lwjgl-sdl-3.4.3.jar!org/lwjgl/sdl/BrowserSdlEvents$DomSource.class",
+          "beforeSha256": "c8b8ec0db89aff4a3ef9d0d2d70c1404a748409111a1ef3c0d0f99a99731cf8f",
+          "afterSha256": "80dcf83b9b5250fdb1f1c047ca5c9394b6dcffccfe25811f892eebf8ee7f8cc8",
+          "reason": "fix for whole-page main-loop freeze (surface acquired but not presented); see out/freeze evidence. javap -p -c -s -constants of the baseline class (sha256 = beforeSha256) and of the candidate class (sha256 = afterSha256), CRLF removed, constant-pool indexes and instruction offsets normalised, compared member by member (out/integ8/javap); the override loopBoundary() is added (9 -> 10 methods); its body only calls BrowserSdlDom.loopBoundary(); nothing else changes."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-sdl/3.4.3/lwjgl-sdl-3.4.3.jar!org/lwjgl/sdl/BrowserSdlEvents$Source.class",
+          "beforeSha256": "d9c5d68137b2a96e822171efcc2f089c6ce0022da4356e2e10f3f012b6bf8186",
+          "afterSha256": "139ee1daf8a20086aa8d9ae621f7b2753d05f2af7102e37216e479547fe16f06",
+          "reason": "fix for whole-page main-loop freeze (surface acquired but not presented); see out/freeze evidence. javap -p -c -s -constants of the baseline class (sha256 = beforeSha256) and of the candidate class (sha256 = afterSha256), CRLF removed, constant-pool indexes and instruction offsets normalised, compared member by member (out/integ8/javap); the default method loopBoundary() with an empty body (return) is added to the event Source interface (8 -> 9 methods); nothing else changes."
+        },
+        {
+          "key": "libraries/org/lwjgl/lwjgl-sdl/3.4.3/lwjgl-sdl-3.4.3.jar!org/lwjgl/sdl/BrowserSdlEvents.class",
+          "beforeSha256": "e0601598023fbcbaab4cd27d33d6124649a37cb972580f50a62cee876373a3db",
+          "afterSha256": "adc93bc5964813287c3e24f149b3b3f655f8d6cabf01dff1fdd8297facfb0e91",
+          "reason": "fix for whole-page main-loop freeze (surface acquired but not presented); see out/freeze evidence. javap -p -c -s -constants of the baseline class (sha256 = beforeSha256) and of the candidate class (sha256 = afterSha256), CRLF removed, constant-pool indexes and instruction offsets normalised, compared member by member (out/integ8/javap); one static boolean field drainCycleStart is added (13 -> 14 fields) and three members change. The static initializer and useSource set it to true. poll(SDL_Event) with an event first checks it: when set it clears it and calls source.loopBoundary() before the existing releaseText() path; when the poll finds no event (returns 0) it sets it again. poll(null) (the peek path) and every other member, flag and attribute are unchanged (11 methods)."
+        },
+        {
+          "key": "teavm-classlib-0.15.0-gaius.jar!org/teavm/classlib/java/util/concurrent/locks/TLockSupport.class",
+          "beforeSha256": "7f9d0e692fce979e7c45e5ef7742b20484a506e834065efd9e959960484b6dcc",
+          "afterSha256": "ca4d8bfdc355d648ef16954c870bd0c571b2be968047ec9b71b9472ef661f6ae",
+          "reason": "fix for whole-page main-loop freeze (surface acquired but not presented); see out/freeze evidence. javap -p -c -s -constants of the baseline class (sha256 = beforeSha256) and of the candidate class (sha256 = afterSha256), CRLF removed, constant-pool indexes and instruction offsets normalised, compared member by member (out/integ8/javap); identical in the three profiles. One method changes and one is added (13 -> 14 methods; fields, flags and annotations unchanged): sleepMillis gains a catch (RuntimeException) handler that runs the same parkedThreads cleanup and returns when the new private static helper isNonThreadingSuspension finds TeaVM's refusal text 'Suspension point reached from non-threading context' in the exception message (a null or any other message rethrows); the existing InterruptedException handler and the finally cleanup keep their code and only their exception-table ranges and labels shift."
+        }
+      ]
+    }
+  },
+  "perfgl2SourceRevision": "19ffe07f257d1698a87b0d0ed79f0ccfe9e5274a",
+  "gameRulesSourceRevision": "1a43db2a41ac860c5941d3c27d566eb6e38afce4",
+  "freezeSourceRevision": "52dbb6b0ceeee542d46d3796e8b25796c1a83891",
+  "ringsSourceRevision": "9bd00896ba4759f9386daacbce92298069873897",
+  "ringsEvidenceDirectory": "<work-dir>\\evidence\\rings\\g1",
+  "freezeJavapEvidenceDirectory": "<work-dir>\\evidence\\integ8\\javap"
+}

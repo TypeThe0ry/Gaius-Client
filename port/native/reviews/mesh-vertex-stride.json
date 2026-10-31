@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "reviewDate": "2026-10-08",
+  "reviewedFromCommit": "d52d0bb74817c3d95c2b26fb22d1f3d527e1ca21",
+  "decision": "Owner-approved lock schema extension, not a vanilla method change.",
+  "evidenceDirectory": "<work-dir>/evidence/integ2/kernelmirror",
+  "profiles": [
+    {
+      "profile": "1.21.11",
+      "vanillaJarSha256": "13f52c73daae5c2542d103ddb55835b718b437a35cccda6481e67f2abce04c55",
+      "approvedLockSha256": "419e4f5628f85fd31f284e57be50a436e3d1e8d8a9b8dbb683f4e0538176f960",
+      "reviewedLockSha256": "e5629e431e003412e4fd6b5eccd160e24da8a904121ac6b25c61a5eeeb46b971",
+      "methodCount": 4637,
+      "unchangedMethodCount": 4637,
+      "bodyChanges": 0,
+      "signatureChanges": 0,
+      "missingMethods": 0,
+      "semanticDelta": {
+        "meshVertexStride": {
+          "before": null,
+          "after": 32
+        }
+      },
+      "vanillaBlockVertexStride": 32,
+      "vertexProbeSha256": "238a1435edb672728fa21ab4e606b99991582609e29461822dfa25d7e202f1a4",
+      "vertexBytecodeSha256": "df0412fe1d11e331d58eae6728c3145331852bb22f1e1cacb30fddfe6030f7b5",
+      "enabledDefaults": {
+        "noise": true,
+        "mesher": true,
+        "light": false,
+        "worldgen": true,
+        "shaderxlat": true
+      }
+    },
+    {
+      "profile": "26.2",
+      "vanillaJarSha256": "a5a268e45d6a29d4669bee53d20848fa8aec4baceee130dec552e883267b26d2",
+      "approvedLockSha256": "3204b8407dc12ecb80bae46d6b5ee12cb96591939577916ca26cc65084a62801",
+      "reviewedLockSha256": "4118b21e12ba9803592f22c13f367faf32035f171c4b8a84603d426cdaa0bce3",
+      "methodCount": 4734,
+      "unchangedMethodCount": 4734,
+      "bodyChanges": 0,
+      "signatureChanges": 0,
+      "missingMethods": 0,
+      "semanticDelta": {
+        "meshVertexStride": {
+          "before": null,
+          "after": 28
+        }
+      },
+      "vanillaBlockVertexStride": 28,
+      "vertexProbeSha256": "c8a46a7649c6fa437d58a4df6c9cb61f1224c1c62ad5546f1ddff94f25becb5d",
+      "vertexBytecodeSha256": "9c3c726571929c6c4e1cfe2f99abb59d65620c65421d9dca40ec947cceb3e0c5",
+      "enabledDefaults": {
+        "noise": true,
+        "mesher": true,
+        "light": true,
+        "worldgen": true,
+        "shaderxlat": true
+      }
+    },
+    {
+      "profile": "26.3",
+      "vanillaJarSha256": "cd91fa1c9c1671a9da18f06537416b20a80f804bbe886801c3e4444420479d13",
+      "approvedLockSha256": "a4b2008b62fe295cb027cc48cdd169f8e85e2514d0e11b565e474e8cd327650e",
+      "reviewedLockSha256": "4dc5531cca104f223badd36755c6074a85385d15e5ebcb8dbbeee357bec09980",
+      "methodCount": 5421,
+      "unchangedMethodCount": 5421,
+      "bodyChanges": 0,
+      "signatureChanges": 0,
+      "missingMethods": 0,
+      "semanticDelta": {
+        "meshVertexStride": {
+          "before": null,
+          "after": 28
+        }
+      },
+      "vanillaBlockVertexStride": 28,
+      "vertexProbeSha256": "c8a46a7649c6fa437d58a4df6c9cb61f1224c1c62ad5546f1ddff94f25becb5d",
+      "vertexBytecodeSha256": "5e6691f8ab59d111ccd3a42e6403a765fff6bb0a1ef5e55dba97f6e32d8aa332",
+      "enabledDefaults": {
+        "noise": true,
+        "mesher": true,
+        "light": true,
+        "worldgen": true,
+        "shaderxlat": true
+      }
+    }
+  ],
+  "checks": [
+    "Candidate locks re-inspect all named vanilla jars using ClassHasher.java with -Xmx3g.",
+    "Each old lock digest equals its approved kernelMirror.lockSha256 before replacement.",
+    "All exact method identities, hashes, declarations and lock fields are identical except meshVertexStride.",
+    "VertexFormatProbe reads DefaultVertexFormat.BLOCK.getVertexSize() from each vanilla jar with cached dependencies.",
+    "cargo test --offline --locked -j 2 --manifest-path port/native/Cargo.toml -p gaius-mesher -p gaius-mesher-wasm passes.",
+    "incompatible_vertex_layouts_decline_before_emitting_geometry verifies non-empty unsupported layouts decline; empty sections still mesh.",
+    "The existing JVM golden Main harness reproduces all 33 checked-in files and 1342 noise/RNG cases byte for byte using output-directory classes and dumps.",
+    "The native workspace passes all 113 tests, including golden_fixtures_match_bit_for_bit and kernel_reproduces_golden_noise."
+  ],
+  "limitations": "No new complete JVM mesh corpus, full TeaVM build or browser acceptance. Matching mirror hashes alone do not prove numeric parity.",
+  "goldenVerification": {
+    "reportSha256": "be76a0438a2a26fc4ba46faeb731d63989fef10172b17fbcd2906edc2ede01e1",
+    "profiles": [
+      {
+        "profile": "1.21.11",
+        "files": 11,
+        "cases": 393,
+        "byteIdentical": true
+      },
+      {
+        "profile": "26.2",
+        "files": 11,
+        "cases": 399,
+        "byteIdentical": true
+      },
+      {
+        "profile": "26.3",
+        "files": 11,
+        "cases": 550,
+        "byteIdentical": true
+      }
+    ]
+  },
+  "nativeVerification": {
+    "command": "cargo test --offline --locked -j 2 --manifest-path port/native/Cargo.toml --workspace",
+    "passed": 113,
+    "failed": 0,
+    "ignored": 0,
+    "logSha256": "318ff16564eb1f2ec44fd4399c723b40f2ad547bd41576d2a930f830923624e0"
+  }
+}

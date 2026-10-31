@@ -1,0 +1,21 @@
+[package]
+name = "gaius-shaderxlat-wasm"
+description = "wasm32 entry point of gaius-shaderxlat (SPIR-V to WGSL), framed by gaius-kernel-abi."
+version = "0.4.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# run_shader_link, the GLSL front-end of the blaze3d profiles (26.2, 1.21.11). It adds about 50 KB
+# raw and 12 KB brotli to the module (957,180 vs 907,006 bytes raw, 218,494 vs 206,506 brotli;
+# port/native/golden/shaders/README.md). A 26.3-only build can leave it out (--no-default-features).
+default = ["link"]
+link = []
+
+[dependencies]
+gaius-kernel-abi = { path = "../../gaius-kernel-abi" }
+gaius-shaderxlat = { path = ".." }

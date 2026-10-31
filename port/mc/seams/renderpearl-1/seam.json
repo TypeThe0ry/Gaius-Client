@@ -1,0 +1,76 @@
+{
+  "generation": "renderpearl-1",
+  "description": "WebGPU behind vanilla's renderpearl render SPI (GpuBackend -> FrontendGpuDevice -> GpuDeviceBackend), introduced with Minecraft 26.3. A delegating adapter onto port/gpu/webgpu-core.",
+  "package": "dev.gaius.mc.seams.renderpearl1",
+  "sources": "src/main/java",
+  "tests": {
+    "sources": "src/test/java",
+    "mains": [
+      "dev.gaius.mc.seams.renderpearl1.RpEnumsTest",
+      "dev.gaius.gpu.webgpu.CoreDowngradeTest",
+      "dev.gaius.mc.seams.renderpearl1.RpDeviceFeaturesTest"
+    ]
+  },
+  "entry": {
+    "backend": "dev.gaius.mc.seams.renderpearl1.RpBackend",
+    "backendsToTry": "dev.gaius.mc.seams.renderpearl1.RpBackends.backendsToTry"
+  },
+  "registration": {
+    "target": "net.minecraft.client.PreferredGraphicsApi.getBackendsToTry",
+    "patch": "Minecraft262BrowserPatcher.patchPreferredGraphicsApi",
+    "targets": [
+      "js",
+      "wasmgc"
+    ],
+    "wired": true
+  },
+  "shaders": "spirv",
+  "depthZeroToOne": true,
+  "frameYield": "org.lwjgl.sdl.SDLVideo.SDL_GL_SwapWindow",
+  "requiredEntries": [
+    "org/lwjgl/sdl/SDLVideo.SDL_CreateWindow",
+    "org/lwjgl/sdl/SDLVideo.SDL_GL_SwapWindow",
+    "org/lwjgl/sdl/SDLVideo.SDL_GL_SetSwapInterval"
+  ],
+  "fingerprint": {
+    "file": "port/mc/profiles/{profile}/spi.fingerprint",
+    "closurePackages": [
+      "com/mojang/renderpearl/"
+    ],
+    "implements": [
+      "com/mojang/renderpearl/api/buffers/TransientMemory",
+      "com/mojang/renderpearl/api/commands/GpuFence",
+      "com/mojang/renderpearl/api/commands/GpuQueryPool",
+      "com/mojang/renderpearl/api/device/GpuBackend",
+      "com/mojang/renderpearl/api/textures/GpuSampler",
+      "com/mojang/renderpearl/api/textures/GpuTexture",
+      "com/mojang/renderpearl/api/textures/GpuTextureView",
+      "com/mojang/renderpearl/backend/api/BackendRenderPipeline",
+      "com/mojang/renderpearl/backend/api/BackendRenderPipeline$Pending",
+      "com/mojang/renderpearl/backend/api/CommandEncoderBackend",
+      "com/mojang/renderpearl/backend/api/GpuDeviceBackend",
+      "com/mojang/renderpearl/backend/api/GpuSurfaceBackend",
+      "com/mojang/renderpearl/backend/api/RenderPassBackend"
+    ],
+    "extends": [
+      "com/mojang/renderpearl/backend/common/BaseGpuBuffer"
+    ],
+    "instantiates": [
+      "com/mojang/renderpearl/api/buffers/GpuBufferSlice",
+      "com/mojang/renderpearl/api/buffers/GpuBufferSlice$MappedView",
+      "com/mojang/renderpearl/api/device/BackendCreationException",
+      "com/mojang/renderpearl/api/device/DeviceFeatures",
+      "com/mojang/renderpearl/api/device/DeviceInfo",
+      "com/mojang/renderpearl/api/device/DeviceLimits",
+      "com/mojang/renderpearl/api/device/HintsAndWorkarounds",
+      "com/mojang/renderpearl/api/device/SurfaceException",
+      "com/mojang/renderpearl/backend/opengl/GlBackend",
+      "com/mojang/renderpearl/frontend/FrontendGpuDevice"
+    ],
+    "watch": [
+      "com/mojang/renderpearl/backend/common/BaseGpuTexture",
+      "com/mojang/renderpearl/backend/common/BaseGpuTextureView",
+      "com/mojang/renderpearl/frontend/FrontendRenderPass"
+    ]
+  }
+}

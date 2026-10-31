@@ -1,0 +1,17 @@
+[package]
+name = "gaius-noise"
+description = "Bit-exact ports of Minecraft's random sources and world-generation noise."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+md-5 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+serde_json = "1"
+
+# build.rs reads the kernelSemantics of port/versions/*.json.
+[build-dependencies]
+serde_json = "1"

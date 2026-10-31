@@ -1,0 +1,37 @@
+gaius-source-patch 2
+base 3a8f7d77df6e0955b84f2a07fbe55be604a23d518633a7320d4e37b77da80265
+result dba2afcbf2c0963c3eb8ab41def1622a1186b0419b0936d90569f8aa48ee44c1
+@@ 2 3
+@@ 7 0
++/**
++ * Browser-safe sound executor.
++ *
++ * <p>The official client starts a dedicated daemon thread here and blocks it in
++ * {@code managedBlock}. TeaVM targets a single JavaScript thread, so starting
++ * that thread can monopolize the browser event loop before the main menu is
++ * shown. Browser audio is currently stubbed elsewhere, so sound tasks are run
++ * synchronously on the caller or ignored after shutdown.</p>
++ */
+@@ 8 1
+@@ 15 9
++    @Override
++    public Runnable wrapRunnable(Runnable runnable) {
++        return runnable;
+@@ 26 5
++    @Override
++    public void schedule(Runnable runnable) {
+@@ 32 1
++            this.doRunTask(runnable);
+@@ 36 1
++    @Override
++    protected boolean shouldRun(Runnable runnable) {
+@@ 40 0
++    @Override
+@@ 41 1
++        return Thread.currentThread();
+@@ 44 6
++    @Override
+@@ 51 1
++        // No background sound thread exists in the browser build.
+@@ 57 7
+@@ 68 1

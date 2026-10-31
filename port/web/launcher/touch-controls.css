@@ -1,0 +1,215 @@
+    /* Gaius touch controls (port/web/launcher/touch-controls.js). Everything is scoped to
+       html.gaius-touch or the overlay, so desktop pages are unchanged. */
+    html.gaius-touch,
+    html.gaius-touch body {
+      overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    html.gaius-touch #mc-canvas {
+      touch-action: none;
+    }
+
+    .gt-root {
+      position: fixed;
+      inset: 0;
+      /* Portable pages may keep a boot/status PRE layer above the game canvas. Keep the
+         input surface above every shell layer so world touches are delivered after boot. */
+      z-index: 2147483000;
+      overflow: hidden;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+      --gt-opacity: 0.6;
+      font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #f4f4f4;
+    }
+
+    .gt-root[hidden],
+    .gt-root[data-mode="off"] {
+      display: none;
+    }
+
+    .gt-root[data-mode="gui"] [data-modes]:not([data-modes~="gui"]),
+    .gt-root[data-mode="world"] [data-modes]:not([data-modes~="world"]),
+    .gt-root [data-unsupported="1"] {
+      display: none;
+    }
+
+    .gt-safe {
+      position: absolute;
+      visibility: hidden;
+      pointer-events: none;
+      padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+        env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    }
+
+    .gt-ctl {
+      position: absolute;
+      left: 0;
+      top: 0;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: var(--gt-opacity);
+      background: rgba(28, 28, 28, 0.55);
+      border: 2px solid rgba(0, 0, 0, 0.7);
+      box-shadow: inset 2px 2px 0 rgba(255, 255, 255, 0.24), inset -2px -2px 0 rgba(0, 0, 0, 0.38);
+      color: #f4f4f4;
+      will-change: transform;
+      pointer-events: none;
+    }
+
+    .gt-ctl[data-on="1"] {
+      background: rgba(255, 255, 255, 0.4);
+      box-shadow: inset -2px -2px 0 rgba(255, 255, 255, 0.24), inset 2px 2px 0 rgba(0, 0, 0, 0.38);
+    }
+
+    .gt-ctl svg {
+      width: 56%;
+      height: 56%;
+      fill: currentColor;
+      filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.65));
+    }
+
+    .gt-root[data-mode="gui"] .gt-ctl {
+      opacity: calc(var(--gt-opacity) * 0.8);
+    }
+
+    .gt-stick {
+      position: absolute;
+      left: 0;
+      top: 0;
+      box-sizing: border-box;
+      border-radius: 50%;
+      opacity: var(--gt-opacity);
+      background: rgba(20, 20, 20, 0.32);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.35);
+      will-change: transform;
+      pointer-events: none;
+    }
+
+    .gt-stick[data-on="1"] {
+      background: rgba(20, 20, 20, 0.45);
+    }
+
+    .gt-knob {
+      position: absolute;
+      box-sizing: border-box;
+      background: rgba(200, 200, 200, 0.55);
+      border: 2px solid rgba(0, 0, 0, 0.7);
+      box-shadow: inset 2px 2px 0 rgba(255, 255, 255, 0.35), inset -2px -2px 0 rgba(0, 0, 0, 0.35);
+      will-change: transform;
+    }
+
+    .gt-knob[data-sprint="1"] {
+      background: rgba(120, 200, 90, 0.7);
+    }
+
+    .gt-rotate {
+      position: absolute;
+      top: max(12px, env(safe-area-inset-top, 0px));
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 6px 10px;
+      border: 2px solid #000;
+      background: rgba(0, 0, 0, 0.7);
+      box-shadow: inset 2px 2px 0 rgba(255, 255, 255, 0.18);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    .gt-rotate[hidden],
+    .gt-panel[hidden] {
+      display: none;
+    }
+
+    .gt-panel {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      z-index: 1;
+      box-sizing: border-box;
+      width: min(340px, calc(100vw - 32px));
+      max-height: calc(100% - 32px);
+      overflow: auto;
+      padding: 14px 16px;
+      transform: translate(-50%, -50%);
+      border: 2px solid #000;
+      background: rgba(16, 16, 16, 0.94);
+      box-shadow: inset 2px 2px 0 rgba(255, 255, 255, 0.2), inset -2px -2px 0 rgba(0, 0, 0, 0.5);
+      touch-action: manipulation;
+      pointer-events: auto;
+    }
+
+    .gt-panel-title {
+      margin-bottom: 12px;
+      color: #ffff55;
+      letter-spacing: 0.08em;
+      text-align: center;
+    }
+
+    .gt-panel-row {
+      display: grid;
+      grid-template-columns: 6.5em 1fr 3.5em;
+      align-items: center;
+      gap: 8px;
+      margin: 10px 0;
+    }
+
+    .gt-panel-range {
+      width: 100%;
+      margin: 0;
+      accent-color: #6cc349;
+    }
+
+    .gt-panel-value {
+      text-align: right;
+      color: #c8c8c8;
+    }
+
+    .gt-panel-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .gt-panel-button {
+      flex: 1;
+      min-height: 40px;
+      border: 2px solid #000;
+      background: #6f6f6f;
+      box-shadow: inset 2px 2px 0 rgba(255, 255, 255, 0.35), inset -2px -2px 0 rgba(0, 0, 0, 0.4);
+      color: #fff;
+      font: inherit;
+      text-shadow: 1px 1px 0 #3f3f3f;
+    }
+
+    .gt-panel-button:active {
+      background: #8b8bb5;
+    }
+
+    .gt-text {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 1px;
+      height: 1px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      opacity: 0;
+      font-size: 16px;
+      color: transparent;
+      caret-color: transparent;
+      background: transparent;
+      pointer-events: none;
+    }

@@ -1,0 +1,1103 @@
+{
+  "schema": 1,
+  "acknowledgements": [
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorStructureStateBrowserFastRings",
+      "previousTargetDigest": "70ddd67cb04fa139db95d2c7c4b5c181c34840159839c887d947854176a92c46",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision (b), 2026-10-09: the js target uses the exact lazy ring positions too, so the fast-ring patch is removed and its rewrite of the generateRingPositions search lambda leaves the js lock. It returned each concentric-ring start chunk without vanilla's biome search and moved 699 of 768 stronghold positions (6 seeds, structure-rings-parity.mjs against the old patch). patchChunkGeneratorStructureStateBrowserLazyRings replaces it on both targets (next entry)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorStructureStateBrowserLazyRings",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "d3232ee0f4d403de9aaea59fc2757fe2a9ed25d1ccfeb6fbbe5bca6361b3aa11",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision (b), 2026-10-09: the js target applies the lazy ring positions as the wasmgc target does (BrowserRingPositions moved to the shared sources, compiled for both TeaVM targets). generateRingPositions keeps vanilla's loop, RNG draws and search lambda with its forked RandomSource; only the supplyAsync submission of each search and Util.sequence become BrowserRingPositions.defer and .sequence, so every search runs once, lazily. JVM parity 768/768 positions and 9558/9558 contains() answers identical to vanilla on 6 seeds x 3 profiles (structure-rings-parity.mjs --target js). The frozen JS dists get the change with the v0.4.0 rebuild."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchEnderDragonPhaseFactory",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "6343cba3c324388e9b389e796a581e0ff30a7c72d822a6aac67dbfcfb49b16d1",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28 against the clean profile bytecode: EnderDragonPhase registers these eleven classes in this order and invokes each public EnderDragon constructor. Direct dispatch preserves phase IDs and constructors while removing only unavailable reflection metadata; unknown IDs still fail with Error."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchPersistentEntityUuidBrowserRecovery",
+      "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch (dc68c26d), so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchSuppressInsecureServerToast",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "f373c0e5dc85cd20f8a54c4af865eefd7512b0d1463de3919837fc1e89c5b160",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Owner-requested UI change: remove only the offline insecure-server chat warning toast while preserving the seen-warning state, chat transport, validation and every other toast. The rewrite is limited to the vanilla ClientPacketListener toast submission."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserAboutLink",
+      "previousTargetDigest": "8aad514f9fdca175a417674fca5ea9e35ba54cbfc9cccaf46f99853cf76e7839",
+      "currentTargetDigest": "c7bf2d34b618eac9a776d3ac55a929a57d60290093867eca60c824ab6d51aacb",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-26: the title text still uses the build-injected release version, while the short lower-right About button is kept within the title bounds and opens BrowserAboutScreen through the vanilla widget callback."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserFastMenus",
+      "previousTargetDigest": "aa89bf39af61d07e6f306ee286896fc46ccb3cfda9eb02f3fdb2787138dbc9ca",
+      "currentTargetDigest": "55fdd5c64a67dd76ad8accea1994dc8a3dfbd408cc4225bf13cb0fada0d3ced0",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-25 after the titletext integration: the patch retains the vanilla title screen fast-menu and Realms behavior while removing the browser-inapplicable profile, language, and accessibility icon row and routing the version/about text through BrowserAboutScreen. The static-write set is unchanged; the JavaScript target remains vanilla-exact apart from these documented browser UI changes."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchBlockableEventLoopBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "92c0c07e9381cc23fa2613e113e19a7848ed8aa675991e199aeb5bcb597aea92",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "0447513b360b3544b52dfdad94edcc67878dc4726713a13c455b8c5d9b630d8d",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorStructureStateBrowserFastRings",
+      "previousTargetDigest": "70ddd67cb04fa139db95d2c7c4b5c181c34840159839c887d947854176a92c46",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Approved by the repository owner (2026-10-09). The fast-ring rewrite of the generateRingPositions search lambda leaves the wasmgc lock: it returned each concentric-ring start chunk without vanilla's biome search and moved 699 of 768 stronghold positions (6 seeds, structure-rings-parity.mjs against the old patch). WebAssembly GC applies patchChunkGeneratorStructureStateBrowserLazyRings instead: the lazy ring positions keep vanilla's loop, RNG draws and biome search and only defer each search; JVM parity 768/768 positions and 9558/9558 contains() answers identical to vanilla on 6 seeds x 3 profiles (structure-rings-parity.mjs --target wasmgc)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchClientPacketUtilsBrowserInline",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "f5136605b0892aa234e0e90a47fcfb77d0df50daf79fcc070d4890afd21bdc3f",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchClimateRTreeBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "475587ac193dc6f45148b4db27f7fe405c47d341b6965bb2df7231e6b920b305",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchCompressionDecoderBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "669d0dca2218b2bcd5c588a8f9b5e947680942a686c996c652d155046f95cd78",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchEnderDragonPhaseFactory",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "6343cba3c324388e9b389e796a581e0ff30a7c72d822a6aac67dbfcfb49b16d1",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28 against the clean profile bytecode: EnderDragonPhase registers these eleven classes in this order and invokes each public EnderDragon constructor. Direct dispatch preserves phase IDs and constructors while removing only unavailable reflection metadata; unknown IDs still fail with Error."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchLevelChunkSectionBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "f292660d18fba411a3fcad740e19eea6235bd6ada5addd1beec0a8127227cf71",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchLightEngineBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "b764f53d440f8dbb4261b31fb080b6b68bc34eec638d931bf5fb276d13883b20",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchMobBrowserAiCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "3a0a0cbc16d4bf1959b3e405745b3fe80ce8ea1403b4e401be28641ec142dac1",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchNoiseBasedChunkGeneratorBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "905832e7b02d4f99c020b3eb4d297e4729550de63cc09f89664f6576bb4c0eb1",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchNoiseChunkBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "ba250480c4cb799a858892b3f6a44f33d07ed415585a991a9efc30cef5406e55",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPacketProcessorBrowserSlice",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "f34091bcdc6cc52054d60a8a231122727a49326f3c00ade897287d1ecc28e8df",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPersistentEntityUuidBrowserRecovery",
+      "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch (dc68c26d), so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPlayerSpawnFinderBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "fc89a8fc2ba55dd0ad68dd3432621fea8bf97fd3aa43cecadec256e253cdb1c9",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPrepareSpawnTaskBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "533622c4d65e09c117481d74bf846bf9f0b0baada2deeae8bfe76c831becc954",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchRenderSystemBrowserDeadlineCompensation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "5bec67e71a5dfbdd85dd4526dca50c18b95d16a990a9ecd5319cda53c1bb4522",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchSuppressInsecureServerToast",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "f373c0e5dc85cd20f8a54c4af865eefd7512b0d1463de3919837fc1e89c5b160",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Owner-requested UI change: remove only the offline insecure-server chat warning toast while preserving the seen-warning state, chat transport, validation and every other toast. The rewrite is limited to the vanilla ClientPacketListener toast submission."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchSurfaceSystemBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "c46da87effa783a4c058b0650d054dc8fdb0d7a57a8d42627d80200baa5a3b9f",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserAboutLink",
+      "previousTargetDigest": "8aad514f9fdca175a417674fca5ea9e35ba54cbfc9cccaf46f99853cf76e7839",
+      "currentTargetDigest": "c7bf2d34b618eac9a776d3ac55a929a57d60290093867eca60c824ab6d51aacb",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-26: the title text still uses the build-injected release version, while the short lower-right About button is kept within the title bounds and opens BrowserAboutScreen through the vanilla widget callback."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserFastMenus",
+      "previousTargetDigest": "aa89bf39af61d07e6f306ee286896fc46ccb3cfda9eb02f3fdb2787138dbc9ca",
+      "currentTargetDigest": "55fdd5c64a67dd76ad8accea1994dc8a3dfbd408cc4225bf13cb0fada0d3ced0",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-25 after the titletext integration: the patch retains the vanilla title screen fast-menu and Realms behavior while removing the browser-inapplicable profile, language, and accessibility icon row and routing the version/about text through BrowserAboutScreen. The static-write set is unchanged; the WasmGC target remains vanilla-exact apart from these documented browser UI changes."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchUtilBlockUntilDoneBrowserOutput",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "1597177b270a6e93b8b1940f6b29ecf05332e3732e649a5cd25b77e9eb750a78",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchWorldCarverBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "7a3453158fdb872fba21320c35c21304aa805d274aa6674e2ac55ba72c86829c",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftServerWorkerPatcher.lightKernelPatches",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "7828e5fbc9dc8a7c4c55aec62ea7d4c49d25cac8e727d194020d65d677de3481",
+      "reviewer": "TypeThe0ry",
+      "reason": "The light kernel patches now also apply to the 1.21.11 wasmgc target (rewrites of ThreadedLevelLightEngine.lightChunk/checkBlock plus the kernel hooks, routed through LightVersionOps for the getLightBlock/ChunkPos naming). javap shows the 1.21.11 and 26.2 light engines differ only in lambda numbering and that method name; the patched first-light route matches vanilla on 63,897,600 nibbles (2 seeds x 6 modes incl. kernel off, simd, baseline, declines and failure fallback) and the column goldens match on 270/270 cases. The frozen js target keeps vanilla lighting (NOT_APPLICABLE for js)."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "Minecraft262BrowserPatcher.meshKernelPatches",
+      "previousTargetDigest": "8162ffc93f5423558f85da4213389f41180f508abed65b8d5efa59934591d1d0",
+      "currentTargetDigest": "6ad1c0a0cfe651b3e484a5f3994a50bc9540aa085506b7c25279e4618eb5af25",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-13): meshKernelPatches also rewrites SectionUpdateTracker so that a section dirty (block, light or neighbour update) bumps a per-section revision and asynchronous mesh-kernel results compiled from an older snapshot are discarded and recompiled (157e2954, cherry-picked as d691e54a). Fixes the stale streaming snapshots found on T9 (79 sections whose first request differed from vanilla: 62 block, 56 light, 33 biome snapshots). Evidence: mesh-snapshot-copy.test.mjs 2/2, mesh-snapshot-lifecycle-jvm-smoke (update before submit/install/after handoff, published vs queued light, ASM verifier), light snapshot 5,832 samples 0 differences. The mesher kernel stays quarantined on 26.2/26.3 until browser verification."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorStructureStateBrowserFastRings",
+      "previousTargetDigest": "620136468fa54e1b67ec9854f8b8cbc915c772e617e17cf612153b54caf675a9",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision (b), 2026-10-09: the js target uses the exact lazy ring positions too, so the fast-ring patch is removed and its rewrite of the generateRingPositions search lambda leaves the js lock. It returned each concentric-ring start chunk without vanilla's biome search and moved 702 of 768 stronghold positions (6 seeds, structure-rings-parity.mjs against the old patch). patchChunkGeneratorStructureStateBrowserLazyRings replaces it on both targets (next entry)."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorStructureStateBrowserLazyRings",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "1fd2940f5ccf2b9c2042dd5e8a25b81ce045b237c395e9b337e9862968075117",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision (b), 2026-10-09: the js target applies the lazy ring positions as the wasmgc target does (BrowserRingPositions moved to the shared sources, compiled for both TeaVM targets). generateRingPositions keeps vanilla's loop, RNG draws and search lambda with its forked RandomSource; only the supplyAsync submission of each search and Util.sequence become BrowserRingPositions.defer and .sequence, so every search runs once, lazily. JVM parity 768/768 positions and 9558/9558 contains() answers identical to vanilla on 6 seeds x 3 profiles (structure-rings-parity.mjs --target js). The frozen JS dists get the change with the v0.4.0 rebuild."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchEnderDragonPhaseFactory",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "6343cba3c324388e9b389e796a581e0ff30a7c72d822a6aac67dbfcfb49b16d1",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28 against the clean profile bytecode: EnderDragonPhase registers these eleven classes in this order and invokes each public EnderDragon constructor. Direct dispatch preserves phase IDs and constructors while removing only unavailable reflection metadata; unknown IDs still fail with Error."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchPersistentEntityUuidBrowserRecovery",
+      "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch (dc68c26d), so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchSuppressInsecureServerToast",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "1dd30d816fc3d71bd8fc7c49c6abb0a009a8d57bd7be4f37b817f9c59c901977",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Owner-requested UI change: remove only the offline insecure-server chat warning toast while preserving the seen-warning state, chat transport, validation and every other toast. The rewrite is limited to the vanilla ClientPacketListener toast submission."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserAboutLink",
+      "previousTargetDigest": "7d6dae4e508b4099c4af0ffa4595d85eb460e76ca1f95818993eb8508078d843",
+      "currentTargetDigest": "504d1ceb94efe5d134295bc134e2dfa1c20574df7e27bf22736df4889152f63a",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-26: the title text still uses the build-injected release version, while the short lower-right About button is kept within the title bounds and opens BrowserAboutScreen through the vanilla widget callback."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserFastMenus",
+      "previousTargetDigest": "2cef86447d6b1f5b145afc0d91df155bab64212743853b7fca4d2d5a4a7b5739",
+      "currentTargetDigest": "ca66525c5b25b5ce6ab1405308e047bc4b0ff5c582bab9ee22164c1d0f8da13d",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28 by vanilla-semantics review: the combined TitleScreen browser patch preserves vanilla button flow and semantics. Fast-menu changes remain limited to browser UI adaptation. In the browser Quit Game action, the patch replaces the synchronous vanilla Minecraft.stop() call with BrowserSingleplayerClient.quit(). Vanilla stop() tears down the client and integrated singleplayer server synchronously; the browser quit barrier performs the equivalent browser-owned save/world-close sequence first (worker stop acknowledgement, persistent-storage flush and close, lease release), then publishes the localized stopped page and asynchronously releases Wasm/graphics resources. This avoids a WasmGC renderer freeze while preserving the saved world and terminal state. No static-write set changes."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftServerWorkerPatcher.worldgenKernelPatches",
+      "previousTargetDigest": "b23d79fc60471efe954d7d91c3509277ff8c5accad4d626d26b65c490a576815",
+      "currentTargetDigest": "ec83ceaeb38d194055120ebb92483e4932eb95eb1eabc79ca12e4ffb74b97ba1",
+      "reviewer": "TypeThe0ry",
+      "reason": "The worldgen patch now adds the recorded carver NoiseChunk seam required by the 26.2 fast terrain integration; the JVM 20/20 and 441/441 all-fields regressions remain passing, and the 26.2 WasmGC path keeps the existing NOISE-to-SURFACE lifetime contract."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.meshKernelPatches",
+      "previousTargetDigest": "8162ffc93f5423558f85da4213389f41180f508abed65b8d5efa59934591d1d0",
+      "currentTargetDigest": "6ad1c0a0cfe651b3e484a5f3994a50bc9540aa085506b7c25279e4618eb5af25",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-13): meshKernelPatches also rewrites SectionUpdateTracker so that a section dirty (block, light or neighbour update) bumps a per-section revision and asynchronous mesh-kernel results compiled from an older snapshot are discarded and recompiled (157e2954, cherry-picked as d691e54a). Fixes the stale streaming snapshots found on T9 (79 sections whose first request differed from vanilla: 62 block, 56 light, 33 biome snapshots). Evidence: mesh-snapshot-copy.test.mjs 2/2, mesh-snapshot-lifecycle-jvm-smoke (update before submit/install/after handoff, published vs queued light, ASM verifier), light snapshot 5,832 samples 0 differences. The mesher kernel stays quarantined on 26.2/26.3 until browser verification."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchChunkGenerationCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "a9fcc12e6a94f025deecbb32c2bba03c6cd97360800bbcb3fa22d1ff54bacbd4",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchChunkMapMovementCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "414eabdc5c4d5e35d0b22a794e409ded78c4a848b08752ee22ac5919c5c311fb",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchChunkTrackingViewDifferenceCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "fc7512dceacbaced9145650d1e37e15df7b3a0a82ba0c31c9fd47ed070408985",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchDistanceManagerCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "aac044c0cbdb61021645e0f8fc8d0a88713de61770988b03ea6a8dbaf1039cb4",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchSectionRenderTaskRetryYields",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "c9506446cd59217cebda24ec707f25a843d60f428a7e661fbbe326ae4a5dc525",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchServerChunkBroadcastCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "7582bf4a56430296dfb6f93ba8f3c43e9c93a3d69a749caa43217b8da9171b41",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchTerrainSectionUniformBlock",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "f4939b4f49fef65cbaa124b03a1501240c4e27310083146e7d243c8ccabef34a",
+      "reviewer": "TypeThe0ry",
+      "reason": "Approved for the 26.2 WasmGC target: T7 evidence <work-dir>/out7/train-T7/smoke/acc-26.2-wasm-gl-sr/console.log reports GaiusChunkSections as unsupported in terrain pipelines. Registering the block in GlProgram.uniformsByName before vanilla's active-block scan prevents that warning and preserves BrowserOpenGL's last uniform-buffer binding used by ensureTerrainUbo. The patch is WasmGC-only; frozen JavaScript output remains unchanged."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchBlockableEventLoopBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "92c0c07e9381cc23fa2613e113e19a7848ed8aa675991e199aeb5bcb597aea92",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "610a231ecc77f3ec2df98b2fb7f60a3c00ff4a57678133273e1e7433d362adda",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorStructureStateBrowserFastRings",
+      "previousTargetDigest": "620136468fa54e1b67ec9854f8b8cbc915c772e617e17cf612153b54caf675a9",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Approved by the repository owner (2026-10-09). The fast-ring rewrite of the generateRingPositions search lambda leaves the wasmgc lock: it returned each concentric-ring start chunk without vanilla's biome search and moved 702 of 768 stronghold positions (6 seeds, structure-rings-parity.mjs against the old patch). WebAssembly GC applies patchChunkGeneratorStructureStateBrowserLazyRings instead: the lazy ring positions keep vanilla's loop, RNG draws and biome search and only defer each search; JVM parity 768/768 positions and 9558/9558 contains() answers identical to vanilla on 6 seeds x 3 profiles (structure-rings-parity.mjs --target wasmgc)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchClientPacketUtilsBrowserInline",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "f5136605b0892aa234e0e90a47fcfb77d0df50daf79fcc070d4890afd21bdc3f",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchClimateRTreeBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "513b6ff8022cbe9875ccbcb07c447183c0b912814b60780fc746fe51c10c642e",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchCompressionDecoderBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "669d0dca2218b2bcd5c588a8f9b5e947680942a686c996c652d155046f95cd78",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchEnderDragonPhaseFactory",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "6343cba3c324388e9b389e796a581e0ff30a7c72d822a6aac67dbfcfb49b16d1",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28 against the clean profile bytecode: EnderDragonPhase registers these eleven classes in this order and invokes each public EnderDragon constructor. Direct dispatch preserves phase IDs and constructors while removing only unavailable reflection metadata; unknown IDs still fail with Error."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchJigsawPlacementBrowserDeepCheckpoints",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "dc9971e14ae19c4afa96dcbd3d1fc15f67effd9ec0fb1067765461a2d24c915e",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchLevelChunkSectionBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "75051769fbe640183034e4e00d826e4beb49dcbbe0039e26b5392fcd1734ea0c",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchLightEngineBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "47ea56556e6bcf72d04923787c8589de8615ef3d21dc53ce800c08c96a870afc",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchMobBrowserAiCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "575aa00ba707cdf092720a8ca01da3d8bad8b9253497d318461e1844de1f8b02",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchNoiseBasedChunkGeneratorBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "1bf93516ca6a2a800e1176ef786c136e47a9ccd0679ad1793dc0eaddc68d0169",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchNoiseChunkBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "539133b711c00e4f7ba48c50b7bdd23f9f14c31178674cf5ac2f6b1db9739602",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPacketProcessorBrowserSlice",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "0a629a5267550e456089261252b6bca0485748bb00e756b8fc77d774c98d6991",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPersistentEntityUuidBrowserRecovery",
+      "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch (dc68c26d), so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPlayerSpawnFinderBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "c1ffabaeb36cf9187f3bc6c377afd39a4710aa730575dfb5ce80e2fcc9706a95",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPrepareSpawnTaskBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "6c7ed998201a164d057c0aff6fd48bfc78ec5c09dbf3bc987947c8da095f0e8d",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchRenderSystemBrowserDeadlineCompensation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "a52510fb268610b27126de54da381d2f6df9773df563cb72e0b628d86baa2d8b",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchSuppressInsecureServerToast",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "1dd30d816fc3d71bd8fc7c49c6abb0a009a8d57bd7be4f37b817f9c59c901977",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Owner-requested UI change: remove only the offline insecure-server chat warning toast while preserving the seen-warning state, chat transport, validation and every other toast. The rewrite is limited to the vanilla ClientPacketListener toast submission."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchSurfaceSystemBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "3b9d0825fdf0883d0c22bedcdf426ee150225ad2ac4494bf974b5adba4f48219",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserAboutLink",
+      "previousTargetDigest": "7d6dae4e508b4099c4af0ffa4595d85eb460e76ca1f95818993eb8508078d843",
+      "currentTargetDigest": "504d1ceb94efe5d134295bc134e2dfa1c20574df7e27bf22736df4889152f63a",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-26: the title text still uses the build-injected release version, while the short lower-right About button is kept within the title bounds and opens BrowserAboutScreen through the vanilla widget callback."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserFastMenus",
+      "previousTargetDigest": "2cef86447d6b1f5b145afc0d91df155bab64212743853b7fca4d2d5a4a7b5739",
+      "currentTargetDigest": "ca66525c5b25b5ce6ab1405308e047bc4b0ff5c582bab9ee22164c1d0f8da13d",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28 by vanilla-semantics review: the combined TitleScreen browser patch preserves vanilla button flow and semantics. Fast-menu changes remain limited to browser UI adaptation. In the browser Quit Game action, the patch replaces the synchronous vanilla Minecraft.stop() call with BrowserSingleplayerClient.quit(). Vanilla stop() tears down the client and integrated singleplayer server synchronously; the browser quit barrier performs the equivalent browser-owned save/world-close sequence first (worker stop acknowledgement, persistent-storage flush and close, lease release), then publishes the localized stopped page and asynchronously releases Wasm/graphics resources. This avoids a WasmGC renderer freeze while preserving the saved world and terminal state. No static-write set changes."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchUtilBlockUntilDoneBrowserOutput",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "1597177b270a6e93b8b1940f6b29ecf05332e3732e649a5cd25b77e9eb750a78",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchWorldCarverBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "55add7a626dab0d036ecb64e7c45a293fb0a689a405048c7ac050509f8c24eb1",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftServerWorkerPatcher.worldgenKernelPatches",
+      "previousTargetDigest": "b23d79fc60471efe954d7d91c3509277ff8c5accad4d626d26b65c490a576815",
+      "currentTargetDigest": "ec83ceaeb38d194055120ebb92483e4932eb95eb1eabc79ca12e4ffb74b97ba1",
+      "reviewer": "TypeThe0ry",
+      "reason": "The worldgen patch now adds the recorded carver NoiseChunk seam required by the 26.2 fast terrain integration; the JVM 20/20 and 441/441 all-fields regressions remain passing, and the 26.2 WasmGC path keeps the existing NOISE-to-SURFACE lifetime contract."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "Minecraft262BrowserPatcher.meshKernelPatches",
+      "previousTargetDigest": "a5d56533253edac077d6f7781832c39efcbda9957e46446c2af1274660c0b19c",
+      "currentTargetDigest": "b9680630ed7bb020fde8f6ae9c11cebd444a6e907dd6007d2417723718bfa3ec",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-13): meshKernelPatches also rewrites SectionUpdateTracker so that a section dirty (block, light or neighbour update) bumps a per-section revision and asynchronous mesh-kernel results compiled from an older snapshot are discarded and recompiled (157e2954, cherry-picked as d691e54a). Fixes the stale streaming snapshots found on T9 (79 sections whose first request differed from vanilla: 62 block, 56 light, 33 biome snapshots). Evidence: mesh-snapshot-copy.test.mjs 2/2, mesh-snapshot-lifecycle-jvm-smoke (update before submit/install/after handoff, published vs queued light, ASM verifier), light snapshot 5,832 samples 0 differences. The mesher kernel stays quarantined on 26.2/26.3 until browser verification."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorStructureStateBrowserFastRings",
+      "previousTargetDigest": "04755711bf4d26599d867a7f66e1a665b3f61bd39d96b898be07381c983732ea",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision (b), 2026-10-09: the js target uses the exact lazy ring positions too, so the fast-ring patch is removed and its rewrite of the generateRingPositions search lambda leaves the js lock. It returned each concentric-ring start chunk without vanilla's biome search and moved 702 of 768 stronghold positions (6 seeds, structure-rings-parity.mjs against the old patch). patchChunkGeneratorStructureStateBrowserLazyRings replaces it on both targets (next entry)."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorStructureStateBrowserLazyRings",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "1fd2940f5ccf2b9c2042dd5e8a25b81ce045b237c395e9b337e9862968075117",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision (b), 2026-10-09: the js target applies the lazy ring positions as the wasmgc target does (BrowserRingPositions moved to the shared sources, compiled for both TeaVM targets). generateRingPositions keeps vanilla's loop, RNG draws and search lambda with its forked RandomSource; only the supplyAsync submission of each search and Util.sequence become BrowserRingPositions.defer and .sequence, so every search runs once, lazily. JVM parity 768/768 positions and 9558/9558 contains() answers identical to vanilla on 6 seeds x 3 profiles (structure-rings-parity.mjs --target js). The frozen JS dists get the change with the v0.4.0 rebuild."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchEnderDragonPhaseFactory",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "6343cba3c324388e9b389e796a581e0ff30a7c72d822a6aac67dbfcfb49b16d1",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28 against the clean profile bytecode: EnderDragonPhase registers these eleven classes in this order and invokes each public EnderDragon constructor. Direct dispatch preserves phase IDs and constructors while removing only unavailable reflection metadata; unknown IDs still fail with Error."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchPersistentEntityUuidBrowserRecovery",
+      "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch (dc68c26d), so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchSuppressInsecureServerToast",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "36d7137a6c09dcff65743d028edf166f30603236de110cd8bbb6138dcd4dac41",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Owner-requested UI change: remove only the offline insecure-server chat warning toast while preserving the seen-warning state, chat transport, validation and every other toast. The rewrite is limited to the vanilla ClientPacketListener toast submission."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserAboutLink",
+      "previousTargetDigest": "7d6dae4e508b4099c4af0ffa4595d85eb460e76ca1f95818993eb8508078d843",
+      "currentTargetDigest": "504d1ceb94efe5d134295bc134e2dfa1c20574df7e27bf22736df4889152f63a",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-26: the title text still uses the build-injected release version, while the short lower-right About button is kept within the title bounds and opens BrowserAboutScreen through the vanilla widget callback."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserFastMenus",
+      "previousTargetDigest": "7e550e92d192ede84fd2ef4a3aa1b9435ff1d18e94cfacf46a5a7969f8502119",
+      "currentTargetDigest": "6912049e29dfb8ed735ea0d596d296056276160dbbc17e4ea779ffe3bad9758c",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28 by vanilla-semantics review: the combined TitleScreen browser patch preserves vanilla button flow and semantics. Fast-menu changes remain limited to browser UI adaptation. In the browser Quit Game action, the patch replaces the synchronous vanilla Minecraft.stop() call with BrowserSingleplayerClient.quit(). Vanilla stop() tears down the client and integrated singleplayer server synchronously; the browser quit barrier performs the equivalent browser-owned save/world-close sequence first (worker stop acknowledgement, persistent-storage flush and close, lease release), then publishes the localized stopped page and asynchronously releases Wasm/graphics resources. This avoids a WasmGC renderer freeze while preserving the saved world and terminal state. No static-write set changes."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftServerWorkerPatcher.worldgenKernelPatches",
+      "previousTargetDigest": "da8fd88eaf424b2b024295ba3277f2af13b77673dbaff0a2700501167eed8b9f",
+      "currentTargetDigest": "822c4e7de4b03f6a03ac954c24ee7fd178a725660be1a3513464f3d8a6b5a15f",
+      "reviewer": "TypeThe0ry",
+      "reason": "The worldgen patch now adds the recorded lazy NoiseChunk carver seam required by the 26.3 fast terrain integration; JVM 20/20 and 441/441 worldgen regressions remain passing, and the browser kernel remains default-off pending the release gate."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "TerrainPatches263.forceSeparateTerrainDraws",
+      "previousTargetDigest": "540e8738af77c91481163d4ce340721e532f87208425b07873b5a9e91c5e313f",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-21 against the clean 26.3 client-named.jar: the former bytecode pin was removed because WebGPU supports the vanilla indirect terrain path. The remaining patch is a read-only structural check; it preserves the constructor capability decision, the single render read, and the indirect prepare call, so the output is vanilla-exact."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "WorldgenPatches263.patchMaterialRuleContextIntCounters",
+      "previousTargetDigest": "4ed9d04652ad0c09408a4bf018dddd680e865cc446a1790d4272c5b7e3667910",
+      "currentTargetDigest": "9a70468c172148dded16448ed294a60a55d896cda95d6d058577f21ee750017d",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-16: the patch now records browserLastUpdate at construction, clears browserResultInitialized before compute, and throws the vanilla cached-null IllegalStateException after a failed compute at the same update. PatchTargetsTest lazyConditionFailureState is a JVM ASM regression check; no Chrome or TeaVM build was used."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.meshKernelPatches",
+      "previousTargetDigest": "a5d56533253edac077d6f7781832c39efcbda9957e46446c2af1274660c0b19c",
+      "currentTargetDigest": "b9680630ed7bb020fde8f6ae9c11cebd444a6e907dd6007d2417723718bfa3ec",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-13): meshKernelPatches also rewrites SectionUpdateTracker so that a section dirty (block, light or neighbour update) bumps a per-section revision and asynchronous mesh-kernel results compiled from an older snapshot are discarded and recompiled (157e2954, cherry-picked as d691e54a). Fixes the stale streaming snapshots found on T9 (79 sections whose first request differed from vanilla: 62 block, 56 light, 33 biome snapshots). Evidence: mesh-snapshot-copy.test.mjs 2/2, mesh-snapshot-lifecycle-jvm-smoke (update before submit/install/after handoff, published vs queued light, ASM verifier), light snapshot 5,832 samples 0 differences. The mesher kernel stays quarantined on 26.2/26.3 until browser verification."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchChunkGenerationCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "a9fcc12e6a94f025deecbb32c2bba03c6cd97360800bbcb3fa22d1ff54bacbd4",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchChunkMapMovementCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "414eabdc5c4d5e35d0b22a794e409ded78c4a848b08752ee22ac5919c5c311fb",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchChunkTrackingViewDifferenceCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "fc7512dceacbaced9145650d1e37e15df7b3a0a82ba0c31c9fd47ed070408985",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchDistanceManagerCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "aac044c0cbdb61021645e0f8fc8d0a88713de61770988b03ea6a8dbaf1039cb4",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchSectionRenderTaskRetryYields",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "8cbfe2aa47331e7f6a4ba3241909763b784cec3d48b11a512cd4e12c5298ceca",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "Minecraft262BrowserPatcher.patchServerChunkBroadcastCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "7582bf4a56430296dfb6f93ba8f3c43e9c93a3d69a749caa43217b8da9171b41",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchBlockableEventLoopBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "92c0c07e9381cc23fa2613e113e19a7848ed8aa675991e199aeb5bcb597aea92",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "0e232ca024ecba0f5936c8354966963cbd2b7b832ce2327f64a4f6f884d0c6cf",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchChunkGeneratorStructureStateBrowserFastRings",
+      "previousTargetDigest": "04755711bf4d26599d867a7f66e1a665b3f61bd39d96b898be07381c983732ea",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Approved by the repository owner (2026-10-09). The fast-ring rewrite of the generateRingPositions search lambda leaves the wasmgc lock: it returned each concentric-ring start chunk without vanilla's biome search and moved 702 of 768 stronghold positions (6 seeds, structure-rings-parity.mjs against the old patch). WebAssembly GC applies patchChunkGeneratorStructureStateBrowserLazyRings instead: the lazy ring positions keep vanilla's loop, RNG draws and biome search and only defer each search; JVM parity 768/768 positions and 9558/9558 contains() answers identical to vanilla on 6 seeds x 3 profiles (structure-rings-parity.mjs --target wasmgc)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchClientPacketUtilsBrowserInline",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "f5136605b0892aa234e0e90a47fcfb77d0df50daf79fcc070d4890afd21bdc3f",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchClimateRTreeBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "513b6ff8022cbe9875ccbcb07c447183c0b912814b60780fc746fe51c10c642e",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchCompressionDecoderBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "669d0dca2218b2bcd5c588a8f9b5e947680942a686c996c652d155046f95cd78",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchEnderDragonPhaseFactory",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "6343cba3c324388e9b389e796a581e0ff30a7c72d822a6aac67dbfcfb49b16d1",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28 against the clean profile bytecode: EnderDragonPhase registers these eleven classes in this order and invokes each public EnderDragon constructor. Direct dispatch preserves phase IDs and constructors while removing only unavailable reflection metadata; unknown IDs still fail with Error."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchJigsawPlacementBrowserDeepCheckpoints",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "205c69c22ead34a09fabb2fa5dd47041526e8808e001be994e623fdd50676cd5",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchLevelChunkSectionBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "4e7bfdb735a1ef0804ac1f51e0bfc9d8c7a2fd95428908f47943693dc4495be6",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchLightEngineBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "47ea56556e6bcf72d04923787c8589de8615ef3d21dc53ce800c08c96a870afc",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchMobBrowserAiCooperation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "81ca671f3f0ca0de2a6d5cdd5843e15acbae871d42897c0ff993c207257104b6",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchNoiseBasedChunkGeneratorBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "b861a5487c295e0a613140f46d2073fadd93f5ad87824fc0ba33c22d01298903",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPacketProcessorBrowserSlice",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "0a629a5267550e456089261252b6bca0485748bb00e756b8fc77d774c98d6991",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPersistentEntityUuidBrowserRecovery",
+      "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch (dc68c26d), so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPlayerSpawnFinderBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "c1ffabaeb36cf9187f3bc6c377afd39a4710aa730575dfb5ce80e2fcc9706a95",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchPrepareSpawnTaskBrowser",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "704da46a53558b23564dfcd7923fcf89cff0ed1b30489cec857745f8014e8439",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchRenderSystemBrowserDeadlineCompensation",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "a52510fb268610b27126de54da381d2f6df9773df563cb72e0b628d86baa2d8b",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchSuppressInsecureServerToast",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "36d7137a6c09dcff65743d028edf166f30603236de110cd8bbb6138dcd4dac41",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Owner-requested UI change: remove only the offline insecure-server chat warning toast while preserving the seen-warning state, chat transport, validation and every other toast. The rewrite is limited to the vanilla ClientPacketListener toast submission."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchSurfaceSystemBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "85ff5baabf155496b12a2ae7fde1b4d1dc098942c88ad3c55450ee61af755005",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserAboutLink",
+      "previousTargetDigest": "7d6dae4e508b4099c4af0ffa4595d85eb460e76ca1f95818993eb8508078d843",
+      "currentTargetDigest": "504d1ceb94efe5d134295bc134e2dfa1c20574df7e27bf22736df4889152f63a",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-26: the title text still uses the build-injected release version, while the short lower-right About button is kept within the title bounds and opens BrowserAboutScreen through the vanilla widget callback."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchTitleScreenBrowserFastMenus",
+      "previousTargetDigest": "7e550e92d192ede84fd2ef4a3aa1b9435ff1d18e94cfacf46a5a7969f8502119",
+      "currentTargetDigest": "6912049e29dfb8ed735ea0d596d296056276160dbbc17e4ea779ffe3bad9758c",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28 by vanilla-semantics review: the combined TitleScreen browser patch preserves vanilla button flow and semantics. Fast-menu changes remain limited to browser UI adaptation. In the browser Quit Game action, the patch replaces the synchronous vanilla Minecraft.stop() call with BrowserSingleplayerClient.quit(). Vanilla stop() tears down the client and integrated singleplayer server synchronously; the browser quit barrier performs the equivalent browser-owned save/world-close sequence first (worker stop acknowledgement, persistent-storage flush and close, lease release), then publishes the localized stopped page and asynchronously releases Wasm/graphics resources. This avoids a WasmGC renderer freeze while preserving the saved world and terminal state. No static-write set changes."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchUtilBlockUntilDoneBrowserOutput",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "1597177b270a6e93b8b1940f6b29ecf05332e3732e649a5cd25b77e9eb750a78",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-09): restore the browser scheduling patch on WasmGC/JSPI. Vanilla section upload retries spin with Thread.onSpinWait and section compilation never completes; the restored seven-patch set renders WebGL2 terrain again in <work-dir>/evidence/terrain/variants/all7 (classes.wasm and all7-gl-world.png)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchWorldCarverBrowserSynchronous",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "ed85d60104e29388210fc2ac4454c0acbb3138ba6aeff0cee8a63047120b08e5",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftServerWorkerPatcher.worldgenKernelPatches",
+      "previousTargetDigest": "da8fd88eaf424b2b024295ba3277f2af13b77673dbaff0a2700501167eed8b9f",
+      "currentTargetDigest": "822c4e7de4b03f6a03ac954c24ee7fd178a725660be1a3513464f3d8a6b5a15f",
+      "reviewer": "TypeThe0ry",
+      "reason": "The worldgen patch now adds the recorded lazy NoiseChunk carver seam required by the 26.3 fast terrain integration; JVM 20/20 and 441/441 worldgen regressions remain passing, and the browser kernel remains default-off pending the release gate."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "TerrainPatches263.forceSeparateTerrainDraws",
+      "previousTargetDigest": "540e8738af77c91481163d4ce340721e532f87208425b07873b5a9e91c5e313f",
+      "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-21 against the clean 26.3 client-named.jar: the former bytecode pin was removed because WebGPU supports the vanilla indirect terrain path. The remaining patch is a read-only structural check; it preserves the constructor capability decision, the single render read, and the indirect prepare call, so the output is vanilla-exact."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "WorldgenPatches263.patchCarvingMaskDeepPulses",
+      "previousTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "currentTargetDigest": "ac9f04953a47553594affddc9f0df0a2b6b053361d2428f3dc8f6fdcd546950e",
+      "reviewer": "TypeThe0ry",
+      "reason": "Owner approval (TypeThe0ry, 2026-10-10): re-enable the server/worldgen cooperation patch on WasmGC. JSPI suspends a Java thread only at explicit suspension points; without the patch long worldgen activations starved the server Worker (worker unresponsive under a long /tp worldgen path, <work-dir>/evidence/wgbrowser/final). With the patch the worker completes the same path, saves and re-enters (<work-dir>/evidence/wgverify)."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "WorldgenPatches263.patchMaterialRuleContextIntCounters",
+      "previousTargetDigest": "4ed9d04652ad0c09408a4bf018dddd680e865cc446a1790d4272c5b7e3667910",
+      "currentTargetDigest": "9a70468c172148dded16448ed294a60a55d896cda95d6d058577f21ee750017d",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-16: the patch now records browserLastUpdate at construction, clears browserResultInitialized before compute, and throws the vanilla cached-null IllegalStateException after a failed compute at the same update. PatchTargetsTest lazyConditionFailureState is a JVM ASM regression check; no Chrome or TeaVM build was used."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchServerGamePacketListenerBrowserWorker",
+      "previousTargetDigest": "3f7479351bae74f790bc808f9f45f57f2655bde80d1107d7088302e0acca43a0",
+      "currentTargetDigest": "45e1c49cdf471730fca48b2cba70d6e0904b3596e1e3b1d1fe6f1b1e73093a89",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28: the browser worker patch retains vanilla movement validation and adds the existing worker movement fast path; for 26.2/26.3 it now instruments the extracted handlePlayerPositionChange method where chunk tracking moved. It redirects only worker movement calls to the same chunk-tracking cooperation helper. The non-worker path remains vanilla; the digest change is required to cover the version-specific method layout."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchServerGamePacketListenerBrowserWorker",
+      "previousTargetDigest": "3f7479351bae74f790bc808f9f45f57f2655bde80d1107d7088302e0acca43a0",
+      "currentTargetDigest": "45e1c49cdf471730fca48b2cba70d6e0904b3596e1e3b1d1fe6f1b1e73093a89",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28: the browser worker patch retains vanilla movement validation and adds the existing worker movement fast path; for 26.2/26.3 it now instruments the extracted handlePlayerPositionChange method where chunk tracking moved. It redirects only worker movement calls to the same chunk-tracking cooperation helper. The non-worker path remains vanilla; the digest change is required to cover the version-specific method layout."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchServerGamePacketListenerBrowserWorker",
+      "previousTargetDigest": "9f1230d0614670139c7dafcc28f63fcc44b2397e6cbe9d1eaa392ef85ee9df56",
+      "currentTargetDigest": "7539548e9d4067a00cf57af5a57a7847f7a8317d4422f63edf9f22c38ffcb29c",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28: the browser worker patch retains vanilla movement validation and adds the existing worker movement fast path; for 26.2/26.3 it now instruments the extracted handlePlayerPositionChange method where chunk tracking moved. It redirects only worker movement calls to the same chunk-tracking cooperation helper. The non-worker path remains vanilla; the digest change is required to cover the version-specific method layout."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchServerGamePacketListenerBrowserWorker",
+      "previousTargetDigest": "9f1230d0614670139c7dafcc28f63fcc44b2397e6cbe9d1eaa392ef85ee9df56",
+      "currentTargetDigest": "7539548e9d4067a00cf57af5a57a7847f7a8317d4422f63edf9f22c38ffcb29c",
+      "reviewer": "vanilla-semantics review",
+      "reason": "Reviewed 2026-10-28: the browser worker patch retains vanilla movement validation and adds the existing worker movement fast path; for 26.2/26.3 it now instruments the extracted handlePlayerPositionChange method where chunk tracking moved. It redirects only worker movement calls to the same chunk-tracking cooperation helper. The non-worker path remains vanilla; the digest change is required to cover the version-specific method layout."
+    }
+  ]
+}

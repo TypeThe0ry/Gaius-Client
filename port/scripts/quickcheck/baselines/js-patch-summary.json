@@ -1,0 +1,80 @@
+{
+ "comment": "PATCH_* lines of a GAIUS_TEAVM_TARGET=js build-overlays.sh run (wasmgc_rules.py rule f); rewrite with --write-baseline only for a reviewed change of the JavaScript patch set",
+ "profiles": {
+  "1.21.11": {
+   "summary": [
+    "PATCH_SUMMARY applied=196 dropped=0 bringupSkipped=0 targetSkipped=4 notApplicable=1",
+    "PATCH_SUMMARY applied=3 dropped=0 bringupSkipped=0 targetSkipped=2"
+   ],
+   "dropped": [],
+   "targetSkipped": [
+    "Minecraft12111BrowserPatcher.patchInitRendererDeviceFactory",
+    "Minecraft12111BrowserPatcher.patchLineWidthVertexFormatAlignment",
+    "MinecraftClientPatcher.patchClimateRTreeBrowserFlatIndex",
+    "MinecraftClientPatcher.patchMinecraftRunFrameBoundary",
+    "MinecraftClientPatcher.patchSingleplayerHostCompression",
+    "MinecraftClientPatcher.patchTickPacketParity"
+   ],
+   "bringupSkipped": []
+  },
+  "26.2": {
+   "summary": [
+    "PATCH_SUMMARY applied=209 dropped=0 bringupSkipped=0 targetSkipped=5",
+    "PATCH_SUMMARY applied=36 dropped=0 bringupSkipped=0 targetSkipped=1"
+   ],
+   "dropped": [],
+   "targetSkipped": [
+    "Minecraft262BrowserPatcher.patchTerrainSectionUniformBlock",
+    "MinecraftClientPatcher.patchClimateRTreeBrowserFlatIndex",
+    "MinecraftClientPatcher.patchMinecraftRunFrameBoundary",
+    "MinecraftClientPatcher.patchSectionBufferBuilderPoolTelemetry",
+    "MinecraftClientPatcher.patchSingleplayerHostCompression",
+    "MinecraftClientPatcher.patchTickPacketParity"
+   ],
+   "bringupSkipped": []
+  },
+  "26.3": {
+   "summary": [
+    "PATCH_SUMMARY applied=189 dropped=20 bringupSkipped=0 targetSkipped=5",
+    "PATCH_SUMMARY applied=31 dropped=5 bringupSkipped=0 targetSkipped=1",
+    "PATCH_SUMMARY applied=32 dropped=0 bringupSkipped=0"
+   ],
+   "dropped": [
+    "Minecraft262BrowserPatcher.patchGlBufferMappedViewRanges",
+    "Minecraft262BrowserPatcher.patchMacosUtil",
+    "Minecraft262BrowserPatcher.patchNoiseChunkGraphMapper",
+    "Minecraft262BrowserPatcher.patchVulkanBackend",
+    "Minecraft262BrowserPatcher.patchVulkanDebug",
+    "MinecraftClientPatcher.patchBeardifierBrowserPackedCompute",
+    "MinecraftClientPatcher.patchBrowserKeyboardHandler",
+    "MinecraftClientPatcher.patchBrowserMouseHandler",
+    "MinecraftClientPatcher.patchCommandEncoderLegacyTextureUpload",
+    "MinecraftClientPatcher.patchDensityFunctionsPureTransformersBrowserDirect",
+    "MinecraftClientPatcher.patchGlRenderPipelineDrawMetadata",
+    "MinecraftClientPatcher.patchGlslPreprocessor",
+    "MinecraftClientPatcher.patchGlx",
+    "MinecraftClientPatcher.patchImprovedNoiseBrowserHotPath",
+    "MinecraftClientPatcher.patchInputConstants.glfw",
+    "MinecraftClientPatcher.patchMultiPlayerGameModeBrowserHitSound",
+    "MinecraftClientPatcher.patchNoiseChunkBrowserSynchronous",
+    "MinecraftClientPatcher.patchNoiseChunkCacheOnceBrowserIntCounters",
+    "MinecraftClientPatcher.patchNoiseChunkContextBrowserIntCounters",
+    "MinecraftClientPatcher.patchNoiseInterpolatorBrowserLerp",
+    "MinecraftClientPatcher.patchOpenUri.utilOs",
+    "MinecraftClientPatcher.patchPerlinNoiseBrowserDoubleWrap",
+    "MinecraftClientPatcher.patchSurfaceRulesContextBrowserReusableBiomeSupplier",
+    "MinecraftClientPatcher.patchSurfaceRulesLazyConditionBrowserPrimitiveCache",
+    "MinecraftClientPatcher.patchSurfaceRulesSequenceBrowserIndexed"
+   ],
+   "targetSkipped": [
+    "Minecraft262BrowserPatcher.patchTerrainSectionUniformBlock",
+    "MinecraftClientPatcher.patchClimateRTreeBrowserFlatIndex",
+    "MinecraftClientPatcher.patchMinecraftRunFrameBoundary",
+    "MinecraftClientPatcher.patchSectionBufferBuilderPoolTelemetry",
+    "MinecraftClientPatcher.patchSingleplayerHostCompression",
+    "MinecraftClientPatcher.patchTickPacketParity"
+   ],
+   "bringupSkipped": []
+  }
+ }
+}

@@ -1,0 +1,6 @@
+port/native/kernel-mirror.toml | Reviewed vanilla bytecode inventory data: exact per-profile method applicability binds approved kernel locks; preserve its bytes, not executable version selection.
+port/scripts/png-java-decoder-parity.mjs | The parity harness defaults to the 26.3 client profile for its fixed reference decoder comparison; this is test configuration, not product runtime selection.
+port/scripts/shape-memo-parity.mjs | The parity harness defaults to the 26.3 client profile when no profile is supplied; this is test configuration, not product runtime selection.
+port/scripts/identifier-hash-parity.mjs | The parity harness defaults to the 26.3 client profile when no --profile is supplied; this is test configuration, not product runtime selection.
+port/tools/src/test/java/dev/gaius/tools/PatcherNegativeBytecodeFixture.java | The negative patcher fixture selects the 26.3 draw shape to exercise its profile-specific bytecode guard; this is test data, not product runtime selection.
+port/scripts/dragon-packet-codec-jvm-smoke.mjs | The JVM smoke defaults to its fixed 26.3 fixture profile; this is test configuration, not product runtime selection.

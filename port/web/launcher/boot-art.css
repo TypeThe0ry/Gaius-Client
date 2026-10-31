@@ -1,0 +1,91 @@
+    /* Gaius boot screen art (port/web/launcher/boot-art.js): the vanilla loading-screen layout
+       drawn with Gaius' own pixel glyphs (no game texture or font). The DOM brand and progress
+       line stay for assistive technology and are hidden visually once the art is up. */
+    html[data-gaius-boot-art="1"] #boot-brand,
+    html[data-gaius-boot-art="1"] #boot-progress-text {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+
+    #gaius-boot-art,
+    #gaius-boot-lines,
+    #gaius-boot-error-title {
+      position: fixed;
+      left: 50%;
+      z-index: 11;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      transform: translateX(-50%);
+      pointer-events: none;
+    }
+
+    #gaius-boot-art {
+      top: 40%;
+      gap: 18px;
+      transform: translate(-50%, -50%);
+    }
+
+    #gaius-boot-lines {
+      top: calc(58% + 34px);
+      gap: 10px;
+    }
+
+    #gaius-boot-error-title {
+      top: 40px;
+      display: none;
+    }
+
+    #gaius-boot-art canvas,
+    #gaius-boot-lines canvas,
+    #gaius-boot-error-title canvas {
+      display: block;
+      max-width: calc(100vw - 32px);
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    #gaius-boot-logo {
+      width: min(384px, 76vw);
+      height: auto;
+    }
+
+    #gaius-boot-lines canvas[data-empty="1"] {
+      visibility: hidden;
+    }
+
+    html[data-gaius-boot-art="1"] #gaius-boot-stack {
+      top: calc(58% + 124px);
+    }
+
+    html[data-gaius-boot-art="1"][data-gaius-shell-view="error"] #gaius-boot-stack {
+      top: 96px;
+    }
+
+    html[data-gaius-shell-view="error"] #gaius-boot-error-title {
+      display: flex;
+    }
+
+    html[data-gaius-shell-view="canvas"] #gaius-boot-art,
+    html[data-gaius-shell-view="canvas"] #gaius-boot-lines,
+    html[data-gaius-shell-view="canvas"] #gaius-boot-error-title,
+    html[data-gaius-shell-view="profile"] #gaius-boot-art,
+    html[data-gaius-shell-view="profile"] #gaius-boot-lines,
+    html[data-gaius-shell-view="error"] #gaius-boot-art,
+    html[data-gaius-shell-view="error"] #gaius-boot-lines {
+      display: none;
+    }
+
+    @media (max-width: 600px) {
+      html[data-gaius-boot-art="1"][data-gaius-shell-view="error"] #gaius-boot-stack {
+        top: 84px;
+      }
+
+      #gaius-boot-error-title {
+        top: 48px;
+      }
+    }

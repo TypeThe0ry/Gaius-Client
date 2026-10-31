@@ -1,0 +1,223 @@
+gaius-source-patch 2
+base 8b90ef6304cd0ac470189ad527bfa8b49369fbd482b9633999f96b591beca4a7
+result c46e53aab8c61daad1a4e4e57d5a5eca132c691f18f5cf63ec11571eaa8034de
+@@ 2 1
++import dev.gaius.browser.AssetArchive;
++import java.io.ByteArrayInputStream;
++import java.io.IOException;
+@@ 4 1
++import java.nio.charset.StandardCharsets;
+@@ 7 3
++import java.util.Arrays;
+@@ 12 1
+@@ 15 1
+@@ 17 1
+@@ 19 1
+@@ 23 4
+@@ 28 0
++/**
++ * Serves the official 26.3 vanilla pack from Gaius' validated browser asset archive.
++ *
++ * <p>26.3 split the 26.2 {@code VanillaPackResources} in two: the PackResources implementation
++ * moved here, and {@code VanillaPackResources} became a plain holder of one "full"
++ * FixedPathPackResources plus the per-layer ones. This override replaces the pack
++ * implementation with the same body as the 26.2 {@code VanillaPackResources} override; the
++ * vanilla holder, {@code $Builder} and {@code VanillaPackResourcesBuilder} stay. Differences to
++ * the 26.2 override:
++ * <ul>
++ *   <li>the constructor keeps the vanilla descriptor but is package-private instead of private,
++ *       so the vanilla {@code FixedPathPackResources$Builder.build} can still call it (the
++ *       builder is not copied, so it is no longer a nestmate);</li>
++ *   <li>no {@code asProvider()}: 26.3 builds that view in
++ *       {@code VanillaPackResources.asResourceManager()} from this pack.</li>
++ * </ul>
++ * The builder's root and per-type paths are ignored: in the browser every instance is the whole
++ * archive. {@code MinecraftClientPatcher.patchVanillaPackResourcesBuilder} empties the jar-root
++ * probe so no desktop path is resolved, and {@code UiPatches263} makes
++ * {@code VanillaPackResourcesBuilder.build} use the full resources as the only layer, so the
++ * archive is exposed once per vanilla pack, as on 26.2.
++ */
+@@ 29 1
++    private static final String RESOURCE_LIST = "dev/gaius/browser/minecraft-resources.txt";
++    private static final String FALLBACK_PACK_ICON = "assets/minecraft/textures/misc/unknown_pack.png";
+=1 1
+@@ 31 2
++    private final ResourceMetadata metadata;
+@@ 34 2
++    private final String[] resources;
++    private final Set<String> resourceSet;
++    private final Map<String, ListedResource[]> listedResourceCache = new HashMap<>();
++    /** The browser asset archive and its byte cache (the JS bridge lives there). */
++    private final AssetArchive archive = new AssetArchive();
+@@ 37 7
++    FixedPathPackResources(
++            PackLocationInfo location,
++            ResourceMetadata metadata,
++            Set<String> namespaces,
++            List<Path> rootPaths,
++            Map<PackType, List<Path>> pathsForType) {
+@@ 45 4
+~180 8
++        Set<String> browserNamespaces = new HashSet<>(namespaces);
++        browserNamespaces.add("gaius");
++        this.namespaces = Set.copyOf(browserNamespaces);
++        this.resources = sortedResourceCopy(loadResourceList());
++        this.resourceSet = new HashSet<>(List.of(this.resources));
+@@ 51 3
++    @Override
++    public IoSupplier<InputStream> getRootResource(String... path) {
++        if (path.length == 0) {
+=116 1
+=60 1
++        return rootSupplierIfPresent(String.join("/", path));
+=49 1
+@@ 55 6
++    public void listRawPaths(PackType type, Identifier id, java.util.function.Consumer<Path> output) {
++        // Browser resources do not have stable java.nio.file.Path values.
+=49 1
+=1 1
++    @Override
++    public void listResources(
++            PackType type, String namespace, String path, PackResources.ResourceOutput output) {
++        for (ListedResource resource : listedResources(type, namespace, path)) {
++            output.accept(resource.id, openClasspathResource(resource.resource));
+=60 1
+=49 1
+@@ 62 1
++    private ListedResource[] listedResources(PackType type, String namespace, String path) {
++        String key = type.getDirectory() + "\n" + namespace + "\n" + path;
++        ListedResource[] cached = this.listedResourceCache.get(key);
++        if (cached != null) {
++            return cached;
+=60 1
++        String root = type.getDirectory() + "/" + namespace + "/";
++        String prefix = root + (path.isEmpty() ? "" : path + "/");
++        List<ListedResource> matches = new ArrayList<>();
++        int start = lowerBound(this.resources, prefix);
++        for (int index = start; index < this.resources.length; index++) {
++            String resource = this.resources[index];
++            if (!resource.startsWith(prefix)) {
++                break;
+=59 1
++            Identifier id = Identifier.tryBuild(namespace, resource.substring(root.length()));
++            if (id != null) {
++                matches.add(new ListedResource(id, resource));
+=59 2
++        cached = matches.toArray(ListedResource[]::new);
++        this.listedResourceCache.put(key, cached);
++        return cached;
+@@ 65 7
++    private static int lowerBound(String[] values, String target) {
++        int low = 0;
++        int high = values.length;
++        while (low < high) {
++            int middle = (low + high) >>> 1;
++            if (values[middle].compareTo(target) < 0) {
++                low = middle + 1;
+=162 1
++                high = middle;
+@@ 73 1
+=60 1
++        return low;
+@@ 76 12
++    @Override
++    public IoSupplier<InputStream> getResource(PackType type, Identifier id) {
++        String resource = type.getDirectory() + "/" + id.getNamespace() + "/" + id.getPath();
++        return supplierIfPresent(resource);
+=49 1
+@@ 89 35
++    @Override
++    public Set<String> getNamespaces(PackType type) {
+@@ 127 5
++    @Override
++    public <T> T getMetadataSection(MetadataSectionType<T> type) {
++        return this.metadata.getSection(type).orElse(null);
+=49 1
+@@ 133 11
++    @Override
+@@ 148 0
++    @Override
+@@ 151 5
++    private IoSupplier<InputStream> supplierIfPresent(String resource) {
++        return exists(resource) ? openClasspathResource(resource) : null;
+=49 1
+@@ 157 9
++    private IoSupplier<InputStream> rootSupplierIfPresent(String resource) {
++        if (!exists(resource) && !existsOnClasspath(resource)) {
++            return "pack.png".equals(resource) ? supplierIfPresent(FALLBACK_PACK_ICON) : null;
+=60 1
++        return openClasspathResource(resource);
+=49 1
+=1 1
++    private IoSupplier<InputStream> openClasspathResource(String resource) {
++        return () -> {
++            byte[] external = archive.read(resource);
++            if (external != null) {
++                return new ByteArrayInputStream(external);
+=59 1
++            InputStream input = openResourceStream(resource);
++            if (input == null) {
++                throw new IOException("Missing browser vanilla resource: " + resource);
+=59 1
++            return new ByteArrayInputStream(input.readAllBytes());
++        };
+=49 1
+=1 1
++    private boolean exists(String resource) {
++        return this.resourceSet.contains(resource);
+=49 1
+=1 1
++    private static boolean existsOnClasspath(String resource) {
++        if (AssetArchive.externalResourceLength(resource) >= 0) {
+~163 12
+=60 1
++        try (InputStream input = openResourceStream(resource)) {
++            return input != null;
++        } catch (IOException ignored) {
+~159 12
+=60 1
+=49 1
+@@ 167 5
++    private static InputStream openResourceStream(String resource) {
++        String normalized = resource.startsWith("/") ? resource.substring(1) : resource;
++        return FixedPathPackResources.class.getClassLoader().getResourceAsStream(normalized);
+=49 1
+=1 1
++    private static String[] loadResourceList() {
++        try (InputStream input = FixedPathPackResources.class.getClassLoader()
++                .getResourceAsStream(RESOURCE_LIST)) {
++            if (input == null) {
++                return new String[0];
+=59 1
++            String[] lines = new String(input.readAllBytes(), StandardCharsets.UTF_8).split("\\r?\\n");
++            List<String> result = new ArrayList<>(lines.length);
++            for (String line : lines) {
++                String trimmed = line.trim();
++                if (!trimmed.isEmpty()) {
++                    result.add(trimmed);
+=87 1
+=59 1
++            return result.toArray(String[]::new);
++        } catch (IOException ignored) {
++            return new String[0];
+=60 1
+=49 1
+@@ 173 5
++    /**
++     * The browser resource-list producer is outside the runtime trust
++     * boundary.  Keep lowerBound's Java String.compareTo precondition true
++     * even when a stale, locale-sorted, or hand-authored list is supplied.
++     */
++    private static String[] sortedResourceCopy(String[] values) {
++        String[] copy = Arrays.copyOf(values, values.length);
++        Arrays.sort(copy);
++        return copy;
+=49 1
+@@ 179 3
++    private static final class ListedResource {
++        private final Identifier id;
++        private final String resource;
+@@ 183 18
++        private ListedResource(Identifier id, String resource) {
++            this.id = id;
++            this.resource = resource;

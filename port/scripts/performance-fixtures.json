@@ -1,0 +1,601 @@
+{
+  "schemaVersion": 1,
+  "uncappedPacingCases": [
+    {
+      "name": "runtime-uncapped-evidence-passes",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+        {"swapInterval":0,"uncappedYieldCount":8,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":8,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":8,"hiddenYieldCount":0,"yieldRequestCount":8,"yieldCompletionCount":8,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":8,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":8,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":8,"hiddenYieldCount":0,"yieldRequestCount":8,"yieldCompletionCount":8,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "pass"
+    },
+    {
+      "name": "options-only-uncapped-evidence-fails-sample-completeness",
+      "samples": [
+        {"runtimeGameFps":240}
+      ],
+      "final": {"runtimeGameFps":240},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "raf-yield-during-uncapped-run-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"presentToRafCount":1,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+        {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":1,"messageChannelYieldCount":4,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":1,"messageChannelYieldCount":4,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "nonzero-swap-interval-fails",
+      "samples": [
+        {"swapInterval":1,"uncappedYieldCount":2,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+        {"swapInterval":1,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":4,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"swapInterval":1,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":4,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "uncapped-scheduler-never-exercised-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":0,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":0,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":0,"hiddenYieldCount":0,"yieldRequestCount":0,"yieldCompletionCount":0,"pendingYieldCount":0,"maxPendingYieldCount":0,"duplicateYieldCallbackCount":0},
+        {"swapInterval":0,"uncappedYieldCount":0,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":0,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":0,"hiddenYieldCount":0,"yieldRequestCount":0,"yieldCompletionCount":0,"pendingYieldCount":0,"maxPendingYieldCount":0,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":0,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":0,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":0,"hiddenYieldCount":0,"yieldRequestCount":0,"yieldCompletionCount":0,"pendingYieldCount":0,"maxPendingYieldCount":0,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "message-channel-yield-never-exercised-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":0,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":0,"pendingYieldCount":2,"maxPendingYieldCount":2,"duplicateYieldCallbackCount":0},
+        {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":0,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":0,"pendingYieldCount":4,"maxPendingYieldCount":4,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":0,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":0,"pendingYieldCount":4,"maxPendingYieldCount":4,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "old-fixed-scheduler-cadence-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":1,"schedulerYieldCount":1,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+        {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":3,"fairYieldCount":1,"schedulerYieldCount":1,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":3,"fairYieldCount":1,"schedulerYieldCount":1,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "timer-fallback-during-uncapped-run-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":1,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+        {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":3,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":1,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":3,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":1,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "scheduler-health-failure-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":1,"messageChannelPostFailureCount":1,"messageChannelRebuildCount":1,"cancelledMessageTaskCount":1,"watchdogYieldCount":1,"visibleYieldCount":2,"hiddenYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+        {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":4,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":1,"messageChannelPostFailureCount":1,"messageChannelRebuildCount":1,"cancelledMessageTaskCount":1,"watchdogYieldCount":1,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":4,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":1,"messageChannelPostFailureCount":1,"messageChannelRebuildCount":1,"cancelledMessageTaskCount":1,"watchdogYieldCount":1,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "missing-health-fields-fail-sample-completeness",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"presentToRafCount":0,"fairYieldCount":1,"visibleYieldCount":2,"hiddenYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":0,"pendingYieldCount":2,"maxPendingYieldCount":2,"duplicateYieldCallbackCount":0},
+        {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"fairYieldCount":2,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":0,"pendingYieldCount":4,"maxPendingYieldCount":4,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"fairYieldCount":2,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":0,"pendingYieldCount":4,"maxPendingYieldCount":4,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "nonzero-null-runtime-sample-fails-completeness",
+      "samples": [
+        {"swapInterval":null,"uncappedYieldCount":2,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+        {"swapInterval":null,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":4,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"swapInterval":null,"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":4,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "absent-runtime-field-fails-sample-completeness",
+      "samples": [
+        {"uncappedYieldCount":2,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+        {"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":4,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0}
+      ],
+      "final": {"uncappedYieldCount":4,"vsyncYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":4,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0,"visibleYieldCount":4,"hiddenYieldCount":0,"yieldRequestCount":4,"yieldCompletionCount":4,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "one-in-flight-message-channel-continuation-passes",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":50,"vsyncYieldCount":0,"visibleYieldCount":50,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":50,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":50,"yieldCompletionCount":50,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":100,"vsyncYieldCount":0,"visibleYieldCount":100,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":99,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":100,"yieldCompletionCount":99,"pendingYieldCount":1,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "pass"
+    },
+    {
+      "name": "early-null-sample-then-complete-window-passes",
+      "samples": [
+        {"swapInterval":null,"uncappedYieldCount":0,"vsyncYieldCount":0,"visibleYieldCount":0,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":0,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":0,"yieldCompletionCount":0,"pendingYieldCount":0,"maxPendingYieldCount":0,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":8,"vsyncYieldCount":0,"visibleYieldCount":8,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":8,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":8,"yieldCompletionCount":8,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":8,"vsyncYieldCount":0,"visibleYieldCount":8,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":8,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":8,"yieldCompletionCount":8,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "pass"
+    },
+    {
+      "name": "complete-samples-with-null-final-are-inconclusive",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":8,"vsyncYieldCount":0,"visibleYieldCount":8,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":8,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":8,"yieldCompletionCount":8,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":null,"uncappedYieldCount":8,"vsyncYieldCount":0,"visibleYieldCount":8,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":8,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":8,"yieldCompletionCount":8,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "inconclusive"
+    },
+    {
+      "name": "request-completion-100-to-1-mismatch-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":50,"vsyncYieldCount":0,"visibleYieldCount":50,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":50,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":50,"yieldCompletionCount":50,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":100,"vsyncYieldCount":0,"visibleYieldCount":100,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":100,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "negative-counter-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":8,"vsyncYieldCount":0,"visibleYieldCount":8,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":8,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":8,"yieldCompletionCount":8,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":8,"vsyncYieldCount":0,"visibleYieldCount":8,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":-1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":8,"yieldCompletionCount":8,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "pending-two-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":50,"vsyncYieldCount":0,"visibleYieldCount":50,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":50,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":50,"yieldCompletionCount":50,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":100,"vsyncYieldCount":0,"visibleYieldCount":100,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":98,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":100,"yieldCompletionCount":98,"pendingYieldCount":2,"maxPendingYieldCount":2,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "counter-decrease-or-reset-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":10,"vsyncYieldCount":0,"visibleYieldCount":10,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":10,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":10,"yieldCompletionCount":10,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":5,"vsyncYieldCount":0,"visibleYieldCount":5,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":5,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":5,"yieldCompletionCount":5,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":12,"vsyncYieldCount":0,"visibleYieldCount":12,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":12,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":12,"yieldCompletionCount":12,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "hidden-pending-timer-path-fails-visible-window",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"visibleYieldCount":0,"hiddenYieldCount":1,"presentToRafCount":0,"messageChannelYieldCount":0,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":0,"pendingYieldCount":1,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":1,"presentToRafCount":0,"messageChannelYieldCount":0,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":1,"yieldRequestCount":2,"yieldCompletionCount":1,"pendingYieldCount":1,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "mid-stream-incomplete-hidden-timer-sample-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":null,"uncappedYieldCount":2,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":1,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":1,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "max-pending-zero-after-request-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":0,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":0,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":0,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "mid-stream-all-zero-reset-sentinel-fails",
+      "samples": [
+        {"swapInterval":0,"uncappedYieldCount":1,"vsyncYieldCount":0,"visibleYieldCount":1,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":1,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":1,"yieldCompletionCount":1,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":null,"uncappedYieldCount":0,"vsyncYieldCount":0,"visibleYieldCount":0,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":0,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":0,"yieldCompletionCount":0,"pendingYieldCount":0,"maxPendingYieldCount":0,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+        {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0}
+      ],
+      "final": {"swapInterval":0,"uncappedYieldCount":2,"vsyncYieldCount":0,"visibleYieldCount":2,"hiddenYieldCount":0,"presentToRafCount":0,"messageChannelYieldCount":2,"fairYieldCount":0,"schedulerYieldCount":0,"timerYieldCount":0,"yieldRequestCount":2,"yieldCompletionCount":2,"pendingYieldCount":0,"maxPendingYieldCount":1,"duplicateYieldCallbackCount":0,"messageChannelCreateFailureCount":0,"messageChannelPostFailureCount":0,"messageChannelRebuildCount":0,"cancelledMessageTaskCount":0,"watchdogYieldCount":0},
+      "expectedVerdict": "fail"
+    }
+  ],
+  "frameCases": [
+    {
+      "name": "one-percent-low-is-slowest-one-percent-mean",
+      "assertDistinctFromP99Reciprocal": true,
+      "elapsedMs": 8300,
+      "segments": [
+        {"frameMs": 8, "count": 990},
+        {"frameMs": 20, "count": 9},
+        {"frameMs": 100, "count": 1}
+      ],
+      "expected": {
+        "sampleCount": 1000,
+        "p99FrameMs": 8,
+        "onePercentSlowestFrameCount": 10,
+        "onePercentSlowestMeanFrameMs": 28,
+        "onePercentLowFps": 35.714,
+        "longestFrameMs": 100
+      }
+    },
+    {
+      "name": "default-gate-passes-at-contract-boundary",
+      "assertDistinctFromP99Reciprocal": false,
+      "elapsedMs": 8333.333,
+      "segments": [
+        {"frameMs": 8.333333, "count": 1000}
+      ],
+      "expected": {
+        "averageFps": 120,
+        "onePercentLowFps": 120,
+        "atLeast500Ms": 0
+      }
+    }
+  ],
+  "ringCases": [
+    {
+      "name": "recover-wrapped-delta-in-chronological-order",
+      "snapshot": {
+        "frameTimes": [9, 10, 11, 4, 5, 6, 7, 8],
+        "sampleCapacity": 8,
+        "sampleWriteIndex": 3,
+        "sampleCount": 8,
+        "frameCount": 11
+      },
+      "previousFrameCount": 5,
+      "expectedSamples": [6, 7, 8, 9, 10, 11],
+      "expectedLostSamples": 0,
+      "expectedWrapped": true
+    },
+    {
+      "name": "report-loss-when-reader-misses-more-than-one-capacity",
+      "snapshot": {
+        "frameTimes": [9, 10, 11, 4, 5, 6, 7, 8],
+        "sampleCapacity": 8,
+        "sampleWriteIndex": 3,
+        "sampleCount": 8,
+        "frameCount": 11
+      },
+      "previousFrameCount": 0,
+      "expectedSamples": [4, 5, 6, 7, 8, 9, 10, 11],
+      "expectedLostSamples": 3,
+      "expectedWrapped": true
+    }
+  ],
+  "queueCases": [
+    {
+      "name": "ten-second-high-water-fails",
+      "thresholds": {"chunk.pendingTasks": 8},
+      "requiredDurationMs": 10000,
+      "timeline": [
+        {"atMillis": 0, "chunk": {"pendingTasks": 0}},
+        {"atMillis": 5000, "chunk": {"pendingTasks": 8}},
+        {"atMillis": 10000, "chunk": {"pendingTasks": 9}},
+        {"atMillis": 15000, "chunk": {"pendingTasks": 8}},
+        {"atMillis": 15500, "chunk": {"pendingTasks": 0}}
+      ],
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "short-high-water-recovers",
+      "thresholds": {"network.inboundQueuedBytes": 100},
+      "requiredDurationMs": 10000,
+      "timeline": [
+        {"atMillis": 0, "network": {"inboundQueuedBytes": 0}},
+        {"atMillis": 5000, "network": {"inboundQueuedBytes": 120}},
+        {"atMillis": 14000, "network": {"inboundQueuedBytes": 120}},
+        {"atMillis": 14500, "network": {"inboundQueuedBytes": 0}}
+      ],
+      "expectedVerdict": "pass"
+    }
+  ],
+  "memoryCases": [
+    {
+      "name": "positive-final-three-post-gc-windows-fail",
+      "durationMs": 1800000,
+      "loadedChunkDelta": 0,
+      "postGcMiB": [100, 101, 102, 103, 104, 105, 106],
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "gc-recovered-soak-passes",
+      "durationMs": 1800000,
+      "loadedChunkDelta": 0,
+      "postGcMiB": [100, 108, 104, 107, 103, 105, 102],
+      "expectedVerdict": "pass"
+    },
+    {
+      "name": "missing-post-gc-data-is-inconclusive",
+      "durationMs": 1800000,
+      "loadedChunkDelta": null,
+      "postGcMiB": [],
+      "expectedVerdict": "inconclusive"
+    }
+  ],
+  "nativeMemoryCases": [
+    {
+      "name": "browser-memory-recovers-after-exit",
+      "durationMs": 1800000,
+      "baseline": [10485760, 100, 50],
+      "regular": [[12582912, 120, 60], [15728640, 135, 70], [14680064, 130, 65]],
+      "postGc": [[12582912, 120, 60], [13631488, 125, 62], [13107200, 123, 61], [13369344, 124, 62]],
+      "cleanup": [[12058624, 115, 58], [11010048, 108, 54], [10485760, 101, 51]],
+      "expectedVerdict": "pass"
+    },
+    {
+      "name": "browser-memory-final-three-windows-grow",
+      "durationMs": 1800000,
+      "baseline": [10485760, 100, 50],
+      "regular": [[12582912, 120, 60], [15728640, 135, 70]],
+      "postGc": [[12582912, 120, 60], [13631488, 121, 61], [14680064, 122, 62], [15728640, 123, 63]],
+      "cleanup": [[15728640, 123, 63]],
+      "expectedVerdict": "fail"
+    },
+    {
+      "name": "browser-memory-cleanup-missing-is-inconclusive",
+      "durationMs": 1800000,
+      "baseline": [10485760, 100, 50],
+      "regular": [[12582912, 120, 60]],
+      "postGc": [[12582912, 120, 60], [13631488, 125, 62], [13107200, 123, 61], [13369344, 124, 62]],
+      "cleanup": [],
+      "expectedVerdict": "inconclusive"
+    }
+  ],
+  "runtimeInvariantCases": [
+    {
+      "name": "runtime-invariants-pass-at-boundary-with-gpu-timeouts",
+      "overrides": {
+        "glStats": {"gpuFenceTimeouts": 25}
+      },
+      "expectedVerdict": "pass",
+      "expectedGpuTimeoutVerdict": "pass"
+    },
+    {
+      "name": "runtime-invariants-missing-required-evidence-is-inconclusive",
+      "omit": ["glStats.gpuEarlyResourceReuse"],
+      "expectedVerdict": "inconclusive",
+      "expectedComponent": "gpuFences"
+    },
+    {
+      "name": "runtime-invariants-gpu-wait-failure-fails",
+      "overrides": {
+        "glStats": {"gpuWaitFailures": 1}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "gpuFences"
+    },
+    {
+      "name": "runtime-invariants-gpu-early-reuse-fails",
+      "overrides": {
+        "glStats": {"gpuEarlyResourceReuse": 1}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "gpuFences"
+    },
+    {
+      "name": "runtime-invariants-gpu-duplicate-delete-fails",
+      "overrides": {
+        "glStats": {"gpuFenceDuplicateDeletes": 1}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "gpuFences"
+    },
+    {
+      "name": "runtime-invariants-current-context-loss-fails",
+      "overrides": {
+        "glStats": {"gpuContextLost": true}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "gpuFences"
+    },
+    {
+      "name": "runtime-invariants-gpu-retire-backlog-fails",
+      "overrides": {
+        "glStats": {"gpuRetireBacklogMax": 9}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "gpuFences"
+    },
+    {
+      "name": "runtime-invariants-gpu-fence-age-fails",
+      "overrides": {
+        "glStats": {"gpuFenceMaxAgeFrames": 121}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "gpuFences"
+    },
+    {
+      "name": "runtime-invariants-gpu-controlled-error-fails",
+      "overrides": {
+        "glStats": {"gpuRetireControlledErrors": 1}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "gpuFences"
+    },
+    {
+      "name": "runtime-invariants-worldgen-network-wait-fails",
+      "overrides": {
+        "worldgen": {"maxNetworkWaitPulses": 3}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "worldgen"
+    },
+    {
+      "name": "runtime-invariants-worldgen-slice-p99-fails",
+      "overrides": {
+        "worldgen": {"p99SliceElapsedMillis": 14.1}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "worldgen"
+    },
+    {
+      "name": "runtime-invariants-worldgen-yield-p99-fails",
+      "overrides": {
+        "worldgen": {"p99YieldDelayMillis": 16.8}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "worldgen"
+    },
+    {
+      "name": "runtime-invariants-task-pulsed-missing-progress-is-inconclusive",
+      "worldgenTelemetryMode": "task-pulsed",
+      "omit": [
+        "worldgen.progressSlices",
+        "worldgen.totalProgressPulses"
+      ],
+      "expectedVerdict": "inconclusive",
+      "expectedComponent": "worldgen"
+    },
+    {
+      "name": "runtime-invariants-task-pulsed-zero-progress-does-not-downgrade",
+      "worldgenTelemetryMode": "task-pulsed",
+      "overrides": {
+        "worldgen": {
+          "progressSlices": 0,
+          "totalProgressPulses": 0
+        }
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "worldgen"
+    },
+    {
+      "name": "runtime-invariants-checkpoint-only-passes-without-active-slice-fields",
+      "worldgenTelemetryMode": "checkpoint-only",
+      "omit": [
+        "worldgen.maxTurnPulses",
+        "worldgen.minimumBudgetMillis",
+        "worldgen.p99SliceElapsedMillis",
+        "worldgen.maxSliceElapsedMillis",
+        "worldgen.maxBudgetOverrunMillis",
+        "worldgen.progressSlices",
+        "worldgen.totalProgressPulses"
+      ],
+      "expectedVerdict": "pass",
+      "expectedComponent": "worldgen"
+    },
+    {
+      "name": "runtime-invariants-checkpoint-only-missing-yield-is-inconclusive",
+      "worldgenTelemetryMode": "checkpoint-only",
+      "omit": ["worldgen.checkpointOnlyYields"],
+      "expectedVerdict": "inconclusive",
+      "expectedComponent": "worldgen"
+    },
+    {
+      "name": "runtime-invariants-checkpoint-only-generic-telemetry-is-inconclusive",
+      "worldgenTelemetryMode": "checkpoint-only",
+      "omit": [
+        "worldgen.checkpointOnlyMaxNetworkWaitPulses",
+        "worldgen.checkpointOnlyMaxReentrantYieldDepth",
+        "worldgen.checkpointOnlyYields",
+        "worldgen.checkpointOnlyMaxQueueDepth",
+        "worldgen.checkpointOnlyP99YieldDelayMillis",
+        "worldgen.checkpointOnlyMaxYieldDelayMillis"
+      ],
+      "expectedVerdict": "inconclusive",
+      "expectedComponent": "worldgen"
+    },
+    {
+      "name": "runtime-invariants-targeting-per-frame-fails",
+      "overrides": {
+        "targeting": {"maxObservationsPerRenderedFrame": 2}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "targeting"
+    },
+    {
+      "name": "runtime-invariants-targeting-lag-fails",
+      "overrides": {
+        "targeting": {"maxObservationLagFrames": 2}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "targeting"
+    },
+    {
+      "name": "runtime-invariants-frame-continuation-gap-fails",
+      "overrides": {
+        "framePacing": {"yieldCompletionCount": 998}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "framePacing"
+    },
+    {
+      "name": "runtime-invariants-frame-historical-overlap-fails",
+      "overrides": {
+        "framePacing": {"maxPendingYieldCount": 2}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "framePacing"
+    },
+    {
+      "name": "runtime-invariants-frame-missing-pending-peak-fails",
+      "overrides": {
+        "framePacing": {"maxPendingYieldCount": 0}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "framePacing"
+    },
+    {
+      "name": "runtime-invariants-frame-duplicate-callback-fails",
+      "overrides": {
+        "framePacing": {"duplicateYieldCallbackCount": 1}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "framePacing"
+    },
+    {
+      "name": "runtime-invariants-upload-hard-cap-fails",
+      "overrides": {
+        "renderPipeline": {"peakUploadDrainCount": 9}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "renderPipeline"
+    },
+    {
+      "name": "runtime-invariants-upload-retry-cancellation-fails",
+      "overrides": {
+        "renderPipeline": {"uploadRetryCancellations": 1}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "renderPipeline"
+    },
+    {
+      "name": "runtime-invariants-upload-retry-retention-fails",
+      "overrides": {
+        "renderPipeline": {"activeUploadRetryTasks": 9}
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "renderPipeline"
+    },
+    {
+      "name": "runtime-invariants-outbound-byte-turn-cap-fails",
+      "overrides": {
+        "network": {
+          "maxOutboundTurnBytes": 262145
+        }
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "networkOutbound"
+    },
+    {
+      "name": "runtime-invariants-outbound-turn-time-cap-fails",
+      "overrides": {
+        "network": {
+          "maxOutboundTurnMillis": 8.1
+        }
+      },
+      "expectedVerdict": "fail",
+      "expectedComponent": "networkOutbound"
+    }
+  ]
+}

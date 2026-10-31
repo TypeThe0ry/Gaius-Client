@@ -12,10 +12,17 @@ repository's CI). A tree fails when any file:
     its SHA-256;
   * has the SHA-1 of an entry of an official client jar or of an object in an
     official asset index given with --vanilla-jar / --asset-index;
-  * contains a blocked word. The repository stores only unsalted SHA-256
-    digests of those words (patcher/blocked-term-hashes.txt), so the list does
-    not itself publish them. --extra-terms-file adds plain words from a file
-    kept outside the repository (private host names, for example).
+  * contains a blocked word or phrase. The repository stores only unsalted
+    SHA-256 digests of them (patcher/blocked-term-hashes.txt), so the list
+    does not itself publish them. --extra-terms-file adds plain words from a
+    file kept outside the repository. patcher/term-exceptions.txt can allow
+    one ASCII word in one file (a technical term the build needs verbatim);
+  * contains a public IPv4 literal that patcher/ipv4-allowlist.txt does not
+    list for that file (network constants and version numbers that only look
+    like addresses).
+  * is a source patch (.gpatch) that holds anything but its header, hunk
+    headers, added lines and copies by line number. Removed and context lines
+    would be official code, so a source patch may never carry them.
 
 Exit status 0 means every check passed; 1 lists every finding.
 """
@@ -40,6 +47,7 @@ VANILLA_PACKAGES = (("net", "minecraft"), ("com", "mojang"))
 IPV4 = re.compile(r"(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d.])")
 ALLOWED_IPV4 = {"127.0.0.1", "0.0.0.0", "255.255.255.255"}
 ASCII_TOKEN = re.compile(r"[a-z0-9]+")
+WORD_START = re.compile(r"(?<![a-z0-9-])[a-z0-9]")
 CJK_RUN = re.compile(r"[㐀-鿿豈-﫿]+")
 
 
@@ -63,15 +71,21 @@ def read_list(path: Path) -> list[str]:
 
 
 class BlockedTerms:
-    """Matches words by digest: ASCII words by prefix of a token, CJK words inside CJK runs."""
+    """Matches words by digest.
+
+    ascii:  a token ([a-z0-9]+) that starts with the word;
+    cjk:    the word anywhere inside a run of CJK characters;
+    phrase: the text (host names, paths) starting at a word boundary.
+    """
 
     def __init__(self) -> None:
         self.ascii: dict[int, set[str]] = {}
         self.cjk: dict[int, set[str]] = {}
+        self.phrase: dict[int, set[str]] = {}
         self.plain: list[str] = []
 
     def add_digest(self, length: int, digest: str, kind: str) -> None:
-        table = self.cjk if kind == "cjk" else self.ascii
+        table = {"cjk": self.cjk, "phrase": self.phrase}.get(kind, self.ascii)
         table.setdefault(length, set()).add(digest)
 
     def add_plain(self, word: str) -> None:
@@ -90,7 +104,7 @@ class BlockedTerms:
                 terms.add_plain(word)
         return terms
 
-    def find(self, text: str) -> str | None:
+    def find(self, text: str, allowed: frozenset[str] = frozenset()) -> str | None:
         lowered = text.lower()
         for word in self.plain:
             if word in lowered:
@@ -98,8 +112,17 @@ class BlockedTerms:
         if self.ascii:
             for token in ASCII_TOKEN.findall(lowered):
                 for length, digests in self.ascii.items():
-                    if len(token) >= length and sha256_text(token[:length]) in digests:
+                    if len(token) < length:
+                        continue
+                    digest = sha256_text(token[:length])
+                    if digest in digests and digest not in allowed:
                         return f"a blocked word (token starting '{token[:2]}...')"
+        if self.phrase:
+            for match in WORD_START.finditer(lowered):
+                start = match.start()
+                for length, digests in self.phrase.items():
+                    if sha256_text(lowered[start:start + length]) in digests:
+                        return f"a blocked phrase (starting '{lowered[start:start + 2]}...')"
         if self.cjk:
             for run in CJK_RUN.findall(text):
                 for length, digests in self.cjk.items():
@@ -128,6 +151,24 @@ def vanilla_hashes(jars: list[Path], indexes: list[Path], hash_files: list[Path]
     return hashes
 
 
+SOURCE_PATCH_HEADER = re.compile(r"gaius-source-patch ([12])\nbase [0-9a-f]{64}\nresult [0-9a-f]{64}\n")
+HUNK_HEADER = re.compile(r"@@ \d{1,7} \d{1,7}")
+# Version 2 copies lines of the user's own decompiled text by number: =<line> <count>, ~<line> <indent>.
+LINE_COPY = re.compile(r"=\d{1,7} \d{1,7}|~\d{1,7} t?\d{1,3}")
+
+
+def source_patch_problem(text: str) -> str | None:
+    header = SOURCE_PATCH_HEADER.match(text)
+    if not header or not text.endswith("\n"):
+        return "is not a gaius source patch"
+    copies = header.group(1) == "2"
+    for number, line in enumerate(text.split("\n")[3:-1], start=4):
+        if line.startswith("+") or HUNK_HEADER.fullmatch(line) or (copies and LINE_COPY.fullmatch(line)):
+            continue
+        return f"line {number} is neither a hunk header, an added line nor a line copy"
+    return None
+
+
 def in_vanilla_package(path: PurePosixPath) -> bool:
     parts = path.parts
     return any(parts[i:i + 2] == package for package in VANILLA_PACKAGES for i in range(len(parts) - 1))
@@ -141,6 +182,14 @@ def check_tree(root: Path, args: argparse.Namespace) -> list[str]:
         path, digest = line.split()
         binary_allow[path] = digest
     terms = BlockedTerms.load(patcher_dir / "blocked-term-hashes.txt", args.extra_terms_file)
+    term_allow: dict[str, set[str]] = {}
+    for line in read_list(patcher_dir / "term-exceptions.txt"):
+        path, digest = line.split()
+        term_allow.setdefault(path, set()).add(digest)
+    ipv4_allow = set()
+    for line in read_list(patcher_dir / "ipv4-allowlist.txt"):
+        path, address = line.split()
+        ipv4_allow.add((path, address))
     vanilla = vanilla_hashes(args.vanilla_jar, args.asset_index, args.vanilla_hashes)
     findings: list[str] = []
 
@@ -173,25 +222,53 @@ def check_tree(root: Path, args: argparse.Namespace) -> list[str]:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             continue
-        hit = terms.find(text)
+        if relative.suffix == ".gpatch":
+            problem = source_patch_problem(text)
+            if problem:
+                findings.append(f"{rel}: source patch {problem}")
+        hit = terms.find(text, frozenset(term_allow.get(rel, ())))
         if hit:
             findings.append(f"{rel}: contains {hit}")
+        if rel == "patcher/ipv4-allowlist.txt":
+            continue
         for match in IPV4.finditer(text):
             address = match.group(0)
             if all(int(part) <= 255 for part in match.groups()) and address not in ALLOWED_IPV4:
-                if not is_documentation_or_private(address):
+                line_start = text.rfind("\n", 0, match.start()) + 1
+                if is_version_number(address, text[line_start:match.start()]):
+                    continue
+                if not is_documentation_or_private(address) and (rel, address) not in ipv4_allow:
                     findings.append(f"{rel}: IPv4 literal {address}")
     return findings
 
 
+# The same exceptions as tools/check-public-network-secrets.mjs: a four-part
+# number right after a JDK name is a Java version (jdk-25.0.4.101), and one
+# right after a browser token is a browser version (Chrome/141.0.0.0).
+JAVA_VERSION_PREFIX = re.compile(r"(?:jdk|jre|java|temurin|corretto|zulu|graalvm)[\s_.=:@v-]*$", re.I)
+BROWSER_VERSION_PREFIX = re.compile(r"(?:chrome|chromium|headlesschrome|crios|edg|edga|edgios|opr)/$", re.I)
+
+
 def is_documentation_or_private(address: str) -> bool:
+    """Reserved, private and documentation ranges, as the repository's own check counts them."""
     a, b, *_ = (int(part) for part in address.split("."))
     return (
-        a == 10
-        or (a == 192 and b == 168)
+        a in (0, 10, 127)
+        or a >= 224
+        or (a == 100 and 64 <= b <= 127)
+        or (a == 169 and b == 254)
         or (a == 172 and 16 <= b <= 31)
-        or address.startswith(("192.0.2.", "198.51.100.", "203.0.113."))
+        or (a == 192 and b in (0, 168))
+        or (a == 198 and b in (18, 19, 51))
+        or (a == 203 and b == 0)
     )
+
+
+def is_version_number(address: str, prefix: str) -> bool:
+    feature, interim, *_ = (int(part) for part in address.split("."))
+    if 9 <= feature <= 40 and interim <= 9 and JAVA_VERSION_PREFIX.search(prefix):
+        return True
+    return bool(BROWSER_VERSION_PREFIX.search(prefix))
 
 
 def main(argv: list[str]) -> int:

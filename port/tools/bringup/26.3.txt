@@ -1,0 +1,35 @@
+# Minecraft 26.3 bring-up list.
+#
+# Format: <patchId> | <owner work package> | <reason>
+#   patchId  "<PatcherClass>.<patchMethod>" for a patch recorded through
+#            dev.gaius.tools.PatchRegistry, or "step:<PatcherClass>" /
+#            "step:<PatcherClass>@<lwjgl-module>" for a build-overlays.sh step
+#            (guards are steps too, for example step:LwjglPlatformGuard@lwjgl).
+#   owner    the work package that removes the line (PLAN.md section 2).
+#
+# Only a GAIUS_BRINGUP=1 build of 26.3 may skip these; every skip prints
+# "BRINGUP_SKIP <patchId>" and check-build-log-skips.mjs matches the build log
+# against this list.  Without GAIUS_BRINGUP=1, build-overlays.sh refuses to
+# build 26.3 while this list has entries, and build-version-release.sh always
+# refuses bring-up mode.  By M4 only performance and diagnostic patches may
+# remain; by M6 the list must be empty.
+#
+# Initial contents: the 59 failures of the 26.3 patch survey (PLAN.md 6.1),
+# the library and build failures (PLAN.md 6.3) and the one patch that prints
+# unregistered "Skipping" lines on 26.3 (PLAN.md 6.2).  In a reason, "[row N]"
+# is row N of the PLAN.md 6.1 table and "[6.2]" the PLAN.md 6.2 table; the text
+# after it names the 26.3 change and the planned port.  Patches that run after
+# the first failure of the same driver were never exercised by the survey
+# (risk R18); add them here, with an owner, when a bring-up build reports them.
+# A reason may contain neither '#' (starts a comment) nor '|'.
+#
+# Wave 1 of the migration (P1-P8) ported, dropped (PatchRegistry.dropped with
+# the absence assertion) or replaced all 71 initial entries, so the list is
+# empty: a normal 26.3 build runs every patch.  Runtime acceptance (M3/M4 in
+# the browser) is tracked in the migration plan, not here.
+
+# --- build-overlays.sh library steps (PLAN.md 6.3) ---
+
+# --- MinecraftClientPatcher (PLAN.md 6.1 #1-#47) ---
+
+# --- Minecraft262BrowserPatcher (PLAN.md 6.1 #48-#59) ---

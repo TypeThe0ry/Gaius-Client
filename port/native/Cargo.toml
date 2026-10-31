@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gaius-kernel-abi",
+    "crates/gaius-light",
+    "crates/gaius-light-wasm",
+    "crates/gaius-mesher",
+    "crates/gaius-mesher-wasm",
+    "crates/gaius-noise",
+    "crates/gaius-noise-wasm",
+    "crates/gaius-png",
+    "crates/gaius-png-wasm",
+    "crates/gaius-shaderxlat",
+    "crates/gaius-shaderxlat/wasm",
+    "crates/gaius-worldgen",
+    "crates/gaius-worldgen-wasm",
+]
+
+[workspace.package]
+version = "0.4.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+gaius-kernel-abi = { path = "crates/gaius-kernel-abi" }
+gaius-noise = { path = "crates/gaius-noise" }
+gaius-png = { path = "crates/gaius-png" }
+
+# Bit-exact parity with the JVM forbids fast-math style rewrites; Rust never
+# contracts a*b+c into a fused multiply-add on its own, so the default float
+# semantics already match Java's strict IEEE 754 arithmetic.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true
+
+# Tests run the golden fixtures; keep them fast without changing semantics.
+[profile.test]
+opt-level = 2
+
+# gaius-shaderxlat ships naga to the browser: "s" is 12% smaller than 3 there
+# (golden/shaders/README.md). Per-package opt-level overrides do not survive fat LTO,
+# so its wasm build selects this profile (cargo build --profile release-size).
+[profile.release-size]
+inherits = "release"
+opt-level = "s"

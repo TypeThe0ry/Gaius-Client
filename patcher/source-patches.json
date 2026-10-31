@@ -1,0 +1,122 @@
+{
+  "description": "Gaius sources that change official classes. They are published only as edit scripts in patcher/patches/<version>/<id>.gpatch; `GaiusPatcher prepare <version>` decompiles each class from the user's own fetched files with the pinned decompiler and applies the script. A file listed for several versions comes out identical from each of them. Maintainers regenerate the scripts with patcher/tools/make_source_patches.py.",
+  "decompiler": {
+    "name": "Vineflower",
+    "license": "Apache-2.0",
+    "maven": "org.vineflower:vineflower:1.11.2",
+    "url": "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.11.2/vineflower-1.11.2.jar",
+    "sha256": "e1e2415e7f78b34960402c4beddfc88e033d7842a23ecd132a8ec2eadd54f6bf",
+    "options": [
+      "-nls=1",
+      "-ind=    ",
+      "-log=WARN"
+    ]
+  },
+  "patches": [
+    {
+      "id": "canonical-VertexArrayCache",
+      "target": "port/mc/shared/canonical/client/java/com/mojang/blaze3d/opengl/VertexArrayCache.java",
+      "class": "com/mojang/blaze3d/opengl/VertexArrayCache",
+      "jar": "client",
+      "versions": [
+        "26.2"
+      ]
+    },
+    {
+      "id": "canonical-TextureSlots",
+      "target": "port/mc/shared/canonical/client/java/net/minecraft/client/resources/model/sprite/TextureSlots.java",
+      "class": "net/minecraft/client/resources/model/sprite/TextureSlots",
+      "jar": "client",
+      "versions": [
+        "26.2",
+        "26.3"
+      ]
+    },
+    {
+      "id": "canonical-SoundEngineExecutor",
+      "target": "port/mc/shared/canonical/client/java/net/minecraft/client/sounds/SoundEngineExecutor.java",
+      "class": "net/minecraft/client/sounds/SoundEngineExecutor",
+      "jar": "client",
+      "versions": [
+        "26.2",
+        "26.3"
+      ]
+    },
+    {
+      "id": "canonical-VanillaPackResources",
+      "target": "port/mc/shared/canonical/client/java/net/minecraft/server/packs/VanillaPackResources.java",
+      "class": "net/minecraft/server/packs/VanillaPackResources",
+      "jar": "client",
+      "versions": [
+        "26.2"
+      ]
+    },
+    {
+      "id": "legacy-12111-VertexArrayCache",
+      "target": "port/mc/shared/legacy-12111/client/java/com/mojang/blaze3d/opengl/VertexArrayCache.java",
+      "class": "com/mojang/blaze3d/opengl/VertexArrayCache",
+      "jar": "client",
+      "versions": [
+        "1.21.11"
+      ]
+    },
+    {
+      "id": "legacy-12111-TextureSlots",
+      "target": "port/mc/shared/legacy-12111/client/java/net/minecraft/client/renderer/block/model/TextureSlots.java",
+      "class": "net/minecraft/client/renderer/block/model/TextureSlots",
+      "jar": "client",
+      "versions": [
+        "1.21.11"
+      ]
+    },
+    {
+      "id": "legacy-12111-SoundEngineExecutor",
+      "target": "port/mc/shared/legacy-12111/client/java/net/minecraft/client/sounds/SoundEngineExecutor.java",
+      "class": "net/minecraft/client/sounds/SoundEngineExecutor",
+      "jar": "client",
+      "versions": [
+        "1.21.11"
+      ]
+    },
+    {
+      "id": "legacy-12111-VanillaPackResources",
+      "target": "port/mc/shared/legacy-12111/client/java/net/minecraft/server/packs/VanillaPackResources.java",
+      "class": "net/minecraft/server/packs/VanillaPackResources",
+      "jar": "client",
+      "versions": [
+        "1.21.11"
+      ]
+    },
+    {
+      "id": "renderpearl-1-FixedPathPackResources",
+      "target": "port/mc/shared/renderpearl-1/client/java/net/minecraft/server/packs/FixedPathPackResources.java",
+      "class": "net/minecraft/server/packs/FixedPathPackResources",
+      "jar": "client",
+      "versions": [
+        "26.3"
+      ]
+    },
+    {
+      "id": "overrides-SystemReport",
+      "target": "port/overrides/client/src/main/java/net/minecraft/SystemReport.java",
+      "class": "net/minecraft/SystemReport",
+      "jar": "client",
+      "versions": [
+        "1.21.11",
+        "26.2",
+        "26.3"
+      ]
+    },
+    {
+      "id": "overrides-LogUtils",
+      "target": "port/overrides/libraries/mojang-logging/src/main/java/com/mojang/logging/LogUtils.java",
+      "class": "com/mojang/logging/LogUtils",
+      "jar": "library:com/mojang/logging",
+      "versions": [
+        "1.21.11",
+        "26.2",
+        "26.3"
+      ]
+    }
+  ]
+}

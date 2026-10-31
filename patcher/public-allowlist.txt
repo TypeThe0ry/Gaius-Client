@@ -1,6 +1,97 @@
 # Tracked files that may be published. Everything else stays private.
 # Add a path only after reviewing it against patcher/README.md "What may be public".
+# Files under patcher/public-root/ are published at the root of the public tree.
 
 patcher/**
-port/versions/*.json
+port/**
+apps/**
+packages/**
+tools/**
+docs/*.md
 LICENSE
+LICENSES/**
+NOTICE
+VERSION
+CHANGELOG.md
+relay-nodes.json
+
+# Builds and generated bundles (Git LFS): official game code and assets.
+!port/web/dist/**
+!port/web/smoke/**/platform-smoke*.js*
+!port/web/smoke/platform-smoke*.js*
+!port/work/**
+
+# Modified copies of official classes. They are published as patches against
+# the user's own decompiled game instead (patcher/patches/).
+!port/mc/shared/canonical/client/java/com/mojang/blaze3d/opengl/VertexArrayCache.java
+!port/mc/shared/canonical/client/java/net/minecraft/client/resources/model/sprite/TextureSlots.java
+!port/mc/shared/canonical/client/java/net/minecraft/client/sounds/SoundEngineExecutor.java
+!port/mc/shared/canonical/client/java/net/minecraft/server/packs/VanillaPackResources.java
+!port/mc/shared/legacy-12111/client/java/com/mojang/blaze3d/opengl/VertexArrayCache.java
+!port/mc/shared/legacy-12111/client/java/net/minecraft/client/renderer/block/model/TextureSlots.java
+!port/mc/shared/legacy-12111/client/java/net/minecraft/client/sounds/SoundEngineExecutor.java
+!port/mc/shared/legacy-12111/client/java/net/minecraft/server/packs/VanillaPackResources.java
+!port/mc/shared/renderpearl-1/client/java/net/minecraft/server/packs/FixedPathPackResources.java
+!port/overrides/client/src/main/java/net/minecraft/SystemReport.java
+!port/overrides/libraries/mojang-logging/**
+
+# Test-only stand-ins for official classes.
+!port/scripts/packet-parity/probe-test/stubs/**
+!port/scripts/region-storage-parity/clock/**
+!port/tests/screenshot/fixtures/com/mojang/**
+
+# Development and test scripts that name private hosts or local paths, and
+# performance tooling and notes that are not needed to build.
+!apps/bridge/README.md
+!apps/bridge/browser-arrival-timeline-runtime-smoke.mjs
+!apps/bridge/browser-full-path-smoke.mjs
+!apps/bridge/multiplayer-smoke.mjs
+!apps/bridge/relay-bench.mjs
+!apps/bridge/relay-frame-timeline-smoke.mjs
+!apps/bridge/remote-session-drain-smoke.mjs
+!apps/bridge/server-packet-processor-isolation-smoke.mjs
+!docs/performance-targets.md
+!docs/wasmgc-memory-budget.md
+!port/native/README.md
+!port/native/crates/gaius-png/INTEGRATION.md
+!port/native/docs/worldgen-ore-throughput.md
+!port/native/golden/png/**
+!port/scripts/browser-file-entry-acceptance.mjs
+!port/scripts/browser-multiplayer-cdp-driver.mjs
+!port/scripts/browser-relay-critical-path-smoke.mjs
+!port/scripts/browser-relay-live-critical-path-smoke.mjs
+!port/scripts/browser-relay-routing-smoke.mjs
+!port/scripts/chrome-chunk-*.mjs
+!port/scripts/chrome-performance-release-suite*.mjs
+!port/scripts/chrome-profile-distance-smoke.mjs
+!port/scripts/chunk-pipeline-telemetry-smoke.mjs
+!port/scripts/dragon-packet-codec-jvm-smoke.mjs
+!port/scripts/frozen-js-glue-ab.mjs
+!port/scripts/gameplay-authority-smoke.mjs
+!port/scripts/legacy/quick-check.py
+!port/scripts/minecraft-263-multiplayer-cdp.mjs
+!port/scripts/minecraft-263-singleplayer-cdp.mjs
+!port/scripts/minecraft-title-screen-cdp.mjs
+!port/scripts/patcher-negative-bytecode-smoke.mjs
+!port/scripts/performance-fixture-test.mjs
+!port/scripts/performance-metrics.mjs
+!port/scripts/quality-auto-tier-smoke.mjs
+!port/scripts/release-performance-matrix.mjs
+!port/scripts/release-train.sh
+!port/scripts/worldgen-scheduler-smoke.mjs
+!port/tests/micro/**
+!port/tools/section-occlusion-graph-loaded-chunks-test.mjs
+!port/tools/section-slice-cache-test.mjs
+!tools/acceptance-harness.md
+!tools/perf-train.sh
+
+# Release notes, release procedures and publishing tools: they describe or
+# perform hosting of builds, which the public project never does.
+!CHANGELOG.md
+!docs/release-*.md
+!docs/releasing.md
+!docs/local-prerelease.md
+!tools/build-and-publish-prerelease.ps1
+!tools/verify-github-pages-cdp.mjs
+!port/scripts/browser-http-proxy-routing-smoke.mjs
+!port/scripts/service-worker-headers-smoke.mjs

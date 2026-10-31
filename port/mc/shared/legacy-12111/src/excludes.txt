@@ -1,0 +1,25 @@
+# Shared sources (port/src/main/java and the canonical set) that the legacy-12111 compat set (the
+# LTS profile) does not compile.
+# The light kernel bridge compiles here with this set's light ops (LightBlockLightOps, selected by
+# relocations.tsv) instead of the canonical ones.
+dev/gaius/browser/kernel/light/DampeningLightOps.java
+# The mesh kernel is not enabled for the legacy patch set (MinecraftClientPatcher applies the mesh
+# kernel patches to modern profiles only), and the canonical worldgen kernel bridge and the
+# batched terrain glue are written against the blaze3d backend generation; the section slice cache
+# memoizes the uber buffer slices of the modern section dispatcher, which the legacy client lacks.
+dev/gaius/browser/kernel/mesh/MeshKernelAccess.java
+dev/gaius/browser/kernel/mesh/MeshKernelHooks.java
+dev/gaius/browser/kernel/mesh/MeshModelTable.java
+dev/gaius/browser/kernel/mesh/MeshProfile.java
+dev/gaius/browser/kernel/mesh/MeshVersionOps.java
+dev/gaius/browser/kernel/mesh/Blaze3dMeshOps.java
+dev/gaius/browser/kernel/mesh/ModelTableExporter.java
+dev/gaius/browser/kernel/mesh/SectionSnapshot.java
+dev/gaius/browser/kernel/worldgen/WorldgenKernel262.java
+dev/gaius/browser/kernel/worldgen/WorldgenKernelHooks262.java
+dev/gaius/browser/kernel/worldgen/WorldgenSeedSource262.java
+dev/gaius/browser/render/BrowserTerrainBatchGlue.java
+dev/gaius/browser/render/BrowserSectionSliceCache.java
+net/minecraft/world/level/block/state/GaiusMeshBlockAccess.java
+net/minecraft/world/level/chunk/GaiusKernelSections.java
+net/minecraft/world/level/levelgen/GaiusWorldgenExport262.java

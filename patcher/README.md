@@ -21,12 +21,39 @@ computer, from your own copy of the game. It is compatible with Java Edition
    keep; they come straight from the Mojang address in your own version
    metadata, or from a file you pass with `--mappings`. Nothing goes through a
    Gaius server.
-2. **Applies the Gaius patches** to that jar on your machine.
-3. **Compiles** the patched game for the browser with TeaVM.
-4. **Writes your build**: a site folder and a single HTML file.
+2. **Prepares the few sources that change official classes.** Gaius changes
+   about ten official classes (`patcher/source-patches.json`). Their Gaius
+   versions are published only as source patches, which hold the lines Gaius
+   wrote, the line ranges they replace, and line numbers of your own
+   decompiled text to copy where Gaius moved or re-indented a line, never a
+   line of official code.
+   `prepare` decompiles each class from your own fetched files with
+   [Vineflower](https://github.com/Vineflower/vineflower) (Apache-2.0,
+   downloaded once from Maven Central and checked against the SHA-256 pinned
+   in `source-patches.json`, or passed with `--decompiler`), checks the
+   decompiled text against the SHA-256 the patch records, applies the patch
+   and checks the result the same way. The decompiled classes stay in your
+   work directory.
+3. **Applies the Gaius bytecode patches** to the jar on your machine.
+4. **Compiles** the patched game for the browser with TeaVM.
+5. **Writes your build**: a site folder and a single HTML file.
 
-Steps 2 to 4 are being wired up; today the patcher implements `doctor` and
-`fetch`.
+Steps 3 to 5 are being wired up; today the patcher implements `doctor`,
+`fetch` and `prepare`.
+
+## Versions
+
+The patcher is versioned with the Gaius release it reproduces: patcher
+`0.4.0-pre.5` builds the same client as Gaius release `v0.4.0-pre.5`, and a
+newer release needs a newer patcher. The built client reports the release's
+own version number (`0.4.0` in its About screen), exactly like the official
+build. `java patcher/GaiusPatcher.java version` prints both numbers, and
+`fetch` records them in `fetch-manifest.json`. Patcher releases are tagged
+`vX.Y.Z` in the public repository and contain the patcher source only, never
+a build.
+
+`build` is not available yet; until it is, the patcher can check your
+installation and collect the official files.
 
 ## Terms of use
 
@@ -54,7 +81,11 @@ its files are on disk.
 java patcher/GaiusPatcher.java doctor
 java patcher/GaiusPatcher.java terms
 java patcher/GaiusPatcher.java fetch 26.3
+java patcher/GaiusPatcher.java prepare 26.3
 ```
+
+For 1.21.11, which ships obfuscated, remap the client
+(`port/scripts/remap-client.sh`) before `prepare`.
 
 | Option | Meaning |
 | --- | --- |
@@ -63,11 +94,15 @@ java patcher/GaiusPatcher.java fetch 26.3
 | `--offline` | Never use the network |
 | `--accept-terms` | Accept the [terms of use](TERMS.md) without the prompt |
 | `--work <dir>` | Where to write the collected files |
+| `--decompiler <jar>` | `prepare`: your copy of the pinned decompiler, instead of downloading it |
+| `--into <dir>` | `prepare`: write the patched sources under this directory instead of the source tree |
 
 ## What may be public
 
-Only files Gaius wrote: the patcher, the patches, the browser runtime and the
-version profiles. Official jars, libraries, assets, mappings, anything derived
+Only files Gaius wrote (plus the third-party libraries listed in `NOTICE`):
+the patcher, the bytecode patches, the browser runtime and UI, the Rust
+kernels, the build scripts and the version profiles. Modified copies of
+official classes are published only as patches against the user's own game. Official jars, libraries, assets, mappings, anything derived
 from them (patched jars, compiled `classes.wasm` or `classes.js`, packed
 assets, built HTML) and screenshots of the game never enter this repository
 or its releases.
@@ -85,6 +120,29 @@ python3 patcher/tools/public_tree_check.py /tmp/gaius-public \
   --vanilla-jar port/work/26.3/client-original.jar \
   --asset-index port/work/26.3/assets/indexes/34.json
 ```
+
+## Source patches (maintainers)
+
+`patcher/patches/<version>/<id>.gpatch` are generated, never edited by hand.
+On a machine with the official game files, after `fetch` (and the remap for
+1.21.11):
+
+```sh
+python3 patcher/tools/make_source_patches.py --pin-decompiler vineflower-<version>.jar  # once per decompiler update
+python3 patcher/tools/make_source_patches.py 26.2 26.3 1.21.11
+python3 patcher/tools/make_source_patches.py 26.2 26.3 1.21.11 --check
+```
+
+The tool decompiles through the patcher itself (`GaiusPatcher decompile`), so
+the bases are the ones users get. Lines are aligned ignoring indentation, and
+a line the decompiled class already has becomes a copy by line number
+(`=<line> <count>`, or `~<line> <indent>` to re-indent it). The tool refuses a
+patch that would still carry a line of official code as text: usually a line
+only another version's class has, which means this version cannot produce
+the file, so drop it from the entry's `versions`. A line that is not official
+code (a declaration Gaius must repeat) can be accepted by adding the SHA-256
+of its stripped text to the entry's `reviewedLines`. The public tree check
+refuses any `.gpatch` that holds removed or context lines.
 
 ## Publishing
 

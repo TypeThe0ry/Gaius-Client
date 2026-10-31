@@ -1,0 +1,9 @@
+[package]
+name = "gaius-light"
+description = "Sky and block light propagation for one chunk column, following the vanilla light engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

@@ -1,2 +1,18 @@
 # Gaius-written classes that must live in a vanilla package, one repository path per line.
 # Each entry needs a review note in the pull request that adds it.
+# Reviewed 2026-10-30: new classes (Browser*, Gaius*, test harnesses) that use the game's
+# API from inside its package; none is a copy or a modified copy of an official class.
+port/mc/shared/canonical/client/java/net/minecraft/client/resources/model/BrowserModelDependencyScheduler.java
+port/mc/shared/canonical/client/java/net/minecraft/world/level/levelgen/BrowserNoiseGraphMapper.java
+port/mc/shared/canonical/src/java/net/minecraft/client/gui/font/providers/BrowserUnihexLoader.java
+port/mc/shared/canonical/src/java/net/minecraft/world/level/block/state/GaiusMeshBlockAccess.java
+port/mc/shared/canonical/src/java/net/minecraft/world/level/chunk/GaiusKernelSections.java
+port/mc/shared/canonical/src/java/net/minecraft/world/level/levelgen/GaiusWorldgenExport262.java
+port/mc/shared/legacy-12111/client/java/net/minecraft/client/resources/model/BrowserModelDependencyScheduler.java
+port/native/golden/mesh/legacy/net/minecraft/client/renderer/chunk/SnapshotRegion.java
+port/native/golden/mesh/modern/net/minecraft/client/renderer/chunk/SnapshotRegion.java
+port/native/golden/worldgen/v26_2/net/minecraft/world/level/levelgen/GaiusWorldgenReference262.java
+port/native/golden/worldgen/v26_2/net/minecraft/world/level/levelgen/WorldgenNoiseChunkReadCheck262.java
+port/src/main/java/net/minecraft/world/level/biome/GaiusClimateIndex.java
+port/src/main/java/net/minecraft/world/level/biome/GaiusClimateSubTree.java
+port/src/main/java/net/minecraft/world/level/lighting/GaiusLightColumnAccess.java

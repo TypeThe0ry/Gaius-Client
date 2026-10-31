@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+config="$root/port/config.json"
+source "$root/port/scripts/version-profile.sh"
+gaius_load_version_profile "$root"
+gaius_select_java_home
+version="$(jq -er '.mavenVersion' "$config")"
+tools="$root/port/work/tools"
+archive="$tools/apache-maven-$version-bin.tar.gz"
+home="$tools/apache-maven-$version"
+url="https://archive.apache.org/dist/maven/maven-3/$version/binaries/apache-maven-$version-bin.tar.gz"
+
+mkdir -p "$tools"
+if [[ ! -x "$home/bin/mvn" ]]; then
+  if [[ ! -f "$archive" ]]; then
+    curl -fL --retry 3 -o "$archive.part" "$url"
+    curl -fsSL -o "$archive.sha512" "$url.sha512"
+    mv "$archive.part" "$archive"
+  fi
+
+  expected="$(awk '{print $1}' "$archive.sha512")"
+  actual="$(shasum -a 512 "$archive" | awk '{print $1}')"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "Apache Maven SHA-512 mismatch" >&2
+    exit 1
+  fi
+  tar -xzf "$archive" -C "$tools"
+fi
+
+exec "$home/bin/mvn" "$@"

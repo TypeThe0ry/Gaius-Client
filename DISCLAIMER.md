@@ -9,8 +9,9 @@ other game content belong to Mojang and Microsoft.
 
 ## What this repository contains
 
-Only material written by the Gaius project: the Gaius patcher, Gaius's own
-patches and browser runtime, version profiles that pin the official files by
+Only material written by the Gaius project (and the third-party libraries
+listed in `NOTICE` and `LICENSES/`): the Gaius patcher, Gaius's own
+patches, browser runtime, UI and Rust kernels, version profiles that pin the official files by
 hash, documentation and issue templates.
 
 This repository does **not** contain, and will not accept, any of the
@@ -62,7 +63,8 @@ Minecraft 是 Mojang Synergies AB 的商标。Gaius 使用这个名字只为说�
 
 ## 本仓库包含什么
 
-只包含 Gaius 项目自己编写的内容：Gaius 补丁工具、Gaius 自己的补丁与浏览器运行时、
+只包含 Gaius 项目自己编写的内容（以及 `NOTICE` 和 `LICENSES/` 中列出的第三方库）：Gaius
+补丁工具、Gaius 自己的补丁、浏览器运行时、界面和 Rust 内核、
 按哈希锁定官方文件的版本配置、文档和 issue 模板。
 
 本仓库**不包含**、也不会接受以下任何内容：
