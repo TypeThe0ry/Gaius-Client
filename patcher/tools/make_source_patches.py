@@ -10,11 +10,15 @@ Maintainer tool. Run it on a machine that has the official game files:
 For each version it asks the patcher to decompile the classes listed in
 patcher/source-patches.json (the code path `prepare` uses), compares each
 decompiled class with the Gaius source in this tree, and writes an edit
-script that holds only the lines Gaius wrote. It refuses a script that would
-publish official code: an inserted line that also appears in the decompiled
-class of any version it processed. A line reviewed as not official code (a
-declaration Gaius has to repeat, say) is accepted by adding the SHA-256 of
-its stripped text to the entry's "reviewedLines".
+script that holds only the lines Gaius wrote. A line of the Gaius source that
+the user's own decompiled class already has, moved or re-indented, becomes a
+copy by line number, never text. The tool refuses a script that would still
+publish official code: a line it has to carry as text although it appears in
+the decompiled class of a version it processed (usually a line only another
+version has, which means this version cannot produce the file: drop it from
+the entry's "versions"). A line reviewed as not official code (a declaration
+Gaius has to repeat, say) is accepted by adding the SHA-256 of its stripped
+text to the entry's "reviewedLines".
 
   --pin-decompiler <jar>  writes the jar's SHA-256 into source-patches.json
   --check                 writes nothing; fails when a script is missing or stale
@@ -26,41 +30,117 @@ import argparse
 import difflib
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MAGIC = "gaius-source-patch 1"
+MAGIC = "gaius-source-patch 2"
+READABLE = {"gaius-source-patch 1", MAGIC}
 # Lines this short, and import or package lines, carry no expression of their own.
 TRIVIAL_LENGTH = 24
+INDENT = re.compile(r"^(?: *|\t*)$")
 
 
 def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def body(line: str) -> str:
+    return line.lstrip(" \t")
+
+
+def indent_spec(indent: str) -> str | None:
+    """'8' for eight spaces, 't2' for two tabs; None for a mixed indent."""
+    if not INDENT.match(indent):
+        return None
+    return f"t{len(indent)}" if indent.startswith("\t") else str(len(indent))
+
+
+class Ops:
+    """Turns result lines into patch lines: a copy of a base line where one fits, else the literal text."""
+
+    def __init__(self, base_lines: list[str]):
+        self.exact: dict[str, int] = {}
+        self.by_body: dict[str, int] = {}
+        for index, line in enumerate(base_lines):
+            self.exact.setdefault(line, index)
+            self.by_body.setdefault(body(line), index)
+
+    def line(self, text: str) -> tuple[str, bool]:
+        """(patch line, whether it carries the text itself)."""
+        if text in self.exact:
+            return f"={self.exact[text]} 1", False
+        source = self.by_body.get(body(text))
+        if source is not None and body(text):
+            spec = indent_spec(text[: len(text) - len(body(text))])
+            if spec is not None:
+                return f"~{source} {spec}", False
+        return "+" + text, True
+
+
+def merge_copies(lines: list[str]) -> list[str]:
+    """Joins =i 1, =i+1 1, ... into one =i n."""
+    merged: list[str] = []
+    for line in lines:
+        if line.startswith("=") and merged and merged[-1].startswith("="):
+            start, count = (int(part) for part in merged[-1][1:].split())
+            index, more = (int(part) for part in line[1:].split())
+            if index == start + count:
+                merged[-1] = f"={start} {count + more}"
+                continue
+        merged.append(line)
+    return merged
+
+
 def make_script(base: str, result: str) -> tuple[str, list[tuple[int, str]]]:
-    """The edit script from base to result, and the inserted lines with their line numbers in result."""
+    """The edit script from base to result, and the lines it carries as text, with their line numbers in result.
+
+    Lines are aligned ignoring their indent, so a line that only moved or was
+    re-indented becomes a copy of the user's own decompiled line instead of
+    text in the patch.
+    """
     a = base.split("\n")
     b = result.split("\n")
-    lines = [MAGIC, "base " + sha256(base), "result " + sha256(result)]
+    ops = Ops(a)
+    hunks: list[list] = []  # [start, count, patch lines]
     inserted: list[tuple[int, str]] = []
-    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
-        if tag == "equal":
+
+    def emit(start: int, count: int, j_lines: range) -> None:
+        patch_lines = []
+        for j in j_lines:
+            text, literal = ops.line(b[j])
+            patch_lines.append(text)
+            if literal:
+                inserted.append((j + 1, b[j]))
+        if hunks and hunks[-1][0] + hunks[-1][1] == start:
+            hunks[-1][1] += count
+            hunks[-1][2].extend(patch_lines)
+        else:
+            hunks.append([start, count, patch_lines])
+
+    matcher = difflib.SequenceMatcher(None, [body(x) for x in a], [body(x) for x in b], autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "equal":
+            emit(i1, i2 - i1, range(j1, j2))
             continue
-        lines.append(f"@@ {i1} {i2 - i1}")
-        for j in range(j1, j2):
-            lines.append("+" + b[j])
-            inserted.append((j + 1, b[j]))
+        for offset in range(i2 - i1):
+            if a[i1 + offset] != b[j1 + offset]:
+                emit(i1 + offset, 1, range(j1 + offset, j1 + offset + 1))
+
+    lines = [MAGIC, "base " + sha256(base), "result " + sha256(result)]
+    for start, count, patch_lines in hunks:
+        lines.append(f"@@ {start} {count}")
+        lines.extend(merge_copies(patch_lines))
     return "\n".join(lines) + "\n", inserted
 
 
 def apply_script(script: str, base: str) -> str:
     """Python twin of EditScript.apply in GaiusPatcher.java."""
     lines = script.split("\n")
-    if lines[0] != MAGIC or lines[-1] != "":
+    if lines[0] not in READABLE or lines[-1] != "":
         raise ValueError("not a gaius source patch")
     if sha256(base) != lines[1].removeprefix("base "):
         raise ValueError("base does not match")
@@ -74,6 +154,15 @@ def apply_script(script: str, base: str) -> str:
             nxt = start + count
         elif line.startswith("+"):
             out.append(line[1:])
+        elif line.startswith("="):
+            start, count = (int(part) for part in line[1:].split())
+            if start + count > len(a):
+                raise ValueError("copy past the end of the base")
+            out.extend(a[start:start + count])
+        elif line.startswith("~"):
+            index, spec = line[1:].split()
+            indent = "\t" * int(spec[1:]) if spec.startswith("t") else " " * int(spec)
+            out.append(indent + body(a[int(index)]))
         else:
             raise ValueError("unexpected line " + line)
     out.extend(a[nxt:])
@@ -163,12 +252,14 @@ def main(argv: list[str]) -> int:
         leaks = leaked_lines(inserted, official, set(entry.get("reviewedLines", [])))
         kept = len(result.split("\n")) - len(inserted)
         label = f"{entry_id} for {version}"
-        print(f"{label}: {len(inserted)} lines from Gaius, {kept} kept from the decompiled class")
+        print(f"{label}: {len(inserted)} lines of Gaius text, {kept} lines taken from the decompiled class")
         if leaks:
             failures += 1
             for number, digest in leaks:
-                print(f"  REFUSED line {number} of {entry['target']} also appears in the decompiled class"
-                      f" (stripped SHA-256 {digest}); keep it in place or review it into reviewedLines")
+                print(f"  REFUSED line {number} of {entry['target']} is official code that this version's"
+                      f" decompiled class cannot supply (stripped SHA-256 {digest}). If only another version has"
+                      f" it, drop this version from the entry's versions; if it is not official code, review it"
+                      f" into reviewedLines")
             continue
         path = patches_dir / version / f"{entry_id}.gpatch"
         if args.check:

@@ -144,6 +144,11 @@ class PublicTreeCheckTest(unittest.TestCase):
         self.assertTrue(any("x.gpatch" in f and "line 5" in f for f in self.findings()))
         patch.write_text(header + "@@ 3 1\n context\n")
         self.assertTrue(any("x.gpatch" in f for f in self.findings()))
+        header2 = header.replace("gaius-source-patch 1", "gaius-source-patch 2")
+        patch.write_text(header2 + "@@ 3 1\n=7 2\n~9 8\n~10 t1\n+our line\n")
+        self.assertEqual(self.findings(), [])
+        patch.write_text(header + "@@ 3 1\n=7 2\n")
+        self.assertTrue(any("x.gpatch" in f for f in self.findings()), "version 1 has no copies")
         patch.write_text("--- a/Foo.java\n+++ b/Foo.java\n")
         self.assertTrue(any("not a gaius source patch" in f for f in self.findings()))
 

@@ -21,8 +21,8 @@ repository's CI). A tree fails when any file:
     list for that file (network constants and version numbers that only look
     like addresses).
   * is a source patch (.gpatch) that holds anything but its header, hunk
-    headers and added lines. Removed and context lines would be official
-    code, so a source patch may never carry them.
+    headers, added lines and copies by line number. Removed and context lines
+    would be official code, so a source patch may never carry them.
 
 Exit status 0 means every check passed; 1 lists every finding.
 """
@@ -151,16 +151,21 @@ def vanilla_hashes(jars: list[Path], indexes: list[Path], hash_files: list[Path]
     return hashes
 
 
-SOURCE_PATCH_HEADER = re.compile(r"gaius-source-patch 1\nbase [0-9a-f]{64}\nresult [0-9a-f]{64}\n")
+SOURCE_PATCH_HEADER = re.compile(r"gaius-source-patch ([12])\nbase [0-9a-f]{64}\nresult [0-9a-f]{64}\n")
 HUNK_HEADER = re.compile(r"@@ \d{1,7} \d{1,7}")
+# Version 2 copies lines of the user's own decompiled text by number: =<line> <count>, ~<line> <indent>.
+LINE_COPY = re.compile(r"=\d{1,7} \d{1,7}|~\d{1,7} t?\d{1,3}")
 
 
 def source_patch_problem(text: str) -> str | None:
-    if not SOURCE_PATCH_HEADER.match(text) or not text.endswith("\n"):
+    header = SOURCE_PATCH_HEADER.match(text)
+    if not header or not text.endswith("\n"):
         return "is not a gaius source patch"
+    copies = header.group(1) == "2"
     for number, line in enumerate(text.split("\n")[3:-1], start=4):
-        if not line.startswith("+") and not HUNK_HEADER.fullmatch(line):
-            return f"line {number} is neither a hunk header nor an added line"
+        if line.startswith("+") or HUNK_HEADER.fullmatch(line) or (copies and LINE_COPY.fullmatch(line)):
+            continue
+        return f"line {number} is neither a hunk header, an added line nor a line copy"
     return None
 
 

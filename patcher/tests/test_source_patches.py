@@ -212,11 +212,24 @@ class SourcePatchesTest(unittest.TestCase):
         self.patcher("prepare", "9.9", "--decompiler", str(self.stub), "--into", str(into))
         self.assertEqual((into / "port/mc/x/net/minecraft/Foo.java").read_text(), targets["t-Foo"])
 
-    def test_a_moved_official_line_is_refused(self):
+    def test_moved_official_lines_become_copies(self):
         bases = self.decompile()
         official = '    private final String officialField = "official value";'
-        # The base has the line once; written twice, at least one copy is an insertion.
-        self.write_gaius_sources(bases, extra_foo_line=official + "\n" + official)
+        # Written again at the end and re-indented: both are copies of the user's own line, not text.
+        targets = self.write_gaius_sources(bases, extra_foo_line=official + "\n  " + official.strip())
+        self.assertEqual(self.make_patches(), 0)
+        script = (self.root / "patcher" / "patches" / "9.9" / "t-Foo.gpatch").read_text()
+        self.assertNotIn("official value", script)
+        for entry in self.config["patches"]:
+            (self.root / entry["target"]).unlink()
+        self.patcher("prepare", "9.9", "--decompiler", str(self.stub))
+        self.assertEqual((self.root / self.config["patches"][0]["target"]).read_text(), targets["t-Foo"])
+
+    def test_official_text_that_cannot_be_copied_is_refused(self):
+        bases = self.decompile()
+        # A mixed space-and-tab indent cannot be expressed as a copy, so the line would travel as text.
+        mixed = ' \tprivate final String officialField = "official value";'
+        self.write_gaius_sources(bases, extra_foo_line=mixed)
         self.assertEqual(self.make_patches(), 1)
         self.assertFalse((self.root / "patcher" / "patches" / "9.9" / "t-Foo.gpatch").exists())
         stripped = 'private final String officialField = "official value";'
@@ -260,6 +273,29 @@ class MakeScriptTest(unittest.TestCase):
         self.assertEqual(make_source_patches.apply_script(script, base), result)
         self.assertNotIn("second official line", script)
         self.assertEqual([line for _, line in inserted], ["our replacement", "our tail"])
+
+    def test_moved_and_reindented_lines_are_copied_by_number(self):
+        base = "class A {\n   int first = officialCall();\n   int second = otherCall();\n}\n"
+        result = "class A {\n    int second = otherCall();\n    int first = officialCall();\n    int ours = 1;\n}\n"
+        script, inserted = make_source_patches.make_script(base, result)
+        self.assertEqual(make_source_patches.apply_script(script, base), result)
+        self.assertNotIn("officialCall", script)
+        self.assertNotIn("otherCall", script)
+        self.assertEqual([line for _, line in inserted], ["    int ours = 1;"])
+
+    def test_a_line_only_another_version_has_is_a_leak(self):
+        older = "class A {\n    int removedInNewer = legacyOfficialCall();\n}\n"
+        newer = "class A {\n}\n"
+        result = "class A {\n    int removedInNewer = legacyOfficialCall();\n}\n"
+        _, inserted = make_source_patches.make_script(newer, result)
+        official = make_source_patches.official_lines([older, newer])
+        self.assertEqual(len(make_source_patches.leaked_lines(inserted, official, set())), 1)
+        _, inserted = make_source_patches.make_script(older, result)
+        self.assertEqual(inserted, [])
+
+    def test_consecutive_copies_are_merged(self):
+        self.assertEqual(make_source_patches.merge_copies(["=4 1", "=5 1", "=6 2", "+x", "=9 1"]),
+                         ["=4 4", "+x", "=9 1"])
 
     def test_identical_text_needs_no_hunks(self):
         script, inserted = make_source_patches.make_script("x\n", "x\n")

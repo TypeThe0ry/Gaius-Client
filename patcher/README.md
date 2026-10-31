@@ -24,7 +24,9 @@ computer, from your own copy of the game. It is compatible with Java Edition
 2. **Prepares the few sources that change official classes.** Gaius changes
    about ten official classes (`patcher/source-patches.json`). Their Gaius
    versions are published only as source patches, which hold the lines Gaius
-   wrote and the line ranges they replace, never a line of official code.
+   wrote, the line ranges they replace, and line numbers of your own
+   decompiled text to copy where Gaius moved or re-indented a line, never a
+   line of official code.
    `prepare` decompiles each class from your own fetched files with
    [Vineflower](https://github.com/Vineflower/vineflower) (Apache-2.0,
    downloaded once from Maven Central and checked against the SHA-256 pinned
@@ -132,12 +134,15 @@ python3 patcher/tools/make_source_patches.py 26.2 26.3 1.21.11 --check
 ```
 
 The tool decompiles through the patcher itself (`GaiusPatcher decompile`), so
-the bases are the ones users get. It refuses a patch that would carry a line
-of official code: an added line that also appears in the decompiled class of
-any version it processed. Keep such a line where it is in the decompiled
-class, or, if it is not official code (a declaration Gaius must repeat),
-add the SHA-256 of its stripped text to the entry's `reviewedLines`. The
-public tree check refuses any `.gpatch` that holds removed or context lines.
+the bases are the ones users get. Lines are aligned ignoring indentation, and
+a line the decompiled class already has becomes a copy by line number
+(`=<line> <count>`, or `~<line> <indent>` to re-indent it). The tool refuses a
+patch that would still carry a line of official code as text: usually a line
+only another version's class has, which means this version cannot produce
+the file, so drop it from the entry's `versions`. A line that is not official
+code (a declaration Gaius must repeat) can be accepted by adding the SHA-256
+of its stripped text to the entry's `reviewedLines`. The public tree check
+refuses any `.gpatch` that holds removed or context lines.
 
 ## Publishing
 

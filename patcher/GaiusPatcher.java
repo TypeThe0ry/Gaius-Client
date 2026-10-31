@@ -1210,20 +1210,27 @@ public final class GaiusPatcher {
      * without carrying any line of the original:
      *
      * <pre>
-     * gaius-source-patch 1
+     * gaius-source-patch 2
      * base &lt;SHA-256 of the decompiled text&gt;
      * result &lt;SHA-256 of the patched text&gt;
      * @@ &lt;first base line, from 0&gt; &lt;base lines replaced&gt;
      * +&lt;a line Gaius wrote&gt;
+     * =&lt;base line&gt; &lt;count&gt;     copy lines of the user's own decompiled text (moved code)
+     * ~&lt;base line&gt; &lt;indent&gt;    copy one such line with a new indent: 8 spaces, or t2 for two tabs
      * </pre>
      *
-     * Texts are split on '\n' only, so the result is byte-exact. Hunks are in
-     * base order and do not overlap.
+     * Copies name lines by number, so a patch never holds their text. Texts
+     * are split on '\n' only, so the result is byte-exact. Hunks are in base
+     * order and do not overlap. Version 1 patches hold only + lines.
      */
     static final class EditScript {
-        static final String MAGIC = "gaius-source-patch 1";
+        static final String MAGIC = "gaius-source-patch 2";
+        static final Set<String> READABLE = Set.of("gaius-source-patch 1", MAGIC);
 
-        record Hunk(int start, int count, List<String> lines) {}
+        /** One output piece: literal text, or base lines [from, from + count) re-indented when indent is set. */
+        record Piece(String text, int from, int count, String indent) {}
+
+        record Hunk(int start, int count, List<Piece> pieces) {}
 
         final String baseSha256;
         final String resultSha256;
@@ -1237,9 +1244,10 @@ public final class GaiusPatcher {
 
         static EditScript parse(String text, String name) {
             String[] lines = text.split("\n", -1);
-            if (lines.length < 4 || !lines[0].equals(MAGIC) || !lines[lines.length - 1].isEmpty()) {
+            if (lines.length < 4 || !READABLE.contains(lines[0]) || !lines[lines.length - 1].isEmpty()) {
                 throw new PatcherException(name + " is not a gaius source patch");
             }
+            boolean copies = lines[0].equals(MAGIC);
             String base = header(lines[1], "base ", name);
             String result = header(lines[2], "result ", name);
             List<Hunk> hunks = new ArrayList<>();
@@ -1248,7 +1256,16 @@ public final class GaiusPatcher {
             for (int i = 3; i < lines.length - 1; i++) {
                 String line = lines[i];
                 if (line.startsWith("+") && current != null) {
-                    current.lines().add(line.substring(1));
+                    current.pieces().add(new Piece(line.substring(1), 0, 0, null));
+                } else if (copies && current != null && line.matches("=\\d{1,7} \\d{1,7}")) {
+                    String[] parts = line.substring(1).split(" ");
+                    current.pieces().add(new Piece(null, Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), null));
+                } else if (copies && current != null && line.matches("~\\d{1,7} t?\\d{1,3}")) {
+                    String[] parts = line.substring(1).split(" ");
+                    String indent = parts[1].startsWith("t")
+                            ? "\t".repeat(Integer.parseInt(parts[1].substring(1)))
+                            : " ".repeat(Integer.parseInt(parts[1]));
+                    current.pieces().add(new Piece(null, Integer.parseInt(parts[0]), 1, indent));
                 } else if (line.matches("@@ \\d{1,7} \\d{1,7}")) {
                     String[] parts = line.split(" ");
                     current = new Hunk(Integer.parseInt(parts[1]), Integer.parseInt(parts[2]), new ArrayList<>());
@@ -1259,7 +1276,7 @@ public final class GaiusPatcher {
                     hunks.add(current);
                 } else {
                     throw new PatcherException(name + ": unexpected line " + (i + 1)
-                            + " (a source patch holds only @@ headers and + lines)");
+                            + " (a source patch holds only @@ headers, + lines and line copies)");
                 }
             }
             return new EditScript(base, result, hunks);
@@ -1287,7 +1304,18 @@ public final class GaiusPatcher {
                     throw new PatcherException("the patch for " + what + " reaches past the end of the base");
                 }
                 out.addAll(Arrays.asList(lines).subList(next, hunk.start()));
-                out.addAll(hunk.lines());
+                for (Piece piece : hunk.pieces()) {
+                    if (piece.text() != null) {
+                        out.add(piece.text());
+                        continue;
+                    }
+                    if (piece.from() + piece.count() > lines.length) {
+                        throw new PatcherException("the patch for " + what + " copies past the end of the base");
+                    }
+                    for (int i = piece.from(); i < piece.from() + piece.count(); i++) {
+                        out.add(piece.indent() == null ? lines[i] : piece.indent() + lines[i].replaceFirst("^[ \t]+", ""));
+                    }
+                }
                 next = hunk.start() + hunk.count();
             }
             out.addAll(Arrays.asList(lines).subList(next, lines.length));
@@ -1676,7 +1704,7 @@ public final class GaiusPatcher {
 
             String base = "a\nb\nc\n";
             String patched = "z\na\nx\ny\nc\n";
-            String text = EditScript.MAGIC + "\nbase " + Hashes.sha256(base.getBytes(StandardCharsets.UTF_8))
+            String text = "gaius-source-patch 1\nbase " + Hashes.sha256(base.getBytes(StandardCharsets.UTF_8))
                     + "\nresult " + Hashes.sha256(patched.getBytes(StandardCharsets.UTF_8))
                     + "\n@@ 0 0\n+z\n@@ 1 1\n+x\n+y\n";
             EditScript script = EditScript.parse(text, "test");
@@ -1688,6 +1716,17 @@ public final class GaiusPatcher {
                     throwsPatcher(() -> EditScript.parse(text + " c\n", "test")));
             check("source patch refuses overlapping hunks",
                     throwsPatcher(() -> EditScript.parse(text + "@@ 1 0\n", "test")));
+
+            String moved = "    b\n  a\nnew\nc\n";
+            String copyText = EditScript.MAGIC + "\nbase " + Hashes.sha256(base.getBytes(StandardCharsets.UTF_8))
+                    + "\nresult " + Hashes.sha256(moved.getBytes(StandardCharsets.UTF_8))
+                    + "\n@@ 0 2\n~1 4\n~0 2\n+new\n";
+            check("source patch copies and re-indents base lines",
+                    moved.equals(EditScript.parse(copyText, "test").apply(base, "test")));
+            check("source patch copies stay inside the base", throwsPatcher(() -> EditScript.parse(
+                    copyText.replace("~1 4", "=9 1"), "test").apply(base, "test")));
+            check("version 1 patches have no copies",
+                    throwsPatcher(() -> EditScript.parse(text + "=0 1\n", "test")));
 
             check("bash path drive", "/d/gaius/a.jar".equals(Classpath.bashPath("D:\\gaius\\a.jar")));
             check("bash path posix", "/home/u/a.jar".equals(Classpath.bashPath("/home/u/a.jar")));
