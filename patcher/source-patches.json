@@ -5,7 +5,7 @@
     "license": "Apache-2.0",
     "maven": "org.vineflower:vineflower:1.11.2",
     "url": "https://repo1.maven.org/maven2/org/vineflower/vineflower/1.11.2/vineflower-1.11.2.jar",
-    "sha256": null,
+    "sha256": "e1e2415e7f78b34960402c4beddfc88e033d7842a23ecd132a8ec2eadd54f6bf",
     "options": [
       "-nls=1",
       "-ind=    ",
@@ -19,8 +19,7 @@
       "class": "com/mojang/blaze3d/opengl/VertexArrayCache",
       "jar": "client",
       "versions": [
-        "26.2",
-        "26.3"
+        "26.2"
       ]
     },
     {
@@ -49,8 +48,7 @@
       "class": "net/minecraft/server/packs/VanillaPackResources",
       "jar": "client",
       "versions": [
-        "26.2",
-        "26.3"
+        "26.2"
       ]
     },
     {

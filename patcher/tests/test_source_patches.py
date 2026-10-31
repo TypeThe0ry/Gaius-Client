@@ -87,7 +87,7 @@ class SourcePatchesTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tools = tempfile.TemporaryDirectory()
         tools = Path(cls.tools.name)
-        (tools / "StubDecompiler.java").write_text(STUB)
+        (tools / "StubDecompiler.java").write_text(STUB, encoding="utf-8", newline="\n")
         subprocess.run(["javac", "-d", str(tools / "classes"), str(tools / "StubDecompiler.java")], check=True)
         cls.stub = tools / "stub.jar"
         subprocess.run(["jar", "--create", "--file", str(cls.stub), "--main-class", "StubDecompiler",
@@ -120,7 +120,7 @@ class SourcePatchesTest(unittest.TestCase):
             "id": "9.9", "javaVersion": 21, "clientDistribution": "named",
             "official": {"clientSha1": sha1(client.read_bytes()), "assetIndexId": "7",
                          "assetIndexSha1": "0" * 40},
-        }))
+        }), encoding="utf-8", newline="\n")
         patcher = self.root / "patcher"
         patcher.mkdir()
         shutil.copy(PATCHER_DIR / "TERMS.md", patcher / "TERMS.md")
@@ -141,7 +141,7 @@ class SourcePatchesTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def write_config(self):
-        self.config_path.write_text(json.dumps(self.config, indent=2))
+        self.config_path.write_text(json.dumps(self.config, indent=2), encoding="utf-8", newline="\n")
 
     def patcher(self, *args, ok=True):
         result = subprocess.run(
@@ -156,7 +156,7 @@ class SourcePatchesTest(unittest.TestCase):
 
     def decompile(self):
         self.patcher("decompile", "9.9", "--out", str(self.root / "bases" / "9.9"), "--decompiler", str(self.stub))
-        return {path.stem: path.read_text() for path in (self.root / "bases" / "9.9").glob("*.java")}
+        return {path.stem: path.read_text(encoding="utf-8") for path in (self.root / "bases" / "9.9").glob("*.java")}
 
     def write_gaius_sources(self, bases, extra_foo_line=None):
         foo = bases["t-Foo"].replace(
@@ -189,7 +189,7 @@ class SourcePatchesTest(unittest.TestCase):
     def test_prepare_rebuilds_the_gaius_sources_exactly(self):
         targets = self.write_gaius_sources(self.decompile())
         self.assertEqual(self.make_patches(), 0)
-        script = (self.root / "patcher" / "patches" / "9.9" / "t-Foo.gpatch").read_text()
+        script = (self.root / "patcher" / "patches" / "9.9" / "t-Foo.gpatch").read_text(encoding="utf-8")
         self.assertNotIn("official value", script)
         self.assertIn("+// added by Gaius", script)
         self.assertEqual(self.make_patches("--check"), 0)
@@ -202,15 +202,22 @@ class SourcePatchesTest(unittest.TestCase):
             self.assertEqual((self.root / entry["target"]).read_bytes(), targets[entry["id"]].encode())
         self.assertIn("2 already up to date", self.patcher("prepare", "9.9", "--decompiler", str(self.stub)))
 
-        (self.root / self.config["patches"][0]["target"]).write_text("edited\n")
+        (self.root / self.config["patches"][0]["target"]).write_text("edited\n", encoding="utf-8", newline="\n")
         self.assertIn("exists and differs", self.patcher("prepare", "9.9", "--decompiler", str(self.stub), ok=False))
+
+    def test_a_crlf_checkout_makes_the_same_patches(self):
+        targets = self.write_gaius_sources(self.decompile())
+        self.assertEqual(self.make_patches(), 0)
+        for entry in self.config["patches"]:
+            (self.root / entry["target"]).write_bytes(targets[entry["id"]].replace("\n", "\r\n").encode())
+        self.assertEqual(self.make_patches("--check"), 0, "CRLF in the checkout is not a change")
 
     def test_prepare_into_another_directory(self):
         targets = self.write_gaius_sources(self.decompile())
         self.assertEqual(self.make_patches(), 0)
         into = self.root / "elsewhere"
         self.patcher("prepare", "9.9", "--decompiler", str(self.stub), "--into", str(into))
-        self.assertEqual((into / "port/mc/x/net/minecraft/Foo.java").read_text(), targets["t-Foo"])
+        self.assertEqual((into / "port/mc/x/net/minecraft/Foo.java").read_text(encoding="utf-8"), targets["t-Foo"])
 
     def test_moved_official_lines_become_copies(self):
         bases = self.decompile()
@@ -254,9 +261,9 @@ class SourcePatchesTest(unittest.TestCase):
         with zipfile.ZipFile(client, "a") as archive:
             archive.writestr("net/minecraft/Foo$Extra.class", b"changed")
         profile_path = self.root / "port" / "versions" / "9.9.json"
-        profile = json.loads(profile_path.read_text())
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
         profile["official"]["clientSha1"] = sha1(client.read_bytes())
-        profile_path.write_text(json.dumps(profile))
+        profile_path.write_text(json.dumps(profile), encoding="utf-8", newline="\n")
         output = self.patcher("prepare", "9.9", "--decompiler", str(self.stub), ok=False)
         self.assertIn("is not the text the patch was made for", output)
 

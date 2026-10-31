@@ -245,7 +245,9 @@ def main(argv: list[str]) -> int:
     for (version, entry_id), base in sorted(bases.items()):
         entry = entries[entry_id]
         target = args.root / entry["target"]
-        result = target.read_bytes().decode("utf-8")
+        # The Gaius sources are checked in with LF (eol=lf); a Windows checkout made before that
+        # attribute may still hold CRLF, which is not the text prepare has to rebuild.
+        result = target.read_bytes().decode("utf-8").replace("\r\n", "\n")
         script, inserted = make_script(base, result)
         assert apply_script(script, base) == result
         official = official_lines([text for (_, other), text in bases.items() if other == entry_id])

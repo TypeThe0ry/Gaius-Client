@@ -1,0 +1,210 @@
+gaius-source-patch 2
+base e97cf608e59b4903d02e7db96cce8fe44187ddde28e695c4cf0f6f559a778b55
+result 5ae3d2c4020bf101a6c1588dff010dc7a894fe0f660a24c52b53a82dcab67119
+@@ 2 1
++import dev.gaius.browser.AssetArchive;
++import java.io.ByteArrayInputStream;
++import java.io.IOException;
+@@ 4 1
++import java.nio.charset.StandardCharsets;
+@@ 6 0
++import java.util.ArrayList;
++import java.util.Arrays;
+@@ 7 0
++import java.util.HashSet;
+@@ 11 1
+@@ 13 1
+@@ 19 3
+@@ 23 0
++/** Serves the official 26.2 vanilla pack from Gaius' validated browser asset archive. */
+@@ 24 1
++    private static final String RESOURCE_LIST = "dev/gaius/browser/minecraft-resources.txt";
++    private static final String FALLBACK_PACK_ICON = "assets/minecraft/textures/misc/unknown_pack.png";
+=1 1
+@@ 26 2
++    private final ResourceMetadata metadata;
+@@ 29 2
++    private final String[] resources;
++    private final Set<String> resourceSet;
++    private final Map<String, ListedResource[]> listedResourceCache = new HashMap<>();
++    /** The browser asset archive and its byte cache (the JS bridge lives there). */
++    private final AssetArchive archive = new AssetArchive();
+@@ 33 6
++            PackLocationInfo location,
++            ResourceMetadata metadata,
++            Set<String> namespaces,
++            List<Path> rootPaths,
++            Map<PackType, List<Path>> pathsForType) {
+@@ 40 4
++        this.metadata = metadata;
++        Set<String> browserNamespaces = new HashSet<>(namespaces);
++        browserNamespaces.add("gaius");
++        this.namespaces = Set.copyOf(browserNamespaces);
++        this.resources = sortedResourceCopy(loadResourceList());
++        this.resourceSet = new HashSet<>(List.of(this.resources));
+@@ 46 3
++    @Override
++    public IoSupplier<InputStream> getRootResource(String... path) {
++        if (path.length == 0) {
+=111 1
+=55 1
++        return rootSupplierIfPresent(String.join("/", path));
+=44 1
+@@ 50 6
++    public void listRawPaths(PackType type, Identifier id, java.util.function.Consumer<Path> output) {
++        // Browser resources do not have stable java.nio.file.Path values.
+=44 1
+=1 1
++    @Override
++    public void listResources(
++            PackType type, String namespace, String path, PackResources.ResourceOutput output) {
++        for (ListedResource resource : listedResources(type, namespace, path)) {
++            output.accept(resource.id, openClasspathResource(resource.resource));
+=55 1
+=44 1
+@@ 57 1
++    private ListedResource[] listedResources(PackType type, String namespace, String path) {
++        String key = type.getDirectory() + "\n" + namespace + "\n" + path;
++        ListedResource[] cached = this.listedResourceCache.get(key);
++        if (cached != null) {
++            return cached;
+=55 1
++        String root = type.getDirectory() + "/" + namespace + "/";
++        String prefix = root + (path.isEmpty() ? "" : path + "/");
++        List<ListedResource> matches = new ArrayList<>();
++        int start = lowerBound(this.resources, prefix);
++        for (int index = start; index < this.resources.length; index++) {
++            String resource = this.resources[index];
++            if (!resource.startsWith(prefix)) {
++                break;
+=54 1
++            Identifier id = Identifier.tryBuild(namespace, resource.substring(root.length()));
++            if (id != null) {
++                matches.add(new ListedResource(id, resource));
+=54 2
++        cached = matches.toArray(ListedResource[]::new);
++        this.listedResourceCache.put(key, cached);
++        return cached;
+@@ 60 7
++    private static int lowerBound(String[] values, String target) {
++        int low = 0;
++        int high = values.length;
++        while (low < high) {
++            int middle = (low + high) >>> 1;
++            if (values[middle].compareTo(target) < 0) {
++                low = middle + 1;
+~87 12
++                high = middle;
+@@ 68 1
+=55 1
++        return low;
+@@ 71 12
++    @Override
++    public IoSupplier<InputStream> getResource(PackType type, Identifier id) {
++        String resource = type.getDirectory() + "/" + id.getNamespace() + "/" + id.getPath();
++        return supplierIfPresent(resource);
+=44 1
+@@ 84 35
++    @Override
++    public Set<String> getNamespaces(PackType type) {
+@@ 122 5
++    @Override
++    public <T> T getMetadataSection(MetadataSectionType<T> type) {
++        return this.metadata.getSection(type).orElse(null);
+=44 1
+@@ 128 11
++    @Override
+@@ 143 0
++    @Override
+@@ 147 3
++        return id -> Optional.ofNullable(getResource(PackType.CLIENT_RESOURCES, id))
++                .map(supplier -> new Resource(this, supplier));
+=44 1
+=1 1
++    private IoSupplier<InputStream> supplierIfPresent(String resource) {
++        return exists(resource) ? openClasspathResource(resource) : null;
+=44 1
+=1 1
++    private IoSupplier<InputStream> rootSupplierIfPresent(String resource) {
++        if (!exists(resource) && !existsOnClasspath(resource)) {
++            return "pack.png".equals(resource) ? supplierIfPresent(FALLBACK_PACK_ICON) : null;
+=55 1
++        return openClasspathResource(resource);
+=44 1
+=1 1
++    private IoSupplier<InputStream> openClasspathResource(String resource) {
++        return () -> {
++            byte[] external = archive.read(resource);
++            if (external != null) {
++                return new ByteArrayInputStream(external);
+=54 1
++            InputStream input = openResourceStream(resource);
++            if (input == null) {
++                throw new IOException("Missing browser vanilla resource: " + resource);
+=54 1
++            return new ByteArrayInputStream(input.readAllBytes());
++        };
+=44 1
+=1 1
++    private boolean exists(String resource) {
++        return this.resourceSet.contains(resource);
+=44 1
+=1 1
++    private static boolean existsOnClasspath(String resource) {
++        if (AssetArchive.externalResourceLength(resource) >= 0) {
++            return true;
+=55 1
++        try (InputStream input = openResourceStream(resource)) {
++            return input != null;
++        } catch (IOException ignored) {
++            return false;
+=55 1
+=44 1
+@@ 151 0
++    private static InputStream openResourceStream(String resource) {
++        String normalized = resource.startsWith("/") ? resource.substring(1) : resource;
++        return VanillaPackResources.class.getClassLoader().getResourceAsStream(normalized);
+=44 1
+=1 1
++    private static String[] loadResourceList() {
++        try (InputStream input = VanillaPackResources.class.getClassLoader()
++                .getResourceAsStream(RESOURCE_LIST)) {
++            if (input == null) {
++                return new String[0];
+=54 1
++            String[] lines = new String(input.readAllBytes(), StandardCharsets.UTF_8).split("\\r?\\n");
++            List<String> result = new ArrayList<>(lines.length);
++            for (String line : lines) {
++                String trimmed = line.trim();
++                if (!trimmed.isEmpty()) {
++                    result.add(trimmed);
+=82 1
+=54 1
++            return result.toArray(String[]::new);
++        } catch (IOException ignored) {
++            return new String[0];
+=55 1
+=44 1
+=1 1
++    /**
++     * The browser resource-list producer is outside the runtime trust
++     * boundary.  Keep lowerBound's Java String.compareTo precondition true
++     * even when a stale, locale-sorted, or hand-authored list is supplied.
++     */
++    private static String[] sortedResourceCopy(String[] values) {
++        String[] copy = Arrays.copyOf(values, values.length);
++        Arrays.sort(copy);
++        return copy;
+=44 1
+=1 1
++    private static final class ListedResource {
++        private final Identifier id;
++        private final String resource;
+=1 1
++        private ListedResource(Identifier id, String resource) {
++            this.id = id;
++            this.resource = resource;
+=55 1
+=44 1
+=149 1
+=1 1

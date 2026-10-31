@@ -71,7 +71,7 @@ class FetchOfflineTest(unittest.TestCase):
             ],
             "assetIndex": {"id": "7", "sha1": sha1(index), "url": "https://invalid.example/7.json"},
         }
-        (self.game / "versions" / "9.9" / "9.9.json").write_text(json.dumps(metadata))
+        (self.game / "versions" / "9.9" / "9.9.json").write_text(json.dumps(metadata), encoding="utf-8")
 
         profile = {
             "id": "9.9",
@@ -84,12 +84,12 @@ class FetchOfflineTest(unittest.TestCase):
                 "assetIndexSha1": sha1(index),
             },
         }
-        (self.bundle / "profiles" / "9.9.json").write_text(json.dumps(profile))
+        (self.bundle / "profiles" / "9.9.json").write_text(json.dumps(profile), encoding="utf-8")
         (self.bundle / "TERMS.md").write_bytes(TERMS.read_bytes())
         (self.bundle / "asset-selection.json").write_text(json.dumps({
             "exact": ["minecraft/sounds.json"],
             "prefixes": [{"prefix": "minecraft/sounds/block/", "suffix": ".ogg"}],
-        }))
+        }), encoding="utf-8")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -110,14 +110,14 @@ class FetchOfflineTest(unittest.TestCase):
 
         accepted = self.patcher("fetch", "9.9", "--offline")
         self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
-        record = json.loads((self.root / "work" / "terms-accepted.json").read_text())
+        record = json.loads((self.root / "work" / "terms-accepted.json").read_text(encoding="utf-8"))
         self.assertEqual(record["termsSha256"], hashlib.sha256(TERMS.read_bytes().replace(b"\r\n", b"\n")).hexdigest())
         self.assertIn("You accepted", self.patcher("terms", accept=False).stdout)
 
         again = self.patcher("fetch", "9.9", "--offline", accept=False)
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
 
-        (self.bundle / "TERMS.md").write_text(TERMS.read_text() + "\n6. A new term.\n")
+        (self.bundle / "TERMS.md").write_text(TERMS.read_text(encoding="utf-8") + "\n6. A new term.\n", encoding="utf-8")
         changed = self.patcher("fetch", "9.9", "--offline", accept=False)
         self.assertNotEqual(changed.returncode, 0)
         self.assertIn("not accepted", changed.stderr)
@@ -128,13 +128,13 @@ class FetchOfflineTest(unittest.TestCase):
         work = self.root / "work" / "9.9"
         self.assertEqual(sha1((work / "client-original.jar").read_bytes()), self.jar_sha1)
         self.assertTrue((work / "libraries/org/example/lib/1.0/lib-1.0.jar").is_file())
-        self.assertIn("lib-1.0.jar", (work / "classpath.txt").read_text())
-        self.assertEqual(json.loads((work / "client-version.json").read_text())["id"], "9.9")
+        self.assertIn("lib-1.0.jar", (work / "classpath.txt").read_text(encoding="utf-8"))
+        self.assertEqual(json.loads((work / "client-version.json").read_text(encoding="utf-8"))["id"], "9.9")
         objects = list((work / "assets" / "objects").rglob("*"))
         names = {path.name for path in objects if path.is_file()}
         self.assertEqual(len(names), 2)
         self.assertNotIn(self.unselected, names)
-        manifest = json.loads((work / "fetch-manifest.json").read_text())
+        manifest = json.loads((work / "fetch-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["downloaded"], 0)
 
     def test_tampered_jar_is_rejected_offline(self):
@@ -153,29 +153,29 @@ class FetchOfflineTest(unittest.TestCase):
 
     def test_library_for_another_platform_is_optional(self):
         metadata_path = self.game / "versions" / "9.9" / "9.9.json"
-        metadata = json.loads(metadata_path.read_text())
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         metadata["libraries"].append({"name": "org.example:natives:1.0", "rules": [
             {"action": "allow", "os": {"name": "plan9"}}],
             "downloads": {"artifact": {"path": "org/example/natives/1.0/natives-1.0.jar",
                                        "sha1": "0" * 40, "url": "https://invalid.example/n.jar"}}})
-        metadata_path.write_text(json.dumps(metadata))
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
         result = self.patcher("fetch", "9.9", "--offline")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertNotIn("natives-1.0.jar", (self.root / "work" / "9.9" / "classpath.txt").read_text())
+        self.assertNotIn("natives-1.0.jar", (self.root / "work" / "9.9" / "classpath.txt").read_text(encoding="utf-8"))
 
     def test_mappings_can_come_from_a_local_file(self):
         mappings = b"# mappings\n"
         mapping_file = self.root / "client.txt"
         mapping_file.write_bytes(mappings)
         metadata_path = self.game / "versions" / "9.9" / "9.9.json"
-        metadata = json.loads(metadata_path.read_text())
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         metadata["downloads"]["client_mappings"] = {"sha1": sha1(mappings), "url": "https://invalid.example/m.txt"}
-        metadata_path.write_text(json.dumps(metadata))
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
         profile_path = self.bundle / "profiles" / "9.9.json"
-        profile = json.loads(profile_path.read_text())
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
         profile["clientDistribution"] = "obfuscated-with-mappings"
         profile["official"]["clientMappingsSha1"] = sha1(mappings)
-        profile_path.write_text(json.dumps(profile))
+        profile_path.write_text(json.dumps(profile), encoding="utf-8")
         offline = self.patcher("fetch", "9.9", "--offline")
         self.assertNotEqual(offline.returncode, 0)
         self.assertIn("--mappings", offline.stderr)
