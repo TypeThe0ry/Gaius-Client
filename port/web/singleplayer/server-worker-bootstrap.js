@@ -14,6 +14,13 @@ try {
     diagnosticUrl.searchParams.get("gaiusServerTickTelemetry") === "1";
   root.__gaiusSlowProbeTelemetryEnabled =
     root.__gaiusSlowProbeTelemetryEnabled === true;
+  // `gaiusKernelTimeline=1` (or a row capacity) opts into the kernel job timeline rings
+  // (kernel-runtime.js / kernel-pool.js) and the kernel client's own submit/answer ring.
+  // Left undefined otherwise, so the default path creates nothing.
+  const kernelTimelineParam = diagnosticUrl.searchParams.get("gaiusKernelTimeline");
+  if (root.__gaiusKernelTimeline === undefined && kernelTimelineParam !== null && kernelTimelineParam !== "") {
+    root.__gaiusKernelTimeline = kernelTimelineParam;
+  }
 } catch (_) {
   root.__gaiusMobAiTelemetry = false;
   root.__gaiusServerTickTelemetryEnabled = false;
@@ -149,6 +156,7 @@ let stopping = false;
 let saveAllInFlight = false;
 let stopAfterSaveAll = false;
 let saveAllStopTimer;
+let saveAllRequestTimer;
 let runtimeLeaseSaveChannel;
 let runtimeLeaseSaveId = "";
 let runtimeLeaseSaveWorkerId = "";
@@ -162,6 +170,7 @@ let prewarmAccepted = false;
 let prewarmPromise;
 let prewarmScript;
 let prewarmRuntimeInstantiated = false;
+let prewarmRuntimeImported = false;
 let prewarmRuntimeFailed = false;
 // An idle Worker's vanilla Main that runs up to Bootstrap and waits for the start handshake.
 let parkedMainDispatched = false;
@@ -198,7 +207,7 @@ let startupPort;
 let pendingPortResolve;
 let pendingPortReject;
 let pendingPortTimer;
-// The shipped integrated server is WebAssembly GC only.
+// The start message selects the matching frozen JavaScript or WasmGC server.
 let serverRuntime = "";
 
 function clampRegionCacheBudget(value) {
@@ -654,6 +663,9 @@ function releaseFailedRuntime() {
   if (runtimeReleaseInProgress || root.__gaiusServerRuntimeReleased === true) return false;
   runtimeReleaseInProgress = true;
   root.__gaiusServerRuntimeReleased = true;
+  // A discarded prewarm cleared its exports and must import/instantiate again.
+  prewarmRuntimeImported = false;
+  prewarmRuntimeInstantiated = false;
   const wasm = root.GaiusWasmWorker;
   let tornDown = false;
   // The runtime finalizer owns JSPI continuations and the scheduler. Call exactly one lifecycle
@@ -700,6 +712,12 @@ function dispatchParkedMain(message, script) {
   }
   root.__gaiusServerParkMain = true;
   root.__gaiusServerParkReleased = false;
+  // The seed-independent part of the world load may run while parked (BrowserWorldLoadPrewarm);
+  // the page decides, ?gaiusSrvInit=0 turns it off.
+  root.__gaiusServerPrewarmWorld = message.prewarmWorld === true ? true
+    : (message.prewarmWorld === "miss" ? "miss" : false);
+  root.__gaiusServerWorldPrewarmState = "pending";
+  root.__gaiusServerWorldPrewarmMs = 0;
   root.__gaiusServerParkedState = "booting";
   root.__gaiusServerParkedFailure = "";
   parkedMainDispatched = true;
@@ -715,7 +733,8 @@ function dispatchParkedMain(message, script) {
     root.__gaiusServerParkedFailure = String(error && (error.stack || error.message) || error);
   };
   try {
-    root.GaiusWasmWorker.startMain([]).catch(failed);
+    if (script.runtime === "wasm") root.GaiusWasmWorker.startMain([]).catch(failed);
+    else main([]);
   } catch (error) {
     failed(error);
   }
@@ -751,15 +770,21 @@ async function prewarmServerRuntime(message) {
     }
     prewarmAccepted = true;
     activeSessionId = requestedSessionId;
-    if (message.serverRuntime !== "wasm") {
-      throw new Error("Gaius requires the WebAssembly GC integrated server");
+    if (message.serverRuntime && message.serverRuntime !== "wasm" && message.serverRuntime !== "js") {
+      throw new Error("Unknown integrated server runtime");
     }
-    serverRuntime = "wasm";
+    serverRuntime = message.serverRuntime === "wasm" ? "wasm" : "js";
     const startedAt = monotonicMillis();
-    const script = await prepareWasmServer(message, startedAt);
+    const script = serverRuntime === "wasm"
+      ? await prepareWasmServer(message, startedAt) : await prepareServerScript(message, startedAt);
     prewarmScript = script;
-    await root.GaiusWasmWorker.instantiate();
-    prewarmRuntimeInstantiated = true;
+    if (script.runtime === "wasm") {
+      await root.GaiusWasmWorker.instantiate();
+      prewarmRuntimeInstantiated = true;
+    } else {
+      importScripts(script.url);
+      prewarmRuntimeImported = true;
+    }
     // Never call Bootstrap (or any other Java startup step) from here: an exported Bootstrap entry
     // point once left built-in holders such as max_health unbound when start reused the runtime.
     // An idle Worker may instead start vanilla Main itself (parkMain): the real main thread runs
@@ -791,6 +816,7 @@ async function prewarmServerRuntime(message) {
     prewarmRuntimeFailed = true;
     releaseFailedRuntime();
     prewarmRuntimeInstantiated = false;
+    prewarmRuntimeImported = false;
     prewarmScript = undefined;
     return false;
   });
@@ -826,6 +852,9 @@ root.onmessage = async (event) => {
     if (message.gaiusServerTickTelemetry === true) {
       root.__gaiusServerTickTelemetryEnabled = true;
     }
+    if (message.gaiusKernelTimeline !== undefined) {
+      root.__gaiusKernelTimeline = message.gaiusKernelTimeline;
+    }
     const slowProbeEnabled = typeof message.gaiusSlowProbeTelemetry === "boolean"
       ? message.gaiusSlowProbeTelemetry
       : message.slowProbeTelemetryEnabled;
@@ -854,7 +883,7 @@ root.onmessage = async (event) => {
     if (startAccepted || !prewarmPromise) return;
     const prewarmed = await prewarmPromise;
     if (prewarmed && !prewarmRuntimeFailed && prewarmScript) {
-      dispatchParkedMain({parkMain: true}, prewarmScript);
+      dispatchParkedMain({parkMain: true, prewarmWorld: message.prewarmWorld}, prewarmScript);
     }
     return;
   }
@@ -894,15 +923,20 @@ root.onmessage = async (event) => {
       detail: "initialGameRules must be bounded JSON"});
     return;
   }
-  if (message.serverRuntime !== "wasm") {
+  if (message.serverRuntime && message.serverRuntime !== "wasm" && message.serverRuntime !== "js") {
     closeTransferredPort(message, event);
     postMessage({type: "runtime-start-failed", reason: "unsupported-server-runtime",
-      detail: "WebAssembly GC integrated server is required"});
+      detail: "Unknown integrated server runtime"});
     return;
   }
   startAccepted = true;
   activeSessionId = requestedSessionId;
-  serverRuntime = "wasm";
+  serverRuntime = message.serverRuntime === "wasm" ? "wasm" : "js";
+  // Preserve the perf-integ5 transport flag while the integrated server remains WasmGC-only.
+  globalThis.__gaiusChunkPipelineBatching = message.chunkPipelineBatching === true;
+  globalThis.__gaiusLauncherFlags = Object.freeze({
+    chunkPipelineBatching: globalThis.__gaiusChunkPipelineBatching,
+  });
   root.onmessage = handleControlMessage;
   startupCancelPromise = new Promise((resolve) => {
     startupCancelResolve = resolve;
@@ -948,6 +982,9 @@ root.onmessage = async (event) => {
       requestedWorldgenSlice,
       defaultWorldgenSliceMillis,
     );
+    // ?gaiusServerWake=1 (page option, absent by default): wake the parked server thread when work for its poll is
+    // queued (BrowserIntegratedServerMain.wakeServerForPoll). calls/unparks are the Java side's counters.
+    root.__gaiusServerWake = message.gaiusServerWake === true ? {calls: 0, unparks: 0} : undefined;
     const requestedDistanceRampInterval = message.distanceRampIntervalMillis ??
       root.__gaiusDistanceRampIntervalMillis;
     root.__gaiusDistanceRampIntervalMillis = clampDistanceRampInterval(
@@ -982,7 +1019,8 @@ root.onmessage = async (event) => {
         if (storageStartupInFlight === storageReady) storageStartupInFlight = undefined;
       },
     );
-    const prepareFreshAsset = () => prepareWasmServer(message, startupStarted);
+    const prepareFreshAsset = () => serverRuntime === "wasm"
+      ? prepareWasmServer(message, startupStarted) : prepareServerScript(message, startupStarted);
     // Storage opens while the optional prewarm finishes. A failed prewarm must not reuse the
     // partially initialized runtime; prepare a fresh asset and import/instantiate it below.
     // A parked Main that already failed (for example in Bootstrap) has poisoned that runtime's
@@ -1020,6 +1058,9 @@ root.onmessage = async (event) => {
       startupReady,
       startupCancelPromise.then(() => { throw startupCancellationError(); }),
     ]);
+    if (script.runtime !== serverRuntime) {
+      throw new Error("Prewarmed integrated server runtime differs from the start request");
+    }
     if (!storageInstalled || !storageLifecycleIsActive(startupStorageGeneration)) {
       throw new Error("Singleplayer launch storage was closed before runtime import");
     }
@@ -1033,11 +1074,16 @@ root.onmessage = async (event) => {
 
     const importStarted = monotonicMillis();
     // The Wasm worker runtime exposes Java entry points and the input pump.
-    if (!prewarmRuntimeInstantiated) {
-      await Promise.race([
-        root.GaiusWasmWorker.instantiate(),
-        startupCancelPromise.then(() => { throw startupCancellationError(); }),
-      ]);
+    if (script.runtime === "wasm") {
+      if (!prewarmRuntimeInstantiated) {
+        await Promise.race([
+          root.GaiusWasmWorker.instantiate(),
+          startupCancelPromise.then(() => { throw startupCancellationError(); }),
+        ]);
+      }
+    } else if (!prewarmRuntimeImported) {
+      importScripts(script.url);
+      prewarmRuntimeImported = true;
     }
     markStartup("runtime-imported", importStarted);
     if (script.temporaryUrl) {
@@ -1066,12 +1112,13 @@ root.onmessage = async (event) => {
       markStartup("parked-main-released", startupStarted);
     } else {
       // The main thread's JSPI activation runs up to its first suspension, as main([]) does.
-      root.GaiusWasmWorker.startMain([]).catch((error) => {
-        postMessage({
-          type: "runtime-error",
-          detail: String(error && (error.stack || error.message) || error),
+      if (script.runtime === "wasm") {
+        root.GaiusWasmWorker.startMain([]).catch((error) => {
+          postMessage({type: "runtime-error", detail: String(error && (error.stack || error.message) || error)});
         });
-      });
+      } else {
+        main([]);
+      }
     }
     runtimeStarted = true;
     // TeaVM returns here on the first cooperative suspension while Java main continues.
@@ -1454,6 +1501,110 @@ function importWorkerFile(nameOrUrl) {
 // carries the module itself as serverWasmBytes (or, from a portable page, its gzip bytes as
 // serverWasmGzipData). A Worker started from disk finds the module and the scripts among the
 // files the page handed over (workerFile). The module compiles while storage opens.
+// Fetch may already have decoded Content-Encoding before exposing the body.
+// Inspect the representation bytes and replay them so gzip is applied exactly once.
+async function serverScriptResponseBlob(response) {
+  const reader = response.body.getReader();
+  const chunks = [];
+  const prefix = [];
+  let ended = false;
+  while (prefix.length < 2) {
+    const item = await reader.read();
+    if (item.done) { ended = true; break; }
+    chunks.push(item.value);
+    for (const byte of item.value) {
+      if (prefix.length >= 2) break;
+      prefix.push(byte);
+    }
+  }
+  const replay = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      if (ended) controller.close();
+    },
+    async pull(controller) {
+      const item = await reader.read();
+      if (item.done) controller.close();
+      else controller.enqueue(item.value);
+    },
+    cancel(reason) { return reader.cancel(reason); },
+  });
+  const body = prefix[0] === 0x1f && prefix[1] === 0x8b
+    ? replay.pipeThrough(new DecompressionStream("gzip")) : replay;
+  return new Response(body).blob();
+}
+
+async function prepareServerScript(message, startupStarted) {
+  // A failed prewarm may have closed the previous JS runtime. The next script import starts a
+  // new lifecycle and must get its own guarded teardown if it also fails.
+  runtimeReleaseInProgress = false;
+  root.__gaiusServerRuntimeReleased = false;
+  // A Worker started from disk got the server script from the page.
+  const handedOver = workerFile(message.serverScriptUrl || "singleplayer-server.js") ||
+    workerFile("singleplayer-server.js");
+  if (handedOver) {
+    const temporaryUrl = URL.createObjectURL(new Blob([handedOver], {type: "text/javascript"}));
+    markStartup("runtime-transferred", startupStarted);
+    return {runtime: "js", url: temporaryUrl, temporaryUrl};
+  }
+  // Portable file:// pages transfer the embedded gzip bytes directly. A Blob
+  // URL created in the page is opaque to a dedicated Worker and fetch(blob:)
+  // fails in Chrome, so prefer the transferable payload when present.
+  if (message.serverScriptGzipData) {
+    if (typeof DecompressionStream !== "function") {
+      throw new Error("This browser cannot decompress the portable singleplayer server");
+    }
+    const bytes = message.serverScriptGzipData instanceof ArrayBuffer
+      ? new Uint8Array(message.serverScriptGzipData)
+      : ArrayBuffer.isView(message.serverScriptGzipData)
+        ? new Uint8Array(
+            message.serverScriptGzipData.buffer,
+            message.serverScriptGzipData.byteOffset,
+            message.serverScriptGzipData.byteLength,
+          )
+        : null;
+    if (!bytes || bytes.byteLength === 0) {
+      throw new Error("Portable singleplayer server transfer is empty");
+    }
+    markStartup("runtime-transferred", startupStarted);
+    const compressed = new Blob([bytes], {type: "application/gzip"});
+    const decompressed = compressed.stream().pipeThrough(
+      new DecompressionStream("gzip"),
+    );
+    const scriptBlob = await new Response(decompressed).blob();
+    const temporaryUrl = URL.createObjectURL(new Blob(
+      [scriptBlob],
+      {type: "text/javascript"},
+    ));
+    markStartup("runtime-decompressed", startupStarted);
+    return {runtime: "js", url: temporaryUrl, temporaryUrl};
+  }
+  if (message.serverScriptGzipUrl) {
+    if (typeof DecompressionStream !== "function") {
+      throw new Error("This browser cannot decompress the portable singleplayer server");
+    }
+    const response = await fetch(String(message.serverScriptGzipUrl));
+    if (!response.ok || !response.body) {
+      throw new Error("Portable singleplayer server asset could not be loaded");
+    }
+    markStartup("runtime-downloaded", startupStarted);
+    const scriptBlob = await serverScriptResponseBlob(response);
+    const sourceUrl = String(message.serverScriptGzipUrl).replace(/[\r\n\u2028\u2029]/g, "");
+    const temporaryUrl = URL.createObjectURL(new Blob(
+      [scriptBlob, "\n//# sourceURL=" + sourceUrl + "\n"],
+      {type: "text/javascript"},
+    ));
+    markStartup("runtime-decompressed", startupStarted);
+    return {runtime: "js", url: temporaryUrl, temporaryUrl};
+  }
+  if (message.serverScriptUrl) {
+    return {runtime: "js", url: String(message.serverScriptUrl), temporaryUrl: null};
+  }
+  const resolved = new URL("singleplayer-server.js", location.href);
+  resolved.search = location.search;
+  return {runtime: "js", url: resolved.href, temporaryUrl: null};
+}
+
 async function prepareWasmServer(message, startupStarted) {
   // A failed prewarm may have closed the previous scheduler/runtime. The next asset import is a
   // new lifecycle and must be eligible for its own guarded teardown if it also fails.
@@ -1559,6 +1710,9 @@ function handleControlMessage(event) {
     if (typeof slowProbeEnabled === "boolean") {
       root.__gaiusSlowProbeTelemetryEnabled = slowProbeEnabled;
     }
+    if (message.gaiusKernelTimeline !== undefined) {
+      root.__gaiusKernelTimeline = message.gaiusKernelTimeline;
+    }
     return;
   }
   if (message.type === "lan-open") {
@@ -1607,7 +1761,7 @@ function handleControlMessage(event) {
     const sampledAtMillis = performance.now();
     refreshStorageStats();
     observeTelemetryMeasurement(measurementId);
-    postMessage({
+    const pong = {
       type: "telemetry-pong",
       sessionId: String(message.sessionId || activeSessionId || ""),
       sequence: Number(message.sequence) || 0,
@@ -1661,6 +1815,18 @@ function handleControlMessage(event) {
         [],
         storageTelemetryCounterKeys,
       ),
+    };
+    // Only present while a kernel job timeline exists: ring counters, not rows.
+    const kernelTimeline = kernelTimelineSummary();
+    if (kernelTimeline !== null) pong.kernelTimeline = kernelTimeline;
+    postMessage(pong);
+    return;
+  }
+  if (message.type === "kernel-timeline-snapshot") {
+    // Explicit, bounded export of the kernel job rings (see postKernelTimelineSnapshot).
+    postKernelTimelineSnapshot(message).catch((error) => {
+      postMessage({type: "kernel-timeline", enabled: false,
+        seq: Number(message.seq) || 0, error: String(error && error.message || error)});
     });
     return;
   }
@@ -1723,6 +1889,10 @@ function handleControlMessage(event) {
     // integrated-server thread; the Java hook starts the existing storage flush protocol after
     // saveAllChunks returns, producing storage-flush-ack/storage-flush-error asynchronously.
     if (stopRequested || stopping) return;
+    // Leave the Worker message callback before entering TeaVM. Some version-specific server
+    // save paths can park while flushing chunks; entering them from the callback would make
+    // JSPI reject the park or leave the integrated server stuck until the page is reloaded.
+    if (saveAllRequestTimer !== undefined) return;
     if (typeof requestIntegratedServerSave !== "function") {
       postMessage({
         type: "save-all-error",
@@ -1730,16 +1900,23 @@ function handleControlMessage(event) {
       });
       return;
     }
-    try {
-      saveAllInFlight = true;
-      requestIntegratedServerSave();
-    } catch (error) {
-      saveAllInFlight = false;
-      postMessage({
-        type: "save-all-error",
-        detail: String(error && (error.stack || error.message) || error),
-      });
-    }
+    saveAllInFlight = true;
+    saveAllRequestTimer = setTimeout(() => {
+      saveAllRequestTimer = undefined;
+      if (stopRequested || stopping) {
+        saveAllInFlight = false;
+        return;
+      }
+      try {
+        requestIntegratedServerSave();
+      } catch (error) {
+        saveAllInFlight = false;
+        postMessage({
+          type: "save-all-error",
+          detail: String(error && (error.stack || error.message) || error),
+        });
+      }
+    }, 0);
     return;
   }
   if (message.type !== "stop") return;
@@ -2135,7 +2312,6 @@ async function installPersistentFileSystem(generation = storageGeneration) {
     if (!storageLifecycleIsActive(generation)) return false;
     path = normalize(path);
     value = String(value || "");
-    fileValues[path] = value;
     queueIndexedDbChange(path, value, false);
     scheduleFlush();
     return true;
@@ -2207,7 +2383,6 @@ async function installPersistentFileSystem(generation = storageGeneration) {
       });
       pendingChanges.set(path, {value: copy, version, region: true});
     } else {
-      fileValues[path] = copy;
       queueIndexedDbChange(path, copy, false);
     }
     scheduleFlush(250);
@@ -2255,8 +2430,6 @@ async function installPersistentFileSystem(generation = storageGeneration) {
       }
       regionIndex.delete(path);
       removeRegionCache(path);
-    } else {
-      delete fileValues[path];
     }
     queueIndexedDbChange(path, null, isRegionPath(path));
     scheduleFlush();
@@ -3750,20 +3923,35 @@ async function writeBatch(changes) {
         store.delete(path);
       } else {
         const current = regionIndex.get(path);
-        store.put({
-          path,
-          value: change.value,
-          generation: Number(current && current.generation) || 0,
-          pairCommitSequence: Number(current && current.pairCommitSequence) ||
-            pairCommitSequenceForPath(path),
-          committedAt: Number(current && current.committedAt) || Date.now(),
-          updatedAt: Date.now(),
-        });
+        if (change.region) {
+          store.put({
+            path,
+            value: change.value,
+            generation: Number(current && current.generation) || 0,
+            pairCommitSequence: Number(current && current.pairCommitSequence) ||
+              pairCommitSequenceForPath(path),
+            committedAt: Number(current && current.committedAt) || Date.now(),
+            updatedAt: Date.now(),
+          });
+        } else {
+          store.put({path, value: change.value, updatedAt: Date.now()});
+        }
       }
     }
     await transactionDone(transaction);
+  } catch (error) {
+    try { transaction.abort(); } catch (_) {}
+    throw error;
   } finally {
     if (activeFlushTransaction === transaction) activeFlushTransaction = undefined;
+  }
+  for (const [path, change] of changes) {
+    if (change.region) continue;
+    if (change.value === null) {
+      delete fileValues[path];
+    } else {
+      fileValues[path] = change.value;
+    }
   }
   for (const [path, change] of changes) {
     if (!change.region) continue;
@@ -3805,6 +3993,13 @@ function nextChangeVersion() {
 }
 
 function queueIndexedDbChange(path, value, region) {
+  if (!region) {
+    if (value === null) {
+      delete fileValues[path];
+    } else {
+      fileValues[path] = value;
+    }
+  }
   pendingChanges.set(path, {
     value,
     version: nextChangeVersion(),
@@ -4285,21 +4480,148 @@ async function drainWorldgenKernel() {
   }
 }
 
+// Kernel job timeline export (diagnostics, opt-in through root.__gaiusKernelTimeline, the
+// `gaiusKernelTimeline` URL parameter or the gaiusKernelTimeline config message).
+//
+//   postMessage({type: "kernel-timeline-snapshot", seq, max?, since?, sinceBusy?, page?, timeoutMs?})
+//   -> {type: "kernel-timeline", seq, enabled, client, page, hosted: [...]}
+//
+// client: this worker's kernel client ring (submit -> answer, host "server-client");
+// page: the page-owned kernel runtime's ring, fetched over the kernel port (null when there is
+// no port or the runtime did not answer within timeoutMs, 1000 by default, 5000 at most);
+// hosted: rings of runtimes/pools this worker hosts itself (at most 4). Every part is the
+// compact format of JobTimeline.export (kernel-runtime.js). max bounds the rows of each part
+// (2048 by default, 4096 at most); since/sinceBusy are the `next`/`busy.next` cursors of an
+// earlier export, either one number for every part or an object keyed client, page, host0..host3.
+const kernelTimelineSnapshotMaxRows = 4096;
+const kernelTimelineSnapshotMaxHosted = 4;
+
+function kernelTimelineHostedSources() {
+  const sources = root.__gaiusKernelTimelineSources;
+  const hosted = [];
+  if (!sources || typeof sources.forEach !== "function") return hosted;
+  sources.forEach((source) => {
+    if (hosted.length < kernelTimelineSnapshotMaxHosted && source && typeof source.timelineExport === "function") {
+      hosted.push(source);
+    }
+  });
+  return hosted;
+}
+
+function kernelTimelineSummary() {
+  const client = root.__gaiusKernelClient;
+  const own = client && typeof client.timelineStats === "function" ? client.timelineStats() : null;
+  const hosted = kernelTimelineHostedSources();
+  if (own === null && hosted.length === 0) return null;
+  const summary = {client: own, hosted: []};
+  for (const source of hosted) {
+    const timeline = source.timeline;
+    if (timeline && typeof timeline.stats === "function") {
+      summary.hosted.push({name: String(source.name || ""), ...timeline.stats()});
+    }
+  }
+  return summary;
+}
+
+async function postKernelTimelineSnapshot(message) {
+  const max = Math.max(1, Math.min(kernelTimelineSnapshotMaxRows, Math.floor(Number(message.max)) || 2048));
+  const part = (cursors, name) => {
+    if (cursors && typeof cursors === "object") {
+      const value = cursors[name];
+      return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    }
+    return typeof cursors === "number" && Number.isFinite(cursors) ? cursors : undefined;
+  };
+  const options = (name) => ({max, since: part(message.since, name), sinceBusy: part(message.sinceBusy, name)});
+  const client = root.__gaiusKernelClient;
+  const out = {
+    type: "kernel-timeline", seq: Number(message.seq) || 0, enabled: false,
+    sampledAtMillis: root.performance.now(), client: null, page: null, hosted: [],
+  };
+  if (client && typeof client.timelineExport === "function") {
+    out.client = client.timelineExport(options("client"));
+  }
+  const hosted = kernelTimelineHostedSources();
+  for (let i = 0; i < hosted.length; i++) out.hosted.push(hosted[i].timelineExport(options("host" + i)));
+  if (client && message.page !== false && typeof client.timeline === "function") {
+    out.page = await client.timeline({...options("page"), timeoutMs: Number(message.timeoutMs) || 1000});
+  }
+  out.enabled = [out.client, out.page, ...out.hosted].some((entry) => entry && entry.enabled === true);
+  postMessage(out);
+}
+
 function createKernelClient(port) {
   let nextId = 1;
   let status = {enabled: false, kernels: {}};
   const pending = new Map();
   const stats = {submitted: 0, completed: 0, failed: 0, unavailable: 0};
+  const timelineWaiters = new Map();
+  let nextTimelineId = 1;
+  // This worker's view of every job (submit -> answer), kept in a fixed ring when the kernel
+  // job timeline is on. Created on the first submit that sees the switch, absent otherwise.
+  let ring = null;
+  const ringCapacity = () => {
+    const flag = root.__gaiusKernelTimeline;
+    if (flag === true || flag === "1" || flag === "on" || flag === "true") return 4096;
+    const n = typeof flag === "string" && flag !== "" ? Number(flag) : flag;
+    if (typeof n !== "number" || !Number.isFinite(n) || n < 1) return 0;
+    return n === 1 ? 4096 : Math.min(65536, Math.max(8, Math.floor(n)));
+  };
+  const ringNow = () => root.performance.timeOrigin + root.performance.now();
+  const ringBegin = (rid, kernel, kind) => {
+    if (ring === null) {
+      const capacity = ringCapacity();
+      if (capacity === 0) return -1;
+      ring = {
+        capacity, seq: 0, origin: root.performance.timeOrigin,
+        sid: new Float64Array(capacity).fill(-1), rid: new Float64Array(capacity),
+        submit: new Float64Array(capacity), done: new Float64Array(capacity),
+        kernel: new Array(capacity).fill(""), kind: new Array(capacity).fill(""),
+        status: new Array(capacity).fill(""),
+      };
+    }
+    const seq = ring.seq++;
+    const i = seq % ring.capacity;
+    ring.sid[i] = seq;
+    ring.rid[i] = rid;
+    ring.submit[i] = ringNow();
+    ring.done[i] = NaN;
+    ring.kernel[i] = kernel;
+    ring.kind[i] = kind;
+    ring.status[i] = "";
+    return seq;
+  };
+  const ringEnd = (seq, statusText) => {
+    if (ring === null || seq < 0) return;
+    const i = seq % ring.capacity;
+    if (ring.sid[i] !== seq) return;   // the ring wrapped over this row while it was in flight
+    ring.done[i] = ringNow();
+    ring.status[i] = statusText;
+  };
   port.onmessage = (event) => {
     const message = event.data;
     if (!message) return;
     if (message.type === "status") {
       status = message.status || status;
+      // The page runtime has its job timeline on: keep this client's own ring (and any runtime
+      // this worker hosts) on the same switch unless the worker set one itself.
+      if (typeof status.timeline === "number" && status.timeline > 0 && root.__gaiusKernelTimeline === undefined) {
+        root.__gaiusKernelTimeline = status.timeline;
+      }
+      return;
+    }
+    if (message.type === "timeline") {
+      const resolve = timelineWaiters.get(message.tid);
+      if (resolve) {
+        timelineWaiters.delete(message.tid);
+        resolve(message.data);
+      }
       return;
     }
     const entry = pending.get(message.id);
     if (!entry) return;
     pending.delete(message.id);
+    if (entry.seq !== undefined) ringEnd(entry.seq, message.type === "result" ? "ok" : (message.code || "kernel-error"));
     if (message.type === "result") {
       stats.completed++;
       entry.resolve(message.result);
@@ -4332,7 +4654,8 @@ function createKernelClient(port) {
         error.code = "runtime-disabled";
         return Promise.reject(error);
       }
-      const buffer = payload instanceof ArrayBuffer ? payload
+      const shared = Object.prototype.toString.call(payload) === "[object SharedArrayBuffer]";
+      const buffer = payload instanceof ArrayBuffer || shared ? payload
         : new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength).slice().buffer;
       const plain = {};
       for (const name of ["key", "version", "visible", "background", "near", "priorityClass",
@@ -4342,9 +4665,66 @@ function createKernelClient(port) {
       const id = nextId++;
       stats.submitted++;
       return new Promise((resolve, reject) => {
-        pending.set(id, {resolve, reject});
+        const entry = {resolve, reject};
+        if (root.__gaiusKernelTimeline !== undefined) {
+          const seq = ringBegin(id, options.kernel || "", kind);
+          if (seq >= 0) entry.seq = seq;
+        }
+        pending.set(id, entry);
         port.postMessage({type: "submit", id, kernel: options.kernel || null, kind, payload: buffer,
-          opts: plain}, [buffer]);
+          opts: plain}, shared ? [] : [buffer]);
+      });
+    },
+    // Diagnostics: ring counters of this client, null while the kernel job timeline never ran.
+    timelineStats: () => ring === null ? null : {
+      capacity: ring.capacity, total: ring.seq, kept: Math.min(ring.seq, ring.capacity),
+      dropped: Math.max(0, ring.seq - ring.capacity),
+    },
+    // Diagnostics: compact export of this client's ring (cols as in JobTimeline.export, times in
+    // ms after `base`; done and status are null/"" for jobs that were not answered yet).
+    timelineExport(options) {
+      if (ring === null) return {schema: "gaius-kernel-timeline/1", enabled: false, host: "server-client"};
+      const o = options || {};
+      const limit = Math.max(1, Math.min(4096, Math.floor(Number(o.max)) || 2048));
+      const oldest = Math.max(0, ring.seq - ring.capacity);
+      const hasSince = typeof o.since === "number" && Number.isFinite(o.since) && o.since >= 0;
+      const start = hasSince ? Math.max(Math.floor(o.since), oldest) : Math.max(oldest, ring.seq - limit);
+      const end = Math.min(ring.seq, start + limit);
+      const rel = (x) => (x !== x ? null : Math.round((x - ring.origin) * 1000) / 1000);
+      const rows = [];
+      for (let n = start; n < end; n++) {
+        const i = n % ring.capacity;
+        rows.push([n, ring.rid[i], ring.kernel[i], ring.kind[i], rel(ring.submit[i]), rel(ring.done[i]), ring.status[i]]);
+      }
+      return {
+        schema: "gaius-kernel-timeline/1", enabled: true, host: "server-client", base: ring.origin,
+        exportedAt: Math.round(ringNow() * 1000) / 1000, capacity: ring.capacity, total: ring.seq,
+        kept: Math.min(ring.seq, ring.capacity), dropped: Math.max(0, ring.seq - ring.capacity),
+        lost: hasSince ? Math.max(0, oldest - Math.floor(o.since)) : 0, next: end,
+        cols: ["seq", "rid", "kernel", "kind", "submit", "done", "status"], rows,
+      };
+    },
+    // Diagnostics: asks the page runtime for its ring over the kernel port ({since, max, ...});
+    // null when it does not answer within timeoutMs.
+    timeline(options) {
+      const o = options || {};
+      return new Promise((resolve) => {
+        const tid = nextTimelineId++;
+        const timer = setTimeout(() => {
+          timelineWaiters.delete(tid);
+          resolve(null);
+        }, Math.max(50, Math.min(5000, Number(o.timeoutMs) || 1000)));
+        timelineWaiters.set(tid, (data) => {
+          clearTimeout(timer);
+          resolve(data);
+        });
+        try {
+          port.postMessage({type: "timeline", tid, since: o.since, max: o.max, sinceBusy: o.sinceBusy});
+        } catch (_) {
+          clearTimeout(timer);
+          timelineWaiters.delete(tid);
+          resolve(null);
+        }
       });
     },
     cancel(key, kernel) {

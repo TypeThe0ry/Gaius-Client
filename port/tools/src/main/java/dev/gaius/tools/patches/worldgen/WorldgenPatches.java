@@ -1681,7 +1681,7 @@ public final class WorldgenPatches {
                 + owners.length + " targets");
     }
 
-    private static void cacheImmutableRecordHashCode(ClassNode node, String owner) {
+    static void cacheImmutableRecordHashCode(ClassNode node, String owner) {
         boolean record = (node.access & Opcodes.ACC_RECORD) != 0;
         boolean finalImmutableClass = (node.access & Opcodes.ACC_FINAL) != 0
                 && node.fields.stream()

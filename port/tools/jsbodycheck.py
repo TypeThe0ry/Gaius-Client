@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import re
@@ -253,12 +255,21 @@ def run_check(root: Path) -> int:
 
 def self_test() -> int:
     with tempfile.TemporaryDirectory(prefix="gaius-jsbody-fixture-") as temp:
-        root = Path(temp); (root / "Fixture.java").write_text('''import org.teavm.jso.JSBody; class Fixture { @JSBody(script = "const x = 1; for (const y of [x]) {}") static native void bad(); @JSBody(params = "task", script = "setTimeout(task, 0);") static native void timer(Runnable task); @JSBody(script = "var x = 1; return x;") static native int good(); }''', encoding="utf-8")
+        root = Path(temp); (root / "Fixture.java").write_text('''import org.teavm.jso.JSBody; class Fixture { @JSBody(script = "const x = 1; for (const y of [x]) {}") static native void bad(); @JSBody(params = "task", script = "setTimeout(task, 0);") static native void timer(Runnable task); @JSBody(script = "var x = 1; return x;") static native int good(); @JSBody(params = "resourceEpoch", script = "var resourceEpoch = 0; return resourceEpoch;") static native int collision(int resourceEpoch); @JSBody(script = "const __g_sdl = {}; Promise.resolve().then(map => { sdl.layoutMap = map; });") static native void staleLocal(); }''', encoding="utf-8")
         bodies = root / "bodies"; bodies.mkdir(); items = extract(root, bodies)
-        assert len(items) == 3 and items[0]["method"] == "bad"
+        assert len(items) == 5 and items[0]["method"] == "bad"
         abi = callback_abi_failures(items, bodies)
         assert len(abi) == 1 and "Runnable" in next(iter(abi.values()))
         assert run_check(root) == 1, "negative fixture unexpectedly passed"
+        one_letter_root = root / "one-letter-local"; one_letter_root.mkdir()
+        (one_letter_root / "Fixture.java").write_text('''import org.teavm.jso.JSBody; class Fixture { @JSBody(params = "chunkX", script = "var c = 0; return c;") static native int collision(int chunkX); @JSBody(params = {"x", "y"}, script = "var e = 0; return e;") static native int margin(int x, int y); }''', encoding="utf-8")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = run_check(one_letter_root)
+        assert result == 1 and "one-letter local declaration is unsafe" in output.getvalue() \
+            and "collision" in output.getvalue() and ": c" in output.getvalue(), \
+            "parameterized JSBody one-letter local was not reported"
+        assert ": d" not in output.getvalue(), "locals outside the minified parameter range were reported"
         bad_root = root / "bad-object"; bad_root.mkdir()
         (bad_root / "Fixture.java").write_text('''import org.teavm.jso.JSBody; class Fixture { @JSBody(params = "task", script = "task.run();") static native void bad(Runnable task); }''', encoding="utf-8")
         bad_bodies = bad_root / "bodies"; bad_bodies.mkdir()

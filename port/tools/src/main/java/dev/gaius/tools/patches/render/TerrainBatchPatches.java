@@ -113,6 +113,10 @@ public final class TerrainBatchPatches {
             return "[L" + gpuBufferSlice + ";";
         }
 
+        String gpuBufferSliceDescriptor() {
+            return "L" + gpuBufferSlice + ";";
+        }
+
         String sectionInfo() {
             return dynamicData + "$ChunkSectionInfo";
         }
@@ -146,6 +150,7 @@ public final class TerrainBatchPatches {
         }
         Api api = Api.forProfile(renderpearl);
         patchPrepareChunkRenders(jar, root, api);
+        patchPrepareChunkRendersIndirect(jar, root, api);
         patchDrawSubmission(jar, root, api);
         patchRenderSectionCompileState(jar, root);
         patchMeshEpochs(jar, root);
@@ -220,6 +225,41 @@ public final class TerrainBatchPatches {
         prepare.maxStack = Math.max(prepare.maxStack, 2) + 1;
         write(node, root.resolve(LEVEL_RENDERER + ".class"));
         System.out.println("Patched LevelRenderer.prepareChunkRenders for batched terrain draws");
+    }
+
+    /** Captures the same section table for the native 26.3 indirect path. */
+    static void patchPrepareChunkRendersIndirect(String jar, Path root, Api api) throws IOException {
+        if (!api.renderPassInterface()) {
+            return;
+        }
+        ClassNode node = readCurrent(jar, root, LEVEL_RENDERER);
+        String returnType = "L" + SECTIONS_TO_RENDER + ";";
+        MethodNode method = find(node, "prepareChunkRendersIndirect",
+                "(Lorg/joml/Matrix4fc;Z)" + returnType);
+        MethodInsnNode write = null;
+        for (AbstractInsnNode instruction : method.instructions.toArray()) {
+            if (instruction instanceof MethodInsnNode call
+                    && call.owner.equals(api.dynamicData())
+                    && call.name.equals("writeChunkSectionsInstanced")
+                    && call.desc.equals("(Ljava/util/List;)" + api.gpuBufferSliceDescriptor())) {
+                write = call;
+                break;
+            }
+        }
+        if (write == null) {
+            throw new IllegalStateException("prepareChunkRendersIndirect section-info upload shape changed");
+        }
+        AbstractInsnNode list = previousOpcode(write);
+        if (!(list instanceof VarInsnNode load) || load.getOpcode() != Opcodes.ALOAD) {
+            throw new IllegalStateException("prepareChunkRendersIndirect section list is not local");
+        }
+        InsnList capture = new InsnList();
+        capture.add(new VarInsnNode(Opcodes.ALOAD, load.var));
+        capture.add(new MethodInsnNode(Opcodes.INVOKESTATIC, GLUE, "captureSections",
+                "(Ljava/util/List;)V", false));
+        method.instructions.insertBefore(write, capture);
+        write(node, root.resolve(LEVEL_RENDERER + ".class"));
+        System.out.println("Patched LevelRenderer.prepareChunkRendersIndirect section capture");
     }
 
     static void patchDrawSubmission(String jar, Path root, Api api) throws IOException {
@@ -427,7 +467,7 @@ public final class TerrainBatchPatches {
         }
         ClassNode node = new ClassNode();
         new ClassReader(bytes).accept(node, 0);
-        return node;
+        return dev.gaius.tools.HierarchyClassWriter.source(node, jar);
     }
 
     private static void write(ClassNode node, Path output) throws IOException {
@@ -438,15 +478,10 @@ public final class TerrainBatchPatches {
     }
 
     private static void writeComputeFrames(ClassNode node, Path output) throws IOException {
-        ClassWriter writer = new ClassWriter(
-                ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS) {
-            @Override
-            protected String getCommonSuperClass(String type1, String type2) {
-                return "java/lang/Object";
-            }
-        };
-        node.accept(writer);
-        Files.createDirectories(output.getParent());
-        Files.write(output, writer.toByteArray());
+        try (var writer = dev.gaius.tools.HierarchyClassWriter.create(node, output)) {
+            node.accept(writer);
+            Files.createDirectories(output.getParent());
+            Files.write(output, writer.toByteArray());
+        }
     }
 }

@@ -1,5 +1,6 @@
 package org.teavm.classlib.java.nio.channels;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -61,12 +62,34 @@ public final class TChannels {
     public static TReadableByteChannel newChannel(InputStream input) {
         return new TReadableByteChannel() {
             private boolean open = true;
+            // Reused by reads from a plain ByteArrayInputStream (see read).
+            private byte[] scratch;
 
             @Override
             public int read(TByteBuffer target) throws IOException {
                 int requested = target.remaining();
                 if (requested == 0) {
                     return 0;
+                }
+                if (input.getClass() == ByteArrayInputStream.class) {
+                    // TextureUtil.readResource reads every resource through this channel into a
+                    // buffer it doubles, and a fresh byte[remaining] per call was garbage after
+                    // each read. ByteArrayInputStream.read(byte[]) is read(b, 0, b.length) and
+                    // copies min(len, available) bytes into b[0, count) only, so a reused array of
+                    // at least `requested` bytes read with (0, requested) returns the same count
+                    // and the same bytes. Other streams may override read(byte[]) on its own and
+                    // keep the exact-size array.
+                    byte[] bytes = scratch;
+                    if (bytes == null || bytes.length < requested) {
+                        bytes = new byte[requested];
+                        scratch = bytes;
+                    }
+                    int count = input.read(bytes, 0, requested);
+                    if (count < 0) {
+                        return -1;
+                    }
+                    target.put(bytes, 0, count);
+                    return count;
                 }
                 byte[] bytes = new byte[requested];
                 int count = input.read(bytes);

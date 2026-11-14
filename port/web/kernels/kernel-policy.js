@@ -47,6 +47,7 @@
   // a flood of P0 mesh work cannot hold server light and near worldgen past their timeouts. The
   // runtime rescores queued jobs about once a second.
   const STARVATION_MS = 2000;
+  const WORLDGEN_PRIORITY_KINDS = new Set(["biomes", "terrain", "surface"]);
 
   const clamp = (value, low, high) => (value < low ? low : (value > high ? high : value));
   const finite = (value) => typeof value === "number" && value === value && value !== Infinity && value !== -Infinity;
@@ -219,6 +220,11 @@
     return "gen";
   }
 
+  function visibilityPriorityEligible(job) {
+    return String(job.kernel || "") === "worldgen"
+      && WORLDGEN_PRIORITY_KINDS.has(String(job.kind || "").toLowerCase());
+  }
+
   // job: {kernel, priorityClass?, visible?, background?, cx?, cz?}. Explicit classes win.
   function classify(job, predictor) {
     if (Number.isInteger(job.priorityClass)) return clamp(job.priorityClass, 0, CLASS_COUNT - 1);
@@ -227,6 +233,11 @@
     if (role === "mesh") return job.visible === false ? PRIORITY.FAR_GEN : PRIORITY.VISIBLE_MESH;
     if (role === "light") return job.visible === false ? PRIORITY.FAR_GEN : PRIORITY.VISIBLE_LIGHT;
     if (finite(job.cx) && finite(job.cz) && predictor) {
+      // Worldgen carries a conservative horizontal frustum hint from the server. Visible chunks
+      // form the first generation class; distance still orders them within that class. An absent
+      // hint keeps the existing motion-aware near/far policy.
+      if (visibilityPriorityEligible(job) && job.visible === true) return PRIORITY.NEAR_GEN;
+      if (visibilityPriorityEligible(job) && job.visible === false) return PRIORITY.FAR_GEN;
       return predictor.isNear(job.cx, job.cz) ? PRIORITY.NEAR_GEN : PRIORITY.FAR_GEN;
     }
     return job.near === false ? PRIORITY.FAR_GEN : PRIORITY.NEAR_GEN;
@@ -245,7 +256,13 @@
     }
     let sub;
     if (finite(job.cx) && finite(job.cz) && predictor && predictor.known) {
-      sub = predictor.chunkDistance(job.cx, job.cz) * CHUNK_UNIT;
+      if (visibilityPriorityEligible(job) && typeof job.visible === "boolean") {
+        const dx = job.cx * 16 + 8 - predictor.x;
+        const dz = job.cz * 16 + 8 - predictor.z;
+        sub = Math.sqrt(dx * dx + dz * dz) / 16 * CHUNK_UNIT;
+      } else {
+        sub = predictor.chunkDistance(job.cx, job.cz) * CHUNK_UNIT;
+      }
     } else if (finite(job.distance)) {
       sub = job.distance * CHUNK_UNIT;
     } else {
@@ -557,7 +574,8 @@
 
   const api = Object.freeze({
     PRIORITY, CLASS_COUNT, CLASS_SPAN, CLASS_BUDGET_SHARE, CHUNK_UNIT, AGING_MS_PER_CHUNK, STARVATION_MS,
-    MotionPredictor, yawToDirection, kernelRole, classify, score, initialPlan, isMobileAgent,
+    MotionPredictor, yawToDirection, kernelRole, visibilityPriorityEligible, classify, score,
+    initialPlan, isMobileAgent,
     MemoryBudget, PoolSizer,
   });
   global.GaiusKernelPolicy = api;

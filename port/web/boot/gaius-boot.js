@@ -36,7 +36,9 @@
 //   - runtime modules: kernel-policy.js, kernel-runtime.js and the kernel job codecs, then the
 //     quality layer (runtime/quality/*, owned by the graphics workstream) in its load order.
 //     beforeMain() waits for them (bounded), up to 300 ms for the WebGPU adapter signal
-//     (GaiusQuality.caps.adapterReady) and runs GaiusQuality.caps.ensureTier(). The
+//     (GaiusQuality.caps.adapterReady), for GaiusQuality.caps.prepareTier (the off-main-thread
+//     tier benchmark, off with ?gaiusTierWorker=0, or the tier study) and runs
+//     GaiusQuality.caps.ensureTier(). The
 //     quality layer reads window.__gaiusProfileId and window.__gaiusRenderSeam, which the
 //     launcher sets in <head>.
 //   - kernel runtime: window.__gaiusKernels creates GaiusKernelRuntime lazily, feeds it the
@@ -54,6 +56,9 @@
 //     and the shader translator load at parse time and beforeMain() waits (at most 5 s) for the
 //     device and the translator, else the game renders with WebGL 2. See "graphics backend".
 //   - boot timeline: performance marks "gaius:<phase>" for every launcher boot timing.
+//   - heap guard: every isolate of the renderer shares one 4 GiB V8 cage, so the page collects
+//     the previous document's heap when it starts and keeps its own garbage under a budget
+//     (installHeapGuard; the integrated server Worker runs the same code).
 //   - memory pacing (cross-origin-isolated pages): measureUserAgentSpecificMemory() requests at
 //     menus, the pause screen, loading screens and hidden pages make the browser collect the
 //     per-frame WebGPU and message garbage that V8 otherwise leaves for minutes. See "memory pacing".
@@ -65,10 +70,214 @@
   if (!global || global.__gaiusBoot) return;
 
   const BOOT_VERSION = 1;
+
+  // BEGIN gaius-heap-guard
+  //
+  // Chrome gives every isolate of a renderer process (the page, the integrated server Worker
+  // and the kernel Workers) one shared 4 GiB V8 pointer-compression cage, and V8 sizes each heap
+  // as if it had the cage to itself. Two things follow.
+  //   - A reload leaves the previous document's heap in the process until V8 gets around to
+  //     collecting it; ten quick reloads can hold two documents' worth of memory at a time.
+  //   - A collection in one isolate cannot reclaim another's garbage. With render and simulation
+  //     distance 32 the page and the server keep ~2 GB alive between them, their garbage peaks
+  //     add ~1.5 GB on top, and the isolate that asks for memory first (the server, when an old
+  //     world is upgraded and entered) dies with "V8 javascript OOM (CALL_AND_RETRY_LAST)"
+  //     while the cage is still full of the page's dead objects.
+  //
+  // There is no API to request a collection. A typed array that cannot be allocated, however,
+  // makes V8 run a full collection before it gives up, so an impossible allocation is a
+  // synchronous, side-effect-free collection request. It stops the thread for the length of a
+  // full collection (a few hundred ms to a second on a large world), so installHeapGuard() asks
+  //   - once when the page starts, while only the previous document's garbage is on the heap
+  //     (collectOnStart: true), or, for the page (collectOnStart: "idle"), once the game has
+  //     finished booting and stayed on a quiet screen for startDelayMs, and only when this tab
+  //     held an earlier document (startNeeded()) and the heap is not known to be small. A
+  //     reload's start collection has to sweep the whole previous document, 0.4-0.5 s on a
+  //     loaded Linux box and ~1 s on Windows with a 1.5 GB renderer, and it ran in front of the
+  //     title, so a warm reload started later than a cold start; V8 collects the old heap on its
+  //     own while the new page boots, and the guard only sweeps up what is left;
+  //   - when the heap has grown by more than budgetMB since its last low point, at a moment
+  //     canCollect() allows (no gameplay frames are being measured); and
+  //   - when the heap is above emergencyMB and has grown by more than emergencyGrowthMB since its
+  //     last low point, at most every emergencyGapMs (30 s), wherever that is: a stall beats an
+  //     OOM, and only worlds far larger than the defaults ever get there.
+  // performance.memory is the only per-isolate size signal there is, and only the page has it:
+  // a Worker cannot read its own heap size, so the integrated server is not guarded.
+  function installHeapGuard(root, options) {
+    const state = root.__gaiusHeapGuard = {collections: 0, lastReason: null, startSkipped: null, log: []};
+    const perf = root.performance;
+    const MB = 1048576;
+    const settings = options || {};
+    const budget = (Number(settings.budgetMB) || 384) * MB;
+    const minGapMs = Number(settings.minGapMs) || 4000;
+    const emergency = (Number(settings.emergencyMB) || Infinity) * MB;
+    const emergencyGrowth = (Number(settings.emergencyGrowthMB) || 256) * MB;
+    const emergencyGapMs = Number(settings.emergencyGapMs) || 30000;
+    const tickMs = 1000;
+    function collect(reason) {
+      const started = perf && typeof perf.now === "function" ? perf.now() : 0;
+      try {
+        // 16 GiB is above what the sandboxed ArrayBuffer allocator hands out, so the call throws
+        // after V8's collect-and-retry; if a platform grants it anyway the buffer is unreferenced.
+        new root.ArrayBuffer(Math.pow(2, 34));
+      } catch (_) { /* expected */ }
+      state.collections++;
+      state.lastReason = reason;
+      if (typeof settings.afterCollect === "function") {
+        try { settings.afterCollect(reason); } catch (_) { /* advisory */ }
+      }
+      if (state.log.length < 32) {
+        state.log.push([Date.now(), reason, perf && typeof perf.now === "function" ? Math.round(perf.now() - started) : -1]);
+      }
+    }
+    state.collect = collect;
+    // Chrome reports performance.memory as a coarse size, cached for a long time, unless it runs
+    // with --enable-precise-memory-info (or the page is cross-origin isolated): the coarse sizes are
+    // multiples of 100 kB (10000000, 18200000, 26000000, ...) and stay put for minutes while the
+    // heap grows, so they tell nothing about the heap and only an exact size can say "small".
+    function heapKnownSmall(minBytes) {
+      if (!minBytes || !perf || !perf.memory) return false;
+      const used = perf.memory.usedJSHeapSize;
+      return used > 0 && used % 100000 !== 0 && used < minBytes;
+    }
+    let startTimer = 0;
+    if (settings.collectOnStart === "idle" && typeof root.setTimeout === "function") {
+      const startDelayMs = settings.startDelayMs === undefined ? 4000 : Number(settings.startDelayMs);
+      const startGiveUpMs = Number(settings.startGiveUpMs) || 120000;
+      const startMinHeap = (Number(settings.startMinHeapMB) || 0) * MB;
+      const begun = root.Date.now();
+      let readyAt = 0;
+      let polls = 0;
+      const pollStart = function () {
+        startTimer = 0;
+        let again = true;
+        try {
+          const now = root.Date.now();
+          if (typeof settings.startNeeded === "function" && !settings.startNeeded()) {
+            again = false;
+            state.startSkipped = "no-previous-document";
+          } else if (state.collections > 0 || now - begun > startGiveUpMs || ++polls > startGiveUpMs / 500) {
+            again = false;
+            if (!state.collections) state.startSkipped = "not-quiet";
+          } else if (typeof settings.startReady === "function" && settings.startReady()) {
+            if (!readyAt) readyAt = now;
+            if (now - readyAt >= startDelayMs && (typeof settings.canCollect !== "function" || settings.canCollect())) {
+              again = false;
+              if (heapKnownSmall(startMinHeap)) state.startSkipped = "small-heap";
+              else collect("start-idle");
+            }
+          }
+        } catch (_) { again = false; }
+        if (again) startTimer = root.setTimeout(pollStart, 500);
+        // a Node host (the smokes) must not be kept alive by the poll; a browser timer id is a number
+        if (startTimer && typeof startTimer.unref === "function") startTimer.unref();
+      };
+      startTimer = root.setTimeout(pollStart, 500);
+      if (startTimer && typeof startTimer.unref === "function") startTimer.unref();
+    } else if (settings.collectOnStart) {
+      collect("start");
+    }
+    state.stop = function () {
+      if (startTimer) root.clearTimeout(startTimer);
+      startTimer = -1;
+    };
+    if (!perf || !perf.memory || typeof root.setTimeout !== "function") return state;
+    let low = Infinity;
+    let lastCollection = -Infinity;
+    let timer = 0;
+    function tick() {
+      timer = 0;
+      try {
+        const used = perf.memory.usedJSHeapSize;
+        if (used < low) low = used;
+        const now = Date.now();
+        const growth = used - low;
+        let reason = null;
+        if (used > emergency && growth > emergencyGrowth && now - lastCollection >= emergencyGapMs) {
+          reason = "emergency";
+        } else if (growth > budget && now - lastCollection >= minGapMs
+            && typeof settings.canCollect === "function" && settings.canCollect()) {
+          reason = "budget";
+        }
+        if (reason) {
+          lastCollection = now;
+          collect(reason);
+          low = Infinity;
+        }
+      } catch (_) { /* the signal is advisory */ }
+      timer = root.setTimeout(tick, tickMs);
+    }
+    state.stop = function () {
+      if (startTimer) root.clearTimeout(startTimer);
+      startTimer = -1;
+      if (timer) root.clearTimeout(timer);
+      timer = -1;
+    };
+    timer = root.setTimeout(tick, tickMs);
+    return state;
+  }
+  // How many earlier documents of this tab may still have a heap waiting for a collection. A
+  // reload or history step means one (the document that was just replaced); each page of ours
+  // leaves the count in sessionStorage and resets it to 0 once it ran any collection, so a chain
+  // of reloads that never reaches a quiet screen counts up. A fresh Chrome process has nothing
+  // to collect. Without sessionStorage there is no way to tell: assume one.
+  const HEAP_DEBT_KEY = "gaius.heapDebt";
+  function heapDebtAtStart(root) {
+    let debt = 0;
+    try {
+      const entry = root.performance && root.performance.getEntriesByType && root.performance.getEntriesByType("navigation")[0];
+      if (entry && (entry.type === "reload" || entry.type === "back_forward")) debt = 1;
+    } catch (_) { /* advisory */ }
+    try {
+      const storage = root.sessionStorage;
+      const raw = storage.getItem(HEAP_DEBT_KEY);
+      if (raw !== null) debt = Math.max(debt, (parseInt(raw, 10) || 0) + 1);
+      storage.setItem(HEAP_DEBT_KEY, String(debt));
+    } catch (_) {
+      debt = Math.max(debt, 1);
+    }
+    return debt;
+  }
+  // When the previous documents' heaps are swept. The start path never is, unless three heaps are
+  // waiting: a forced full collection there cost a reload 0.4-1 s before the title and made main
+  // twice as slow (it also drops the compiled code the boot just produced). One earlier heap is
+  // swept 4 s after the game booted, two shortly after it booted (the reloads before were
+  // interrupted early), three or more (reloads that never reached a booted game) first thing.
+  function heapStartPlan(debt) {
+    return {collectOnStart: debt >= 3 ? true : "idle", startDelayMs: debt >= 2 ? 500 : 4000};
+  }
+  function clearHeapDebt(root) {
+    try { root.sessionStorage.setItem(HEAP_DEBT_KEY, "0"); } catch (_) { /* advisory */ }
+  }
+  // END gaius-heap-guard
+
   const doc = global.document;
   const loc = global.location || {protocol: "", search: "", href: ""};
   const nav = global.navigator || {};
   const perf = global.performance;
+  // A moment without measured gameplay frames (menus, loading and progress screens, the pause
+  // screen, a hidden page): the memory pacing and the heap guard may stall the page there.
+  const QUIET_SCREENS = /(?:LevelLoadingScreen|ReceivingLevelScreen|ProgressScreen|GenericMessageScreen|ConnectScreen|GenericWaitingScreen|PauseScreen|DisconnectedScreen)$/;
+  function quietReason() {
+    if (doc && doc.visibilityState === "hidden") return "hidden";
+    const game = global.__gaiusMinecraftState;
+    if (!game) return null;
+    if (!game.level) return "menu";
+    if (game.pause === true) return "pause";
+    const screen = game.screen ? String(game.screen) : "";
+    return screen && QUIET_SCREENS.test(screen) ? "loading" : null;
+  }
+  // The game finished booting and shows a screen: the first moment the guard may stall the page
+  // without delaying the title.
+  function gameBooted() {
+    const game = global.__gaiusMinecraftState;
+    return !!game && game.running === true && game.noRender !== true && !game.overlay
+      && global.__gaiusInitialBootPending === false;
+  }
+  const heapDebt = heapDebtAtStart(global);
+  installHeapGuard(global, {
+    ...heapStartPlan(heapDebt), startNeeded: () => heapDebt > 0, startReady: gameBooted, startMinHeapMB: 200,
+    afterCollect: () => clearHeapDebt(global), canCollect: () => quietReason() !== null, emergencyMB: 1100});
   const params = (() => {
     try {
       return new URLSearchParams(loc.search || "");
@@ -267,10 +476,13 @@
   async function gunzipToBlobUrl(url, type) {
     const response = await global.fetch(url, {cache: "force-cache"});
     if (!response.ok || !response.body) throw new Error("HTTP " + response.status + " while loading " + url);
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    const stream = gunzipStream(bytes);
+    const sniffed = await sniffGzipStream(response.body);
+    const stream = sniffed.gzip === false ? sniffed.stream
+      : sniffed.stream.pipeThrough(new global.DecompressionStream("gzip"));
     const blob = await new global.Response(stream).blob();
-    return global.URL.createObjectURL(new global.Blob([blob], {type}));
+    const source = type === "text/javascript"
+      ? "\n//# sourceURL=" + new URL(url, loc.href).href.replace(/[\r\n\u2028\u2029]/g, "") + "\n" : "";
+    return global.URL.createObjectURL(new global.Blob([blob, source], {type}));
   }
 
   // --- file payloads -------------------------------------------------------------------------
@@ -300,7 +512,9 @@
     // Wasm-only portable pages retain the staged site's __gaiusSite metadata,
     // but their sibling assets are embedded in the document.  Treat the
     // portable form as a file-payload page even when site metadata is present.
-    return isFile && (isPortable() || !site) && payloads && typeof payloads === "object" &&
+    // A single file embeds its payloads on any origin (file://, https://gaius.fun/...): only a
+    // plain dist opened from disk needs the file: check, a site form fetches its siblings.
+    return (isPortable() || (isFile && !site)) && payloads && typeof payloads === "object" &&
       payloads;
   }
 
@@ -396,6 +610,318 @@
     });
   }
 
+  // Optional build-time bootstrap snapshot. The snapshot is an immutable transport envelope for
+  // vanilla data entries; Java still owns registry construction until a profile-specific hook
+  // proves that the decoded values can be adopted without changing behaviour.
+  const INIT_SNAPSHOT = "gaius-init-snapshot.bin";
+  const INIT_SNAPSHOT_MAGIC = "GAIUSIS1";
+  let initSnapshotState = {status: "absent", entries: 0, profile: null, error: null};
+
+  function parseInitSnapshot(bytes) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let index = 0; index < INIT_SNAPSHOT_MAGIC.length; index++) {
+      if (bytes[index] !== INIT_SNAPSHOT_MAGIC.charCodeAt(index)) throw new Error("boot snapshot magic mismatch");
+    }
+    if (bytes.length < 20) throw new Error("boot snapshot header is truncated");
+    const version = view.getUint16(8, true);
+    if (version !== 1) throw new Error("unsupported boot snapshot version: " + version);
+    const profileLength = view.getUint16(10, true);
+    const entryCount = view.getUint32(12, true);
+    const payloadLength = view.getUint32(16, true);
+    let cursor = 20;
+    if (cursor + profileLength > bytes.length) throw new Error("boot snapshot profile is truncated");
+    const profile = new global.TextDecoder().decode(bytes.subarray(cursor, cursor + profileLength));
+    cursor += profileLength;
+    const records = [];
+    for (let index = 0; index < entryCount; index++) {
+      if (cursor + 42 > bytes.length) throw new Error("boot snapshot record is truncated");
+      const nameLength = view.getUint16(cursor, true);
+      const offset = view.getUint32(cursor + 2, true);
+      const length = view.getUint32(cursor + 6, true);
+      const digest = bytes.slice(cursor + 10, cursor + 42);
+      cursor += 42;
+      if (cursor + nameLength > bytes.length) throw new Error("boot snapshot name is truncated");
+      const name = new global.TextDecoder().decode(bytes.subarray(cursor, cursor + nameLength));
+      cursor += nameLength;
+      records.push({name, offset, length, digest});
+    }
+    if (cursor + payloadLength !== bytes.length) throw new Error("boot snapshot payload length mismatch");
+    if (payloadLength > 0) {
+      for (const record of records) {
+        if (record.offset + record.length > payloadLength) throw new Error("boot snapshot range is invalid: " + record.name);
+      }
+    }
+    return {version, profile, records, payload: bytes.subarray(cursor)};
+  }
+
+  function initSnapshotSource() {
+    if (params.get("gaiusInitSnapshot") === "0") return null;
+    if (hasFilePayload(INIT_SNAPSHOT)) return filePayload(INIT_SNAPSHOT);
+    const mapped = assetUrl(INIT_SNAPSHOT);
+    if (!mapped || typeof global.fetch !== "function") return null;
+    const url = new URL(mapped, loc.href);
+    return global.fetch(url, {cache: "force-cache"}).then(response => {
+      if (!response.ok) throw new Error("HTTP " + response.status + " while loading boot snapshot");
+      return response.arrayBuffer();
+    }).then(buffer => new Uint8Array(buffer));
+  }
+
+  const initSnapshotPromise = (() => {
+    const source = initSnapshotSource();
+    if (!source) return Promise.resolve(initSnapshotState);
+    initSnapshotState = {status: "loading", entries: 0, profile: null, error: null};
+    return Promise.resolve(source).then(parseInitSnapshot).then(snapshot => {
+      if (typeof global.__gaiusProfileId === "string"
+          && snapshot.profile !== global.__gaiusProfileId) {
+        throw new Error("boot snapshot profile mismatch: " + snapshot.profile);
+      }
+      initSnapshotState = {status: "decoded", entries: snapshot.records.length,
+        profile: snapshot.profile, error: null, snapshot};
+      global.__gaiusInitSnapshotState = initSnapshotState;
+      mark("init-snapshot");
+      return initSnapshotState;
+    }).catch(error => {
+      initSnapshotState = {status: "invalid", entries: 0, profile: null,
+        error: String(error && error.message || error)};
+      global.__gaiusInitSnapshotState = initSnapshotState;
+      record("init-snapshot-invalid", initSnapshotState.error);
+      return initSnapshotState;
+    });
+  })();
+  global.__gaiusInitSnapshotReady = initSnapshotPromise;
+  global.__gaiusInitSnapshotState = initSnapshotState;
+  global.__gaiusValidateInitSnapshot = async (root) => {
+    const state = await initSnapshotPromise;
+    const snapshot = state && state.snapshot;
+    if (!snapshot || state.status === "invalid") return state;
+    const subtle = global.crypto && global.crypto.subtle;
+    if (!subtle || typeof subtle.digest !== "function") {
+      state.status = "unverified";
+      state.error = "WebCrypto SHA-256 unavailable";
+      global.__gaiusInitSnapshotState = state;
+      return state;
+    }
+    for (const entry of snapshot.records) {
+      const range = root && root.index && root.index[entry.name];
+      if (!Array.isArray(range) || range[1] !== entry.length) {
+        state.status = "mismatch";
+        state.error = "missing or differently sized entry: " + entry.name;
+        global.__gaiusInitSnapshotState = state;
+        return state;
+      }
+      const start = root.dataOffset + range[0];
+      const content = root.bytes.subarray(start, start + range[1]);
+      const digest = new Uint8Array(await subtle.digest("SHA-256", content));
+      if (digest.length !== entry.digest.length
+          || digest.some((value, index) => value !== entry.digest[index])) {
+        state.status = "mismatch";
+        state.error = "entry hash mismatch: " + entry.name;
+        global.__gaiusInitSnapshotState = state;
+        return state;
+      }
+    }
+    state.status = "verified";
+    state.error = null;
+    state.verifiedEntries = snapshot.records.length;
+    global.__gaiusInitSnapshotState = state;
+    record("init-snapshot-verified", String(snapshot.records.length));
+    return state;
+  };
+
+  // Optional build-time atlas prebake (gaius-atlas-prebake.bin.gz, port/tools/atlasprebake): the mip
+  // chains and atlas layouts the vanilla classes produced for the vanilla pack. BrowserAtlasPrebake
+  // replays an entry only for inputs identical to the recorded ones; this loader only checks the
+  // envelope (magic, version, lengths, profile, body SHA-256) and publishes the inflated bytes as
+  // __gaiusAtlasPrebake {status: "verified", bytes}. ?gaiusAtlasPrebake=0 skips it, =verify makes
+  // Java run vanilla and compare.
+  const ATLAS_PREBAKE = "gaius-atlas-prebake.bin.gz";
+  const ATLAS_PREBAKE_MAGIC = "GAIUSAP1";
+  const atlasPrebakeParam = params.get("gaiusAtlasPrebake");
+  const atlasPrebakeMode = atlasPrebakeParam === "0" || atlasPrebakeParam === "off" ? 0
+    : atlasPrebakeParam === "verify" ? 2 : 1;
+  global.__gaiusAtlasPrebake = {status: "absent", mode: atlasPrebakeMode, profile: null, bytes: null, error: null};
+
+  function atlasPrebakeSource() {
+    if (atlasPrebakeMode === 0) return null;
+    if (hasFilePayload(ATLAS_PREBAKE)
+        || (global.__gaiusPortablePayloadBytes && global.__gaiusPortablePayloadBytes[ATLAS_PREBAKE])) {
+      return filePayloadBytes(ATLAS_PREBAKE);
+    }
+    const mapped = assetUrl(ATLAS_PREBAKE);
+    if (!mapped || typeof global.fetch !== "function") return null;
+    return global.fetch(new URL(mapped, loc.href), {cache: "force-cache"}).then(response => {
+      if (!response.ok) throw new Error("HTTP " + response.status + " while loading the atlas prebake");
+      return response.arrayBuffer();
+    }).then(buffer => new Uint8Array(buffer));
+  }
+
+  async function parseAtlasPrebake(compressed) {
+    const bytes = new Uint8Array(await new global.Response(gunzipStream(compressed)).arrayBuffer());
+    if (bytes.length < 56) throw new Error("atlas prebake is truncated");
+    for (let index = 0; index < ATLAS_PREBAKE_MAGIC.length; index++) {
+      if (bytes[index] !== ATLAS_PREBAKE_MAGIC.charCodeAt(index)) throw new Error("atlas prebake magic mismatch");
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (view.getUint32(8, true) !== 1) throw new Error("unsupported atlas prebake version");
+    const headerLength = view.getUint32(12, true);
+    const bodyLength = view.getUint32(16, true);
+    if (headerLength < 56 || headerLength + bodyLength !== bytes.length) throw new Error("atlas prebake length mismatch");
+    const profileLength = view.getUint16(52, true);
+    if (54 + profileLength > headerLength) throw new Error("atlas prebake profile is truncated");
+    const profile = new global.TextDecoder().decode(bytes.subarray(54, 54 + profileLength));
+    if (typeof global.__gaiusProfileId === "string" && profile !== global.__gaiusProfileId) {
+      throw new Error("atlas prebake profile mismatch: " + profile);
+    }
+    const subtle = global.crypto && global.crypto.subtle;
+    if (!subtle || typeof subtle.digest !== "function") {
+      return {status: "unverified", profile, bytes: null, error: "WebCrypto SHA-256 unavailable"};
+    }
+    const digest = new Uint8Array(await subtle.digest("SHA-256", bytes.subarray(headerLength)));
+    for (let index = 0; index < 32; index++) {
+      if (digest[index] !== bytes[20 + index]) return {status: "mismatch", profile, bytes: null, error: "body sha256"};
+    }
+    return {status: "verified", profile, bytes, error: null};
+  }
+
+  const atlasPrebakePromise = (() => {
+    const source = atlasPrebakeSource();
+    if (!source) return Promise.resolve(global.__gaiusAtlasPrebake);
+    global.__gaiusAtlasPrebake.status = "loading";
+    return Promise.resolve(source).then(parseAtlasPrebake).then(result => {
+      Object.assign(global.__gaiusAtlasPrebake, result);
+      if (result.status === "verified") mark("atlas-prebake");
+      else record("atlas-prebake-" + result.status, result.error);
+      return global.__gaiusAtlasPrebake;
+    }).catch(error => {
+      Object.assign(global.__gaiusAtlasPrebake, {status: "invalid", bytes: null,
+        error: String(error && error.message || error)});
+      record("atlas-prebake-invalid", global.__gaiusAtlasPrebake.error);
+      return global.__gaiusAtlasPrebake;
+    });
+  })();
+  global.__gaiusAtlasPrebakeReady = atlasPrebakePromise;
+
+  // Optional build-time unihex glyph table (gaius-unihex.bin.gz: gzip of a GAIUSUH1 table written by
+  // dev.gaius.tools.UnihexTableBuilder from vanilla's own unihex loader). Java
+  // (dev.gaius.browser.UnihexGlyphTable) takes a font zip's glyphs from it instead of inflating and
+  // parsing the zip only when this page hashed the zip in the archive it serves and found the bytes
+  // the table was built from. ?gaiusUnihexLazy=0 keeps the parser. The table is never released:
+  // glyph rows are read from it when a glyph is baked.
+  const UNIHEX_TABLE = "gaius-unihex.bin.gz";
+  const UNIHEX_TABLE_MAGIC = "GAIUSUH1";
+
+  function parseUnihexTable(bytes) {
+    if (bytes.length < 20) throw new Error("unihex table is truncated");
+    for (let index = 0; index < UNIHEX_TABLE_MAGIC.length; index++) {
+      if (bytes[index] !== UNIHEX_TABLE_MAGIC.charCodeAt(index)) throw new Error("unihex table magic mismatch");
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const version = view.getUint32(8, true);
+    if (version !== 1) throw new Error("unsupported unihex table version: " + version);
+    const count = view.getUint32(12, true);
+    const headerLength = view.getUint32(16, true);
+    if (headerLength > bytes.length) throw new Error("unihex table header is truncated");
+    const zips = [];
+    let cursor = 20;
+    for (let index = 0; index < count; index++) {
+      if (cursor + 2 > headerLength) throw new Error("unihex table entry is truncated");
+      const pathLength = view.getUint16(cursor, true);
+      if (cursor + 2 + pathLength > headerLength) throw new Error("unihex table path is truncated");
+      const path = new global.TextDecoder().decode(bytes.subarray(cursor + 2, cursor + 2 + pathLength));
+      cursor = (cursor + 2 + pathLength + 3) & ~3;
+      if (cursor + 56 > headerLength) throw new Error("unihex table entry is truncated");
+      zips.push({path, length: view.getUint32(cursor, true), digest: bytes.slice(cursor + 4, cursor + 36),
+        verified: false});
+      cursor += 56;
+    }
+    return zips;
+  }
+
+  // The archive the vanilla pack reads a resource from (AssetArchive: the core pack, then sounds).
+  function archiveEntry(path) {
+    const packs = [global.__gaiusVanillaAssets, global.__gaiusVanillaSounds];
+    for (const root of packs) {
+      if (!root || !root.bytes || !root.index || !Object.prototype.hasOwnProperty.call(root.index, path)) continue;
+      const range = root.index[path];
+      return Array.isArray(range) && range.length === 2 ? {root, offset: range[0], length: range[1]} : null;
+    }
+    return null;
+  }
+
+  async function verifyUnihexTable(state) {
+    const subtle = global.crypto && global.crypto.subtle;
+    if (!subtle || typeof subtle.digest !== "function") throw new Error("WebCrypto SHA-256 unavailable");
+    let verified = 0;
+    for (const zip of state.zips) {
+      const entry = archiveEntry(zip.path);
+      if (!entry || entry.length !== zip.length) continue;
+      const start = entry.root.dataOffset + entry.offset;
+      const content = entry.root.bytes.subarray(start, start + entry.length);
+      const digest = new Uint8Array(await subtle.digest("SHA-256", content));
+      if (digest.length !== zip.digest.length || digest.some((value, index) => value !== zip.digest[index])) continue;
+      // Java re-checks that the archive still maps the path to this range of this pack.
+      zip.root = entry.root;
+      zip.offset = entry.offset;
+      zip.verified = true;
+      verified++;
+    }
+    return verified;
+  }
+
+  function unihexTableSource() {
+    if (params.get("gaiusUnihexLazy") === "0") return null;
+    if (hasFilePayload(UNIHEX_TABLE)) return filePayload(UNIHEX_TABLE);
+    // Only a site (build-pages-site.py) or the file payloads name the table; a plain dist parses.
+    const mapped = assetUrl(UNIHEX_TABLE);
+    if (!mapped || typeof global.fetch !== "function") return null;
+    return global.fetch(new URL(mapped, loc.href), {cache: "force-cache"}).then(response => {
+      if (!response.ok) throw new Error("HTTP " + response.status + " while loading the unihex table");
+      return response.arrayBuffer().then(buffer => new Uint8Array(buffer));
+    });
+  }
+
+  const unihexTablePromise = (() => {
+    const disabled = params.get("gaiusUnihexLazy") === "0";
+    let source = null;
+    try {
+      source = unihexTableSource();
+    } catch (error) {
+      source = Promise.reject(error);
+    }
+    if (!source) {
+      global.__gaiusUnihexTable = {status: disabled ? "disabled" : "absent"};
+      return Promise.resolve(global.__gaiusUnihexTable);
+    }
+    const started = nowMs();
+    global.__gaiusUnihexTable = {status: "loading"};
+    return Promise.resolve(source).then(compressed => compressed
+      // gunzipStream passes bytes a host already decoded through unchanged.
+      ? new global.Response(gunzipStream(compressed)).arrayBuffer().then(buffer => new Uint8Array(buffer))
+      : null).then(bytes => {
+      if (!bytes) return {status: "absent"};
+      const zips = parseUnihexTable(bytes);
+      return vanillaAssetsDecoded().then(root => {
+        if (!root) return {status: "no-vanilla-pack"};
+        const state = {status: "verifying", bytes, zips};
+        return verifyUnihexTable(state).then(verified => {
+          state.status = "verified";
+          state.verifiedZips = verified;
+          state.ms = Math.round(nowMs() - started);
+          mark("unihex-table");
+          return state;
+        });
+      });
+    }).catch(error => {
+      const state = {status: "invalid", error: String(error && error.message || error)};
+      record("unihex-table-invalid", state.error);
+      return state;
+    }).then(state => {
+      global.__gaiusUnihexTable = state;
+      return state;
+    });
+  })();
+  global.__gaiusUnihexTableReady = unihexTablePromise;
+
   // Started at parse time, before the launcher reads these globals: its vanilla pack loader takes
   // the compressed pack as from the portable page, the hotpath and the shader toolchain loader
   // wait for __gaiusPortableAssetsReady and then read their (Blob) URLs.
@@ -417,6 +943,11 @@
       ];
       // Published once complete: the toolchain loader reads it after __gaiusPortableAssetsReady.
       waits.push(Promise.all(modules).then(() => { global.__gaiusShaderToolchainUrls = urls; }));
+    }
+    // Baked shader results (gaius-shader-prebake.bin, written by bake-shader-cache.mjs): the toolchain
+    // loader primes its result cache with them; a page without the payload compiles as before.
+    if (hasFilePayload("gaius-shader-prebake.bin") && !global.__gaiusShaderPrebake) {
+      global.__gaiusShaderPrebake = filePayloadBytes("gaius-shader-prebake.bin");
     }
     if (hasFilePayload("gaius-hotpath.wasm") && !global.__gaiusHotpathWasmUrl) {
       waits.push(filePayloadUrl("gaius-hotpath.wasm", "application/wasm").then((url) => { global.__gaiusHotpathWasmUrl = url; }));
@@ -494,24 +1025,37 @@
     return missing;
   }
 
+  function jsClientBuilt(form) {
+    if (form === "site") {
+      const compressed = typeof global.DecompressionStream === "function";
+      return (hasAsset("classes.js") || (compressed && hasAsset("classes.js.gz")))
+        && (hasAsset("singleplayer-server.js") || (compressed && hasAsset("singleplayer-server.js.gz")));
+    }
+    if (form === "portable") return typeof global.__gaiusPortableLoadJsClient === "function"
+      || !!(global.__gaiusPortableRuntimes && global.__gaiusPortableRuntimes.js);
+    return !!(global.__gaiusRuntimes && global.__gaiusRuntimes.js);
+  }
+
   function selectRuntime() {
     const fromUrl = String(params.get("runtime") || "").toLowerCase();
-    if (fromUrl && fromUrl !== "wasm") record("runtime-invalid", fromUrl);
     const form = distributionForm();
     const features = detectWasmFeatures();
     const built = wasmClientBuilt(form);
-    const selection = {requested: "wasm", source: fromUrl === "wasm" ? "url" : "wasm-only",
-      selected: "wasm", fallback: false, reason: "wasm-only", form, wasmBuilt: built,
-      features, at: nowMs()};
+    const jsBuilt = jsClientBuilt(form);
+    const selection = {requested: "wasm", source: fromUrl === "wasm" ? "url" : jsBuilt ? "auto" : "wasm-only",
+      selected: "wasm", fallback: false, reason: jsBuilt ? "auto-wasm" : "wasm-only", form, wasmBuilt: built,
+      jsBuilt, features, at: nowMs()};
     const missing = built ? [] : ["wasm-build"];
-    // The file and portable forms inflate the module on the page, and so does a site page of a
-    // gzip-only module that no Service Worker controls.
     missing.push(...missingWasmFeatures(features, form === "file" || form === "portable"
       || (form === "site" && inflateUrl("classes.wasm") !== null && !serviceWorkerControlled())));
-    if (missing.length) {
-      selection.selected = "unsupported";
+    if (fromUrl === "js" && jsBuilt) {
+      selection.selected = "js";
+      selection.reason = "url-js";
+    } else if (missing.length) {
+      selection.selected = jsBuilt ? "js" : "unsupported";
+      selection.fallback = jsBuilt;
       selection.reason = "missing:" + missing.join(",");
-    }
+    } else if (fromUrl && fromUrl !== "wasm" && fromUrl !== "auto") record("runtime-invalid", fromUrl);
     return selection;
   }
 
@@ -529,7 +1073,7 @@
       unsupportedBrowser: global.__gaiusUnsupportedBrowser, handlesWasmFailure: false};
     return;
   }
-  mark("runtime-wasm");
+  mark("runtime-" + clientRuntime.selected);
 
   function siblingUrl(name) {
     return new URL(assetUrl(name) || name, loc.href).href;
@@ -596,23 +1140,76 @@
     return read();
   }
 
+  function requestWasm(url, gzip) {
+    const preload = global.__gaiusWasmHttpPreload;
+    let request;
+    if (!gzip && preload && preload.url === url && preload.response && typeof preload.response.then === "function") {
+      global.__gaiusWasmHttpPreload = null;
+      // The shell uses fetch(), not a link preload: retain its FetchManager metadata
+      // handler and consume the very same Response rather than doing a second fetch.
+      request = preload.response.then(response => response || global.fetch(url, {cache: "force-cache"}));
+    } else {
+      request = global.fetch(url, site ? {cache: "force-cache"} : {});
+    }
+    return request;
+  }
+
   function fetchWasm(url, gzip) {
-    return global.fetch(url, site ? {cache: "force-cache"} : {}).then((response) => {
+    return requestWasm(url, gzip).then((response) => {
       if (!response.ok || !response.body) {
         throw new Error("HTTP " + response.status + " while loading the WebAssembly GC client");
       }
       // Keep the compressed response streaming all the way into compileStreaming. The old
       // arrayBuffer path serialized download, inflate and compilation and also doubled peak RAM.
       const length = response.headers && response.headers.get ? Number(response.headers.get("Content-Length")) : 0;
+      const type = response.headers && response.headers.get ? String(response.headers.get("Content-Type") || "").toLowerCase() : "";
+      const encoding = response.headers && response.headers.get ? String(response.headers.get("Content-Encoding") || "").toLowerCase() : "";
+      // Fetch already decodes HTTP Content-Encoding. Keep a correctly typed network Response
+      // intact so streamed compilation can use the response's URL and native code cache.
+      if (gzip && type.indexOf("application/wasm") === 0 && /\b(?:gzip|br|deflate)\b/.test(encoding)) return response;
       if (gzip) return sniffGzipStream(response.body, loadMeter(response.url || url, length)).then((sniffed) => wasmResponse(
         sniffed.gzip === false
           ? sniffed.stream
           : sniffed.stream.pipeThrough(new global.DecompressionStream("gzip"))));
       // The fetched Response itself keeps V8's code cache for streamed modules; a host that does
       // not serve .wasm as application/wasm gets the body rewrapped (compileStreaming needs it).
-      const type = response.headers && response.headers.get ? String(response.headers.get("Content-Type") || "") : "";
       return type.indexOf("application/wasm") === 0 ? response : wasmResponse(response.body);
     });
+  }
+
+  function fetchBrotliWasm(url) {
+    // Fetch decodes Content-Encoding before compilation. Keep the real response
+    // and the shell's early request so native code caching still uses one URL.
+    const fallback = () => site && hasAsset("classes.wasm")
+      ? fetchWasm(siblingUrl("classes.wasm") + "?gaiusWasmHttp=1", false)
+      : fetchWasm(siblingUrl("classes.wasm.gz"), true);
+    global.__gaiusWasmSourceFallback = null;
+    return requestWasm(url, false).then((response) => {
+      const headers = response.headers;
+      const encoding = headers && headers.get ? String(headers.get("Content-Encoding") || "") : "";
+      if (!response.ok || !response.body || !/\bbr\b/i.test(encoding)) {
+        try {
+          const cancelled = response.body && response.body.cancel();
+          if (cancelled && typeof cancelled.catch === "function") cancelled.catch(() => {});
+        } catch (_) {}
+        record("wasm-brotli-fallback", encoding || "missing content-encoding");
+        return null;
+      }
+      record("wasm-brotli", url);
+      let retried = false;
+      global.__gaiusWasmSourceFallback = (error) => {
+        global.__gaiusWasmSourceFallback = null;
+        if (retried) throw error;
+        retried = true;
+        record("wasm-brotli-fallback", error && error.message);
+        return fallback();
+      };
+      const type = headers && headers.get ? String(headers.get("Content-Type") || "").toLowerCase() : "";
+      return type.indexOf("application/wasm") === 0 ? response : wasmResponse(response.body);
+    }, (error) => {
+      record("wasm-brotli-fallback", error && error.message);
+      return null;
+    }).then((response) => response || fallback());
   }
 
   // The portable page decodes its embedded module itself (build-portable-html.py); every other
@@ -639,6 +1236,12 @@
         releaseClientPayload("classes.wasm");
         return result;
       });
+    } else if (site && hasAsset("classes.wasm.br")) {
+      source = fetchBrotliWasm(siblingUrl("classes.wasm.br") + "?gaiusWasmHttp=1");
+    } else if (site && hasAsset("classes.wasm")) {
+      // A real immutable URL retains the HTTP response identity needed by V8's code cache.
+      // Synthetic SW/page inflation responses cannot supply that identity.
+      source = fetchWasm(siblingUrl("classes.wasm") + "?gaiusWasmHttp=1", false);
     } else if (inflateUrl("classes.wasm")) {
       const inflateOnPage = () => fetchWasm(siblingUrl("classes.wasm.gz"), true);
       if (serviceWorkerControlled()) {
@@ -663,9 +1266,11 @@
     // TeaVM compile from the already-streaming Response; the launcher reuses this load
     // instead of inserting the same script again after storage is ready.
     if (doc && doc.createElement && !global.__gaiusWasmBootReady) {
-      const bootLoad = loadClassicScript(global.__gaiusClassesUrl).then(() => true, (error) => {
+      const bootLoad = loadClassicScript(global.__gaiusClassesUrl).then(() => true, async (error) => {
         record("wasm-boot-load-failed", error && error.message);
-        return false;
+        if (!clientRuntime.jsBuilt) return false;
+        await startJsClientInstead(error);
+        return true;
       });
       global.__gaiusWasmBootReady = bootLoad;
     }
@@ -678,9 +1283,24 @@
     if (hasAsset("gaius-hotpath.wasm") && !global.__gaiusHotpathWasmUrl) {
       global.__gaiusHotpathWasmUrl = new URL(assetUrl("gaius-hotpath.wasm"), loc.href).href;
     }
-    // WasmGC is the only shipped client runtime; its source was wired above.
+    if (clientRuntime.selected === "js" && hasAsset("classes.js")) {
+      global.__gaiusClassesUrl = siblingUrl("classes.js");
+    }
+  }
+  if (clientRuntime.selected === "js" && clientRuntime.form !== "portable") {
+    if (site && !hasAsset("classes.js") && hasAsset("classes.js.gz")) {
+      global.__gaiusJsClientSourceReady = jsClientUrl().then((url) => { global.__gaiusClassesUrl = url; });
+      assetsReadyPromise = Promise.all([assetsReadyPromise, global.__gaiusJsClientSourceReady]);
+    } else global.__gaiusClassesUrl = siblingUrl("classes.js");
   }
   if (clientRuntime.selected === "wasm") wireWasmClient();
+  if (clientRuntime.form === "portable" && clientRuntime.selected === "js"
+      && typeof global.__gaiusPortableLoadJsClient === "function") {
+    global.__gaiusJsClientSourceReady = global.__gaiusPortableLoadJsClient().then((url) => {
+      global.__gaiusClassesUrl = url;
+    });
+    assetsReadyPromise = Promise.all([assetsReadyPromise, global.__gaiusJsClientSourceReady]);
+  }
 
   // Called by the launcher once its own singleplayer URL block ran (that block is regenerated by
   // postprocess-index-html.py, so the site URLs are applied after it instead of inside it).
@@ -688,6 +1308,12 @@
     if (!site || isPortable()) return false;
     if (hasAsset("singleplayer-server-worker.js")) {
       global.__gaiusSingleplayerWorkerUrl = new URL(assetUrl("singleplayer-server-worker.js"), loc.href).href;
+    }
+    if (hasAsset("singleplayer-server.js")) {
+      global.__gaiusSingleplayerServerUrl = siblingUrl("singleplayer-server.js");
+    }
+    if (hasAsset("singleplayer-server.js.gz")) {
+      global.__gaiusSingleplayerServerGzipUrl = siblingUrl("singleplayer-server.js.gz");
     }
     if (hasAsset("singleplayer-server.wasm")) {
       global.__gaiusSingleplayerServerWasmUrl = new URL(assetUrl("singleplayer-server.wasm"), loc.href).href;
@@ -779,9 +1405,12 @@
   const GPUS = ["webgpu", "webgl2"];
   const GPU_INJECTIONS = ["after-configure", "taint-canvas", "lose-device"];
   const WEBGPU_SCRIPTS = ["runtime/webgpu/gpu-glue.js", "runtime/webgpu/shaderxlat-job.js",
-    "runtime/webgpu/quality-post.js"];
+    "runtime/webgpu/quality-post.js", "runtime/webgpu/shader-pack-store.js",
+    "runtime/webgpu/shader-pack-compat.js", "runtime/webgpu/shader-pack.js"];
   const WEBGPU_TRANSLATOR = "runtime/webgpu/gaius-shaderxlat.wasm";
-  const WEBGPU_INIT_TIMEOUT_MS = 5000;
+  const WEBGPU_INIT_TIMEOUT_MS = 15000;
+  // How long a warm WGSL translation cache may delay graphics readiness (counted from the translator install).
+  const TRANSLATION_CACHE_HEAD_START_MS = 200;
 
   // A WebGPU page module this page can load: a site asset, or a script the portable page inlined.
   function webGpuModuleAvailable(name) {
@@ -817,8 +1446,10 @@
     const fromPage = typeof global.__gaiusGpuDefault === "string" ? global.__gaiusGpuDefault.toLowerCase() : "";
     // A site with the automatic runtime policy and the portable page (the same WebAssembly GC
     // client, its WebGPU glue and translator inlined) prefer WebGPU where the browser offers it.
-    const portableAuto = !site && isPortable();
-    const automatic = (site && site.runtimePolicy === "auto") || portableAuto;
+    // A Wasm-only portable page keeps the staged site's descriptor (policy "wasm-only"), so the
+    // portable form is decided before the site policy; a Wasm-only site is automatic as well.
+    const portableAuto = isPortable();
+    const automatic = (site && (site.runtimePolicy === "auto" || site.runtimePolicy === "wasm-only")) || portableAuto;
     const unavailable = webGpuUnavailableReasons();
     let requested = automatic && unavailable.length === 0 ? "webgpu" : "webgl2";
     let source = automatic ? (portableAuto ? "portable" : "site") : "default";
@@ -882,7 +1513,9 @@
   }
 
   function loadWebGpuShaderToolchain() {
-    if (global.__gaiusShaderToolchainReady) return Promise.resolve("page");
+    if (global.__gaiusShaderToolchainReady) {
+      return Promise.resolve(global.__gaiusShaderToolchainReady).then(() => "page");
+    }
     const config = webGpuShaderToolchainConfig();
     if (!config) return Promise.resolve("none");
     if (isPortable() || !doc || !doc.createElement) {
@@ -922,16 +1555,20 @@
     }).then(() => global.__gaiusShaderToolchainReady).then(() => "loaded");
   }
 
-  // WasmGC clients use the shader compiler for both WebGPU and WebGL2.  The
+  // WasmGC clients use the shader compiler for both WebGPU and WebGL2. Frozen
+  // JavaScript clients declare the same dependency when their page carries it.
   // page-level declaration is present only when this profile carries the
   // compiler; keep the capability gate ahead of it so unsupported browsers do
-  // not start the heavyweight download.
-  const shaderToolchainRequired = clientRuntime.selected === "wasm"
-    && !isPortable()
-    && global.__gaiusWebGpuShaderToolchain && typeof global.__gaiusWebGpuShaderToolchain === "object";
+  // not start the heavyweight download. Portable pages publish their inline
+  // loader's promise before boot instead of a separate runtime declaration.
+  const shaderToolchainConfig = webGpuShaderToolchainConfig();
+  const shaderToolchainRequired = (clientRuntime.selected === "wasm"
+      || (clientRuntime.selected === "js" && shaderToolchainConfig?.requiredForJs === true))
+    && (shaderToolchainConfig !== null
+      || (isPortable() && !!global.__gaiusShaderToolchainReady));
   // Started at parse time next to the glue (a 4 MB download and two compiles).
-  const webGpuShaderToolchain = (gpuSelection.requested === "webgpu" || shaderToolchainRequired)
-    && gpuSelection.inject !== "after-configure"
+  const webGpuShaderToolchain = (shaderToolchainRequired
+    || (gpuSelection.requested === "webgpu" && gpuSelection.inject !== "after-configure"))
     ? loadWebGpuShaderToolchain() : null;
   if (webGpuShaderToolchain) webGpuShaderToolchain.catch(() => {});
 
@@ -986,10 +1623,14 @@
   function translatorSource() {
     if (isPortable()) {
       const embedded = global.__gaiusPortableWebGpu;
-      return embedded && embedded.translator && typeof embedded.translator.load === "function"
-        ? Promise.resolve(embedded.translator.load()) : null;
+      if (embedded && embedded.translator && typeof embedded.translator.load === "function") {
+        return Promise.resolve(embedded.translator.load());
+      }
+      // A Wasm-only single file announces nothing: its translator is a file payload like the
+      // other embedded modules.
+      if (!hasFilePayload(WEBGPU_TRANSLATOR)) return null;
     }
-    if (isFile && !site) {
+    if (isPortable() || (isFile && !site)) {
       if (!hasFilePayload(WEBGPU_TRANSLATOR)) return null;
       return filePayloadBytes(WEBGPU_TRANSLATOR).then((bytes) =>
         filePayloads()[WEBGPU_TRANSLATOR].gzip ? wasmResponse(gunzipStream(bytes)) : bytes);
@@ -1074,6 +1715,7 @@
       new Promise((resolve) => global.setTimeout(() => resolve(timedOut), left())),
     ]);
     let failure = "";
+    let translationCacheHeadStart = null;
     if (ready === timedOut) {
       failure = "init timed out after " + WEBGPU_INIT_TIMEOUT_MS + " ms";
     } else if (ready !== true) {
@@ -1100,16 +1742,22 @@
         if (!gpu.installTranslator(module, translatorJobSource())) {
           failure = "translator: " + (gpu.translateError || "install failed");
         } else if (gpu.translationCacheReady) {
-          // IndexedDB is an optimisation. Give a warm cache a short head start without making
-          // storage stalls part of the graphics readiness deadline.
-          await Promise.race([gpu.translationCacheReady, new Promise((resolve) => global.setTimeout(resolve, 200))]);
+          // IndexedDB is an optimisation. A warm cache gets a short head start, counted from
+          // now and spent while the shader toolchain loads below, without making storage
+          // stalls part of the graphics readiness deadline.
+          translationCacheHeadStart = Promise.race([gpu.translationCacheReady,
+            new Promise((resolve) => global.setTimeout(resolve, TRANSLATION_CACHE_HEAD_START_MS))]);
         }
       }
     }
     if (!failure) {
       const toolchain = (webGpuShaderToolchain || loadWebGpuShaderToolchain()).catch(
         (error) => ({failure: "shader toolchain: " + (error && error.message ? error.message : error)}));
-      const state = await Promise.race([toolchain, new Promise((resolve) => global.setTimeout(() => resolve(timedOut), left()))]);
+      // A required compiler also gates WebGL2 and main. Waiting for it cannot
+      // make an otherwise ready device fall back merely because loading is slow.
+      const state = await (shaderToolchainRequired ? toolchain : Promise.race([
+        toolchain, new Promise((resolve) => global.setTimeout(() => resolve(timedOut), left())),
+      ]));
       if (state === timedOut) {
         failure = "shader toolchain timed out after " + WEBGPU_INIT_TIMEOUT_MS + " ms";
       } else if (state && state.failure) {
@@ -1118,6 +1766,9 @@
         record("webgpu-shader-toolchain", "loaded");
       }
     }
+    // Normally already settled (the toolchain takes longer than the head start); only what is
+    // left of the head start is waited for.
+    if (!failure && translationCacheHeadStart) await translationCacheHeadStart;
     gpuSelection.initMs = Math.round(nowMs() - started);
     if (failure) {
       // The seam reads the glue's state: a refused device sends vanilla on to WebGL 2.
@@ -1331,26 +1982,33 @@
     if (soundLoadStarted || soundsState.mode === "none") return soundsReady;
     stopSoundTitlePoll("sound-load-started");
     soundLoadStarted = true;
-    const soundBytes = global.fetch(assetUrl("vanilla-sounds.pack"), {cache: "force-cache"}).then((response) => {
-      if (!response.ok) throw new Error("HTTP " + response.status + " while loading the sound pack");
-      return response.arrayBuffer();
-    });
+    // A portable page embeds the pack as a file payload (no sibling URL to fetch).
+    const soundBytes = isPortable() && hasFilePayload("vanilla-sounds.pack")
+      ? filePayload("vanilla-sounds.pack").then((bytes) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
+      : global.fetch(assetUrl("vanilla-sounds.pack"), {cache: "force-cache"}).then((response) => {
+        if (!response.ok) throw new Error("HTTP " + response.status + " while loading the sound pack");
+        return response.arrayBuffer();
+      });
     const merge = Promise.all([soundBytes, vanillaAssetsDecoded()])
       .then((parts) => {
         mark("asset-pack-decode");
         const root = global.__gaiusVanillaAssets || parts[1];
         if (!root || !root.bytes || !root.index) throw new Error("the core asset pack is not decoded");
         const soundBytes = new Uint8Array(parts[0]);
-        if (splitSoundPackRequested()) {
+        const useSoundSidecar = clientRuntime.selected === "wasm"
+          && (splitSoundPackRequested() || soundsState.mode === "eager");
+        if (useSoundSidecar) {
           soundsState.resources = publishSoundPack(soundBytes);
           soundsState.layout = "split";
+          record("sound-layout", "split");
         } else {
           soundsState.resources = mergeSoundPack(root, soundBytes);
           soundsState.layout = "merged";
+          record("sound-layout", "merged");
         }
         soundsState.merged = true;
         mark("sounds-merged");
-        invokeSoundReloadHook(soundReloadHook || global.__gaiusSoundReloadHook);
+        if (soundsState.mode !== "eager") invokeSoundReloadHook(soundReloadHook || global.__gaiusSoundReloadHook);
       })
       .catch((error) => {
         soundsState.error = String(error && error.message || error);
@@ -1387,7 +2045,9 @@
     soundPollTimer = global.setTimeout(poll, 0);
   }
 
-  if (site && hasAsset("vanilla-sounds.pack") && !isPortable()) {
+  // The single-file build carries no window.__gaiusSite (its assets are file payloads), so the
+  // portable form must not require site metadata.
+  if (isPortable() ? hasFilePayload("vanilla-sounds.pack") : (site && hasAsset("vanilla-sounds.pack"))) {
     const requested = String(params.get("gaiusSounds") || "").toLowerCase();
     const requestedMode = requested === "eager" || requested === "deferred" || requested === "split"
       ? requested : "eager";
@@ -1408,6 +2068,7 @@
 
   // --- kernel runtime -------------------------------------------------------------------------
 
+  let kernelsTerminated = false;
   let runtimePromise = null;
   let runtimeInstance = null;
   let viewerTimer = null;
@@ -1475,6 +2136,7 @@
   }
 
   function runtime() {
+    if (kernelsTerminated) return Promise.resolve(null);
     if (runtimePromise) return runtimePromise;
     runtimePromise = (async () => {
       if (kernelSwitchOff()) {
@@ -1482,11 +2144,13 @@
         return null;
       }
       await withTimeout(kernelScriptsReady, 15000);
+      if (kernelsTerminated) return null;
       if (!global.GaiusKernelRuntime || !global.GaiusKernelPolicy) {
         record("kernels-unavailable", "runtime scripts missing");
         return null;
       }
       const manifest = await kernelManifest();
+      if (kernelsTerminated) return null;
       if (!manifest || !manifest.kernels || Object.keys(manifest.kernels).length === 0) {
         record("kernels-unavailable", "no kernel manifest");
         return null;
@@ -1496,6 +2160,11 @@
         return null;
       }
       const created = global.GaiusKernelRuntime.create(Object.assign({kernels: manifest.kernels}, manifest.worker));
+      // Factory callbacks can tear down this document before the runtime is published.
+      if (kernelsTerminated) {
+        if (created && typeof created.terminate === "function") created.terminate();
+        return null;
+      }
       runtimeInstance = created;
       // Keep the page-owned runtime reachable by lifecycle teardown.  The successor must not
       // inherit a renderer full of workers/wasm instances while the old document is unloading.
@@ -1663,7 +2332,7 @@
   }
 
   function serverRuntimeConfig() {
-    if (clientRuntime.selected === "unsupported") return null;
+    if (clientRuntime.selected !== "wasm") return null;
     const requested = String(params.get("serverRuntime")
       || (clientRuntime.form === "portable" && clientRuntime.selected === "wasm" ? "wasm" : "")
       || (site && siteRunsWasmServer() && clientRuntime.selected === "wasm" ? "wasm" : "")).toLowerCase();
@@ -1767,6 +2436,17 @@
     const nativePostMessage = WorkerClass.prototype.postMessage;
     WorkerClass.prototype.postMessage = function (message, transfer) {
       let result;
+      // The parked server Worker reports what its data pack prewarm did and whether the world
+      // load used it (BrowserWorldLoadPrewarm, BrowserWorldLoadCache); keep it with the boot events.
+      if (message && (message.type === "prewarm" || message.type === "start") &&
+          !this.__gaiusWorldLoadHook && typeof this.addEventListener === "function") {
+        this.__gaiusWorldLoadHook = true;
+        this.addEventListener("message", (event) => {
+          const data = event && event.data;
+          if (!data || typeof data.type !== "string" || data.type.slice(0, 11) !== "world-load-") return;
+          record("server-" + data.type, String(data.detail || "") + " at=" + Date.now());
+        });
+      }
       if (message && message.type === "start" && !this.__gaiusStorageErrorHook &&
           typeof this.addEventListener === "function") {
         this.__gaiusStorageErrorHook = true;
@@ -1788,14 +2468,25 @@
           }
         });
       }
-      if (serverWasm && message &&
-          (message.type === "start" || message.type === "prewarm") &&
-          !message.serverRuntime) {
+      if (message && (message.type === "start" || message.type === "prewarm") && !message.serverRuntime) {
         const args = Array.prototype.slice.call(arguments);
         const warm = serverWasmModule
           ? {serverWasmModule}
           : {};
-        args[0] = Object.assign({}, message, serverWasm, warm);
+        const server = serverWasm || {serverRuntime: "js",
+          serverScriptUrl: global.__gaiusSingleplayerServerUrl || null,
+          serverScriptGzipUrl: global.__gaiusSingleplayerServerGzipUrl || null};
+        args[0] = Object.assign({}, message, server, warm);
+        // ?gaiusWorldgenSlice=<2..50> overrides the cooperative worldgen slice (ms) the client
+        // asks for (8); an A/B knob, nothing changes without it.
+        const sliceParam = params.get("gaiusWorldgenSlice");
+        const slice = sliceParam === null || sliceParam === "" ? NaN : Number(sliceParam);
+        if (slice >= 2 && slice <= 50) args[0].worldgenSliceMillis = slice;
+        // ?gaiusServerWake=1: the server Worker wakes its parked server thread when light or worldgen work
+        // for its poll is queued (BrowserIntegratedServerMain.wakeServerForPoll); an A/B knob for the same page
+        // bytes, absent (or =0) is the vanilla wait until the next tick.
+        const wakeParam = params.get("gaiusServerWake");
+        if (wakeParam !== null && ON_VALUE.test(wakeParam)) args[0].gaiusServerWake = true;
         result = nativePostMessage.apply(this, args);
       } else {
         result = nativePostMessage.apply(this, arguments);
@@ -1884,10 +2575,10 @@
     },
   };
   global.__gaiusKernels = kernels;
-  let kernelsTerminated = false;
   global.__gaiusTerminateKernels = function (reason) {
     if (kernelsTerminated) return false;
     kernelsTerminated = true;
+    runtimePromise = null;
     if (viewerTimer !== null) {
       try { global.clearInterval(viewerTimer); } catch (_) { /* unloading */ }
       viewerTimer = null;
@@ -2135,6 +2826,8 @@
           Math.floor(Math.random() * 0x100000000).toString(36),
         profileId: global.__gaiusProfileId || null,
         parkMain: requestParkedMain(worker),
+        // The parked Main may also decode the default data pack ahead of the click.
+        prewarmWorld: srvInitMode(),
       });
       record("singleplayer-worker-idle-prewarm", worker.__gaiusParkRequested ? "parked-main" : "runtime");
     } catch (error) {
@@ -2144,19 +2837,40 @@
     return true;
   }
 
-  // On the world-selection screens the idle Worker also runs vanilla Main up to Bootstrap and
-  // parks there (server-worker-bootstrap.js dispatchParkedMain): about a second of the start
-  // that no longer waits for Create World. Not on the title screen alone (no singleplayer intent
-  // yet), not for low-memory pages, and ?gaiusParkMain=0 keeps the compile-only prewarm.
+  // The idle Worker also runs vanilla Main up to Bootstrap and parks there
+  // (server-worker-bootstrap.js dispatchParkedMain): about a second of the start that no longer
+  // waits for Create World. On the world-selection screens always; on the title screen only when
+  // the page has room (onTitleScreenWithRoom), because there the user has not shown singleplayer
+  // intent yet and an unused parked Main is dropped by the 30 s idle timeout. Not for low-memory
+  // pages, and ?gaiusParkMain=0 keeps the compile-only prewarm.
+  // The data pack prewarm of the parked Main: on by default, ?gaiusSrvInit=0 turns it off and
+  // =miss runs it but makes the world load take the fallback path (a diagnostic).
+  function srvInitMode() {
+    const value = params.get("gaiusSrvInit");
+    return value === "miss" ? "miss" : value !== "0";
+  }
+
   function requestParkedMain(worker) {
     if (worker.__gaiusParkRequested) return true;
     // The parked Main hook is part of the Wasm server path.
     if (!serverWasm || serverWasm.serverRuntime !== "wasm") return false;
-    if (!onSingleplayerFlowScreen() || params.get("gaiusParkMain") === "0") return false;
+    if (!(onSingleplayerFlowScreen() || onTitleScreenWithRoom()) || params.get("gaiusParkMain") === "0") return false;
     const tier = global.__gaiusMemoryTier;
     if (tier && tier.lowMemory) return false;
     worker.__gaiusParkRequested = true;
     return true;
+  }
+
+  // The title screen on a page with memory and cores to spare (the bar the boot-time server
+  // prewarm uses): the idle Worker may run Main to Bootstrap there too. The singleplayer click is
+  // the most likely next input, and a parked Main that nobody uses is dropped by the idle timeout.
+  function onTitleScreenWithRoom() {
+    const state = global.__gaiusMinecraftState;
+    if (!state || state.level) return false;
+    const screen = state.screen ? String(state.screen) : "";
+    return (screen === "TitleScreen" || screen.slice(-12) === ".TitleScreen") &&
+      Number(nav.deviceMemory) >= 8 && Number(nav.hardwareConcurrency) >= 4 &&
+      params.get("gaiusTitlePark") !== "0";
   }
 
   // The world-selection flow (Singleplayer -> Select World / Create World). Reaching it means a
@@ -2215,6 +2929,20 @@
     });
   }
 
+  // How long the title screen has to show before the idle work (server module compile, kernel
+  // warm-up, idle server Worker with its parked Main) starts. The work only starts once the title
+  // screen is up, so it never delays the title; starting it at the next poll instead of after 2.5 s
+  // (and an idle callback that waits up to 5 s, here 0.5 s: the title screen and the pipeline
+  // warm-up leave the main thread no idle period, so the callback runs at its timeout) is what lets a user who clicks Singleplayer within a few
+  // seconds find a finished Bootstrap instead of waiting for it behind Create World, and moves
+  // the main-thread part of the work (payload decode) out of the world-entry window.
+  // ?gaiusTitleIdleMs=2500 restores the former grace period.
+  function titleIdleGraceMs() {
+    const requested = Number(params.get("gaiusTitleIdleMs"));
+    return params.get("gaiusTitleIdleMs") !== null && Number.isFinite(requested) && requested >= 0
+      ? Math.min(requested, 60000) : 0;
+  }
+
   function watchTitleScreen() {
     const timer = global.setInterval(() => {
       const state = global.__gaiusMinecraftState;
@@ -2237,11 +2965,21 @@
         mark("title-screen");
         return;
       }
-      if (Date.now() - titleSince < 2500 || idleWorkDone) return;
+      if (Date.now() - titleSince < titleIdleGraceMs() || idleWorkDone) return;
       global.clearInterval(timer);
-      if (typeof global.requestIdleCallback === "function") global.requestIdleCallback(runIdleWork, {timeout: 5000});
+      if (typeof global.requestIdleCallback === "function") global.requestIdleCallback(runIdleWork, {timeout: 500});
       else global.setTimeout(runIdleWork, 0);
-    }, 1000);
+    }, 250);
+  }
+  // A memory-rich site can overlap runtime-only server instantiation with the client boot.
+  // The existing prewarm handshake runs no Java before world selection; its Worker is adopted
+  // by the normal start path. Keep small devices, constrained links and file payloads deferred.
+  if (site && serverWasm && Number(nav.deviceMemory) >= 8 && Number(nav.hardwareConcurrency) >= 4
+      && params.get("gaiusBootServer") !== "0") {
+    applyAssetUrls();
+    Promise.resolve().then(() => createIdleSingleplayerWorker()).then((started) => {
+      if (started) record("singleplayer-worker-boot-prewarm", "runtime");
+    }).catch((error) => record("singleplayer-worker-boot-prewarm-failed", String(error && error.message || error)));
   }
   watchTitleScreen();
 
@@ -2280,7 +3018,7 @@
       } else if (existing.__gaiusPrewarmPosted && !existing.__gaiusParkRequested &&
           existing.__gaiusAdopted !== true && requestParkedMain(existing)) {
         try {
-          existing.postMessage({type: "park-main"});
+          existing.postMessage({type: "park-main", prewarmWorld: srvInitMode()});
           record("singleplayer-worker-idle-prewarm", "parked-main");
         } catch (_) {
           // The start path dispatches Main itself.
@@ -2342,20 +3080,97 @@
 
   // --- launcher hooks -------------------------------------------------------------------------
 
+  // The JavaScript client of this distribution as a script URL, for the late fallback.
+  async function jsClientUrl() {
+    if (clientRuntime.form === "portable") {
+      // The portable page decodes its embedded classes.js only on demand in wasm mode.
+      const load = global.__gaiusPortableLoadJsClient;
+      return typeof load === "function" ? load() : null;
+    }
+    if (site) {
+      if ((useGzip || !hasAsset("classes.js")) && hasAsset("classes.js.gz") && typeof global.DecompressionStream === "function") {
+        return gunzipToBlobUrl(assetUrl("classes.js.gz"), "text/javascript");
+      }
+      return hasAsset("classes.js") ? siblingUrl("classes.js") : null;
+    }
+    return new URL("classes.js", loc.href).href;
+  }
+
+  // The module did not load or instantiate although the probes passed (a feature the probes do
+  // not cover, a truncated download, out of memory): start the JavaScript client instead.
+  async function startJsClientInstead(error) {
+    if (clientRuntime.mainStarted || !clientRuntime.jsBuilt) throw error;
+    const message = String(error && error.message || error);
+    fallBackToEagerSounds("runtime-fallback");
+    // The legacy JS client only reads the merged core archive. If Wasm failed after the sound
+    // sidecar was selected, restore that view before loading classes.js so sounds are preserved.
+    startSoundLoad();
+    await soundsReady;
+    if (global.__gaiusVanillaSounds && global.__gaiusVanillaAssets) {
+      try {
+        mergeSoundPack(global.__gaiusVanillaAssets, global.__gaiusVanillaSounds.bytes);
+        global.__gaiusVanillaSounds = null;
+        soundsState.layout = "merged-fallback";
+        record("sounds-merged-for-js-fallback", "legacy archive");
+      } catch (soundError) {
+        record("sound-fallback-merge-failed", soundError && soundError.message);
+        throw soundError;
+      }
+    }
+    let url = null;
+    try {
+      url = await jsClientUrl();
+    } catch (lookupError) {
+      record("runtime-fallback-failed", lookupError && lookupError.message);
+    }
+    if (!url || !doc || !doc.createElement) throw error;
+    clientRuntime.selected = "js";
+    clientRuntime.fallback = true;
+    clientRuntime.late = true;
+    clientRuntime.reason = "wasm-load-failed:" + message.slice(0, 200);
+    {
+      serverWasm = null;
+      if (global.GaiusWebGpu && typeof global.GaiusWebGpu.abandon === "function") {
+        global.GaiusWebGpu.abandon("client-runtime-fallback");
+      }
+      gpuSelection.requested = "webgl2";
+      webGpuFallback("client-runtime-fallback");
+      publishGpuTimings();
+    }
+    record("runtime-fallback", clientRuntime.reason);
+    if (global.console && typeof global.console.warn === "function") {
+      global.console.warn("Gaius: the WebAssembly GC client did not start (" + message
+        + "); starting the JavaScript client");
+    }
+    mark("runtime-js");
+    global.__gaiusClassesUrl = url;
+    await loadClassicScript(url);
+  }
+
   // Wasm: the instantiated module (gaius-wasm-boot.js __gaiusClientReady), so main(args) starts
-  // at once. Returns the time the client became ready (performance.now()). A failed module is a
-  // terminal startup error; the shipped client never changes runtime after the capability gate.
+  // at once. Returns the time the client became ready (performance.now()).
   async function clientReady() {
     const timings = global.__gaiusBootTimings;
-    if (clientRuntime.selected !== "wasm") return null;
+    if (clientRuntime.selected !== "wasm") return timings && timings.classesLoaded;
     try {
       await global.__gaiusClientReady;
       const wasm = global.__gaiusWasmTimings;
       return wasm && typeof wasm.instantiated === "number" ? wasm.instantiated : nowMs();
     } catch (error) {
-      record("runtime-error", error && error.message);
-      throw error;
+      await startJsClientInstead(error);
+      return nowMs();
     }
+  }
+
+  function commitClientRuntime() {
+    if (clientRuntime.selected !== "wasm" || clientRuntime.mainStarted) return false;
+    clientRuntime.mainStarted = true;
+    const release = global.__gaiusPortableReleaseJsFallback;
+    if (typeof release === "function") {
+      try { record("portable-frozen-js-release", release() ? "released" : "retained"); }
+      catch (error) { record("portable-frozen-js-release-failed", error && error.message); }
+    }
+    return true;
   }
 
   // Shared boot telemetry of both clients in the launcher's __gaiusBootTimings.
@@ -2364,7 +3179,8 @@
     if (!timings || typeof timings !== "object") return;
     timings.runtime = clientRuntime.selected;
     timings.runtimeSelected = clientRuntime.at;
-    delete timings.runtimeFallback;
+    if (clientRuntime.fallback) timings.runtimeFallback = clientRuntime.reason;
+    else delete timings.runtimeFallback;
     if (typeof readyAt === "number" && isFinite(readyAt)) timings.clientReady = readyAt;
   }
 
@@ -2373,6 +3189,7 @@
   // client must be ready to start synchronously.
   async function beforeMain() {
     if (clientRuntime.selected === "unsupported") return;
+    if (global.__gaiusJsClientSourceReady) await global.__gaiusJsClientSourceReady;
     mark("before-main");
     publishRuntimeTimings();
     await withTimeout(qualityReady, 5000);
@@ -2387,18 +3204,38 @@
           record("quality-adapter-failed", error && error.message);
         }
       }
+      // The tier Worker (on unless ?gaiusTierWorker=0) measures off the main thread from load time on;
+      // prepareTier waits (bounded) for its result, or runs the paired study (?gaiusTierStudy=1).
+      if (typeof quality.caps.prepareTier === "function") {
+        try {
+          await withTimeout(Promise.resolve(quality.caps.prepareTier()).catch(() => null), 30000);
+        } catch (error) {
+          record("quality-prepare-failed", error && error.message);
+        }
+      }
       try {
         quality.caps.ensureTier();
       } catch (error) {
         record("quality-tier-failed", error && error.message);
       }
+      try {
+        const probe = typeof quality.caps.probeInfo === "function" ? quality.caps.probeInfo() : null;
+        if (probe && probe.path) record("quality-tier-probe", probe.path + (probe.worker && probe.worker.reason ? " (" + probe.worker.reason + ")" : ""));
+      } catch (error) {
+        // Diagnostics only.
+      }
     }
     await prepareGpu();
-    if (shaderToolchainRequired && gpuSelection.requested !== "webgpu") {
+    if (gpuSelection.selected === "webgpu" && global.__gaiusShaderPacks &&
+        typeof global.__gaiusShaderPacks.openSettingsButton === "function") {
+      try { global.__gaiusShaderPacks.openSettingsButton(); } catch (error) { record("shader-pack-ui-failed", error && error.message); }
+    }
+    if (shaderToolchainRequired) {
       await webGpuShaderToolchain;
       record("webgpu-shader-toolchain", "loaded");
     }
     publishGpuTimings();
+    await initSnapshotPromise;
     await soundsGate;
     publishRuntimeTimings(await clientReady());
     mark("client-ready");
@@ -2419,13 +3256,16 @@
     // The graphics backend selection (window.__gaiusGpuSelection): requested, source, selected
     // (webgpu, webgl2, or pending until beforeMain), fallback, reason, inject, initMs, backend().
     gpu: gpuSelection,
-    get serverRuntime() { return serverWasm ? "wasm" : "unsupported"; },
-    handlesWasmFailure: false,
+    get serverRuntime() { return serverWasm ? "wasm" : "js"; },
+    handlesWasmFailure: true,
+    commitClientRuntime,
     assetUrl,
     filePayload,
     hasFilePayload,
     applyAssetUrls,
     assetsReady,
+    initSnapshot: () => initSnapshotState,
+    atlasPrebake: () => global.__gaiusAtlasPrebake,
     beforeMain,
     mark,
     publishTimeline,
@@ -2437,6 +3277,41 @@
     stopSoundPolling: stopSoundTitlePoll,
     modules: {kernels: kernelScriptsReady, quality: qualityReady, webgpu: webGpuReady},
     mergeSoundPack,
+  };
+
+  // A streamed client/server Wasm fetch can outlive the document during a fast reload.  Drop
+  // the shell preload and cancel its body so the old renderer does not retain a Response, stream
+  // reader, and compiled-module continuation while the successor starts.
+  let bootPreloadsTerminated = false;
+  global.__gaiusTerminateBootPreloads = function (reason) {
+    if (bootPreloadsTerminated) return false;
+    bootPreloadsTerminated = true;
+    try {
+      if (typeof global.__gaiusCancelIdleSingleplayerWorker === "function") {
+        global.__gaiusCancelIdleSingleplayerWorker(reason || "pagehide");
+      }
+    } catch (_) {}
+    try {
+      const preload = global.__gaiusWasmHttpPreload;
+      global.__gaiusWasmHttpPreload = null;
+      const pending = preload && preload.response;
+      if (pending && typeof pending.then === "function") {
+        pending.then((response) => {
+          try {
+            if (response && response.body && typeof response.body.cancel === "function") {
+              return response.body.cancel(reason || "pagehide");
+            }
+          } catch (_) {}
+          return undefined;
+        }, () => undefined);
+      }
+    } catch (_) {}
+    try {
+      if (typeof global.__gaiusAbortServerWasmPrewarm === "function") {
+        global.__gaiusAbortServerWasmPrewarm(reason || "pagehide");
+      }
+    } catch (_) {}
+    return true;
   };
 
   // Explicitly release graphics resources before a reload. The browser normally tears down a
@@ -2451,6 +3326,8 @@
     try {
       const post = global.GaiusQuality && global.GaiusQuality.webgpuPost;
       if (post && typeof post.dispose === "function") post.dispose();
+      const shaderPack = global.GaiusQuality && global.GaiusQuality.shaderPack;
+      if (shaderPack && typeof shaderPack.dispose === "function") shaderPack.dispose();
     } catch (error) {
       record("gpu-teardown-error", "quality:" + (error && error.message || error));
     }
@@ -2506,6 +3383,8 @@
   // moment it asks only once the frames since the last answer imply a large backlog
   // (WORLD_BACKLOG_PASSES render passes, about 1.5 GB of wrappers and their GPU objects) and at
   // most every MIN_WORLD_GAP_MS, which is where V8 would collect on its own anyway.
+  // The adaptive policy is for WebGPU wrapper retention, not WebGL2. Measuring a WebGL2
+  // loading/menu screen forces a full collection despite there being no WebGPU pass backlog.
   // Cross-origin-isolated pages only (the site). ?gaiusGcPacing=0 turns it off;
   // ?gaiusGcPacing=<ms> asks again <ms> after every answer instead (diagnostics).
   // __gaiusMemoryTelemetry.uaMemory keeps the latest answer and the request reasons.
@@ -2519,7 +3398,6 @@
     const MIN_QUIET_GAP_MS = 30000;
     const MIN_WORLD_GAP_MS = 180000;
     const WORLD_BACKLOG_PASSES = 1500000;
-    const QUIET_SCREENS = /(?:LevelLoadingScreen|ReceivingLevelScreen|ProgressScreen|GenericMessageScreen|ConnectScreen|GenericWaitingScreen|PauseScreen|DisconnectedScreen)$/;
     const telemetry = global.__gaiusMemoryTelemetry || (global.__gaiusMemoryTelemetry = {});
     const state = telemetry.uaMemory = {mode: fixedPauseMs ? "fixed" : "adaptive", requests: 0, bytes: null, peakBytes: 0,
       waitMs: null, at: null, error: null, reasons: {}};
@@ -2531,16 +3409,6 @@
       const stats = global.GaiusWebGpu && global.GaiusWebGpu.stats;
       return stats && Number.isFinite(stats.passes) ? stats.passes : 0;
     };
-    // A moment without measured gameplay frames.
-    function quietReason() {
-      if (doc && doc.visibilityState === "hidden") return "hidden";
-      const game = global.__gaiusMinecraftState;
-      if (!game) return null;
-      if (!game.level) return "menu";
-      if (game.pause === true) return "pause";
-      const screen = game.screen ? String(game.screen) : "";
-      return screen && QUIET_SCREENS.test(screen) ? "loading" : null;
-    }
     function measure(reason) {
       if (stopped || pending) return;
       pending = true;
@@ -2574,7 +3442,8 @@
     }
     function check() {
       if (stopped) return;
-      if (!pending) {
+      state.backend = global.__gaiusGpuBackend || null;
+      if (!pending && state.backend === "webgpu") {
         const since = nowMs() - lastAnswer;
         const quiet = quietReason();
         if (quiet !== null && since >= MIN_QUIET_GAP_MS) measure(quiet);
@@ -2590,8 +3459,11 @@
   if (global.addEventListener) {
     global.addEventListener("pagehide", function () {
       try { stopSoundTitlePoll("pagehide"); } catch (_) {}
+      try { if (global.__gaiusHeapGuard && global.__gaiusHeapGuard.stop) global.__gaiusHeapGuard.stop(); } catch (_) {}
+      try { global.__gaiusTerminateBootPreloads("pagehide"); } catch (_) {}
       try { global.__gaiusTerminateGraphics("pagehide"); } catch (_) {}
       try { global.__gaiusTerminateKernels("pagehide"); } catch (_) {}
+      try { if (typeof global.__gaiusTerminateWasm === "function") global.__gaiusTerminateWasm("pagehide"); } catch (_) {}
     }, {once: true});
   }
 })(typeof window !== "undefined" ? window : globalThis);

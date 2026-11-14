@@ -95,3 +95,11 @@ relay-nodes.json
 !tools/verify-github-pages-cdp.mjs
 !port/scripts/browser-http-proxy-routing-smoke.mjs
 !port/scripts/service-worker-headers-smoke.mjs
+
+# 2026-11-14 sync: scripts that name local paths, and timing harnesses.
+!port/scripts/gpu-caps-tier-worker.test.mjs
+!port/scripts/gpu-caps-tier-worker-chrome.test.mjs
+!port/scripts/lowend-profile-cdp.mjs
+!port/scripts/mc1-hotpath-parity/Mc1HotPathParity.java
+!port/web/runtime/webgpu/gpu-indirect-wgsl-validation.mjs
+!port/scripts/climate-handoff/**

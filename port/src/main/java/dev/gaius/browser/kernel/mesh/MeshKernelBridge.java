@@ -33,6 +33,7 @@ import org.teavm.jso.JSObject;
  * is where the drainer times out jobs the kernel never answered.</p>
  */
 public final class MeshKernelBridge {
+    private static final boolean FAST_SNAPSHOT_ENABLED = fastSnapshotEnabledJs();
     /** Header ints of a submitted job (mirrors HEADER in mesh-kernel-job.js). */
     public static final int H_TICKET = 0;
     public static final int H_EPOCH = 1;
@@ -57,6 +58,7 @@ public final class MeshKernelBridge {
     public static final int FLAG_AO = 1;
     public static final int FLAG_CUTOUT_LEAVES = 2;
     public static final int FLAG_NEARBY = 4;
+    public static final int FLAG_PACKED_STATES = 8;
 
     /** Record status: meshed, the kernel asked for the vanilla compiler, or the job failed. */
     public static final int STATUS_MESHED = 0;
@@ -74,6 +76,7 @@ public final class MeshKernelBridge {
     private static boolean facadeMissingLogged;
     private static int failuresInARow;
     private static boolean wakeInstalled;
+    private static boolean resultPumpScheduled;
     private static Runnable drainer;
     private static boolean draining;
     private static long submitted;
@@ -181,6 +184,17 @@ public final class MeshKernelBridge {
         installNanos += nanos;
     }
 
+    /** Main-thread snapshot fast path; launcher flag keeps the byte-identical fallback. */
+    public static boolean fastSnapshotEnabled() {
+        return FAST_SNAPSHOT_ENABLED;
+    }
+
+    @JSBody(script = ""
+            + "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
+            + "var flags = g.__gaiusLauncherFlags;"
+            + "return !!(flags && flags.meshSnapshotFast === true);")
+    private static native boolean fastSnapshotEnabledJs();
+
     /**
      * Registers the version-specific result drainer (MeshKernelHooks.drainResults) and hooks
      * {@link #pumpResults()} into every frame of BrowserRenderScheduler.
@@ -215,6 +229,30 @@ public final class MeshKernelBridge {
             current.run();
         } finally {
             draining = false;
+        }
+    }
+
+    /**
+     * Continues a bounded result drain from a new host turn. The facade keeps unpolled records in
+     * its done queue, so this is needed when a wake delivered more than one activation can carry.
+     */
+    public static void scheduleResultPump() {
+        if (resultPumpScheduled) {
+            return;
+        }
+        resultPumpScheduled = true;
+        HostLoop.postMacrotask(() -> HostLoop.startThread(() -> {
+            resultPumpScheduled = false;
+            deliverResults();
+        }));
+    }
+
+    /** True while the facade has finished records that Java has not polled yet. */
+    public static boolean hasResults() {
+        try {
+            return facadeHasResults();
+        } catch (RuntimeException ignored) {
+            return false;
         }
     }
 
@@ -285,15 +323,17 @@ public final class MeshKernelBridge {
      * {@code ids32}. All arrays are reused by the caller; the facade copies them before returning.
      */
     public static boolean submit(int[] header, short[] ids16, int[] ids32, byte[] light, byte[] quarts,
-            int[] palette, byte[] swamp, float[] floats) {
+            int[] palette, byte[] swamp, float[] floats, int[] packedStates, int packedStateLength) {
         if (!ready()) {
             return false;
         }
         boolean sent;
         if (header[H_WIDE] != 0) {
-            sent = facadeSubmitWide(header, ids32, light, quarts, palette, swamp, floats);
+            sent = facadeSubmitWide(header, ids32, light, quarts, palette, swamp, floats,
+                    packedStates, packedStateLength);
         } else {
-            sent = facadeSubmit(header, ids16, light, quarts, palette, swamp, floats);
+            sent = facadeSubmit(header, ids16, light, quarts, palette, swamp, floats,
+                    packedStates, packedStateLength);
         }
         if (sent) {
             submitted++;
@@ -460,24 +500,24 @@ public final class MeshKernelBridge {
         return facadeSetTableJs(JsArrays.int8(bytes), length, epoch);
     }
 
-    @JSBody(params = {"header", "ids", "light", "quarts", "palette", "swamp", "floats"}, script = ""
-            + "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
-            + "var k = g.__gaiusMeshKernel;"
-            + "return !!k && k.submitJob(header, ids, light, quarts, palette, swamp, floats) === true;")
-    private static native boolean facadeSubmitJs(Int32Array header, Int16Array ids, Int8Array light, Int8Array quarts, Int32Array palette, Int8Array swamp, Float32Array floats);
+    @JSBody(params = {"header", "ids", "light", "quarts", "palette", "swamp", "floats", "packed", "packedLength"}, script = ""
+            + "const globalObject = typeof globalThis !== 'undefined' ? globalThis : self;"
+            + "const meshKernel = globalObject.__gaiusMeshKernel;"
+            + "return !!meshKernel && meshKernel.submitJob(header, ids, light, quarts, palette, swamp, floats, packed, packedLength) === true;")
+    private static native boolean facadeSubmitJs(Int32Array header, Int16Array ids, Int8Array light, Int8Array quarts, Int32Array palette, Int8Array swamp, Float32Array floats, Int32Array packed, int packedLength);
 
-    private static boolean facadeSubmit(int[] header, short[] ids, byte[] light, byte[] quarts, int[] palette, byte[] swamp, float[] floats) {
-        return facadeSubmitJs(JsArrays.int32(header), JsArrays.int16(ids), JsArrays.int8(light), JsArrays.int8(quarts), JsArrays.int32(palette), JsArrays.int8(swamp), JsArrays.float32(floats));
+    private static boolean facadeSubmit(int[] header, short[] ids, byte[] light, byte[] quarts, int[] palette, byte[] swamp, float[] floats, int[] packed, int packedLength) {
+        return facadeSubmitJs(JsArrays.int32(header), JsArrays.int16(ids), JsArrays.int8(light), JsArrays.int8(quarts), JsArrays.int32(palette), JsArrays.int8(swamp), JsArrays.float32(floats), JsArrays.int32(packed), packedLength);
     }
 
-    @JSBody(params = {"header", "ids", "light", "quarts", "palette", "swamp", "floats"}, script = ""
-            + "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
-            + "var k = g.__gaiusMeshKernel;"
-            + "return !!k && k.submitJob(header, ids, light, quarts, palette, swamp, floats) === true;")
-    private static native boolean facadeSubmitWideJs(Int32Array header, Int32Array ids, Int8Array light, Int8Array quarts, Int32Array palette, Int8Array swamp, Float32Array floats);
+    @JSBody(params = {"header", "ids", "light", "quarts", "palette", "swamp", "floats", "packed", "packedLength"}, script = ""
+            + "const globalObject = typeof globalThis !== 'undefined' ? globalThis : self;"
+            + "const meshKernel = globalObject.__gaiusMeshKernel;"
+            + "return !!meshKernel && meshKernel.submitJob(header, ids, light, quarts, palette, swamp, floats, packed, packedLength) === true;")
+    private static native boolean facadeSubmitWideJs(Int32Array header, Int32Array ids, Int8Array light, Int8Array quarts, Int32Array palette, Int8Array swamp, Float32Array floats, Int32Array packed, int packedLength);
 
-    private static boolean facadeSubmitWide(int[] header, int[] ids, byte[] light, byte[] quarts, int[] palette, byte[] swamp, float[] floats) {
-        return facadeSubmitWideJs(JsArrays.int32(header), JsArrays.int32(ids), JsArrays.int8(light), JsArrays.int8(quarts), JsArrays.int32(palette), JsArrays.int8(swamp), JsArrays.float32(floats));
+    private static boolean facadeSubmitWide(int[] header, int[] ids, byte[] light, byte[] quarts, int[] palette, byte[] swamp, float[] floats, int[] packed, int packedLength) {
+        return facadeSubmitWideJs(JsArrays.int32(header), JsArrays.int32(ids), JsArrays.int8(light), JsArrays.int8(quarts), JsArrays.int32(palette), JsArrays.int8(swamp), JsArrays.float32(floats), JsArrays.int32(packed), packedLength);
     }
 
     @JSBody(script = "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
@@ -491,6 +531,14 @@ public final class MeshKernelBridge {
             + "var r = k.poll();"
             + "return r ? r : null;")
     private static native JSObject facadePoll();
+
+    @JSBody(script = "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
+            + "var k = g.__gaiusMeshKernel;"
+            + "if (!k) return false;"
+            + "if (typeof k.hasResults === 'function') return k.hasResults() === true;"
+            + "if (typeof k.status === 'function') { var s = k.status(); return !!s && (s.queued | 0) > 0; }"
+            + "return false;")
+    private static native boolean facadeHasResults();
 
     // --- telemetry ------------------------------------------------------------------------------
 
@@ -509,8 +557,8 @@ public final class MeshKernelBridge {
 
     @JSBody(params = {"submitted", "meshed", "fallbacks", "failures", "blendSkips", "snapshotMs", "installMs",
             "disabled"},
-            script = "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
-                    + "var state = g.__gaiusChunkPipelineTelemetry || (g.__gaiusChunkPipelineTelemetry = {});"
+            script = "const globalObject = typeof globalThis !== 'undefined' ? globalThis : self;"
+                    + "const state = globalObject.__gaiusChunkPipelineTelemetry || (globalObject.__gaiusChunkPipelineTelemetry = {});"
                     + "state.meshKernelSubmitted = submitted;"
                     + "state.meshKernelMeshed = meshed;"
                     + "state.meshKernelVanillaFallbacks = fallbacks;"

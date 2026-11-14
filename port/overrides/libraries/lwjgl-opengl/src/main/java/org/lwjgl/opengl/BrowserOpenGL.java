@@ -46,6 +46,7 @@ public final class BrowserOpenGL {
     private static final int PIXEL_UNPACK_BUFFER = 0x88EC;
     private static final int PIXEL_PACK_BUFFER = 0x88EB;
     private static GLCapabilities capabilities;
+    private static final boolean CHUNK_TELEMETRY_BRIDGE_ENABLED = initializeChunkTelemetryBridgeJs();
     private static final Map<Integer, MappedBuffer> MAPPED_BUFFERS = new HashMap<>();
     private static final ThreadLocal<UniformScratch> UNIFORM_SCRATCH =
             ThreadLocal.withInitial(UniformScratch::new);
@@ -5754,10 +5755,10 @@ public final class BrowserOpenGL {
 
     public static void bufferData(int target, ByteBuffer data, int usage) {
         if (JsArrays.LINEAR_MEMORY && data != null && data.isDirect()) {
-            bufferDataLinearJs(target, linearBase(data), data.capacity(), usage);
+            bufferDataLinearJs(target, (int) MemoryUtil.memAddress(data), data.remaining(), usage);
             return;
         }
-        bufferDataJs(target, bytes(data), usage);
+        bufferDataJs(target, remainingBytes(data), usage);
     }
 
     /**
@@ -5818,10 +5819,10 @@ public final class BrowserOpenGL {
 
     public static void bufferSubData(int target, long offset, ByteBuffer data) {
         if (JsArrays.LINEAR_MEMORY && data != null && data.isDirect()) {
-            bufferSubDataLinearWithCounters(target, (int) offset, linearBase(data), data.capacity());
+            bufferSubDataLinearWithCounters(target, (int) offset, (int) MemoryUtil.memAddress(data), data.remaining());
             return;
         }
-        bufferSubDataJs(target, (int) offset, bytes(data));
+        bufferSubDataJs(target, (int) offset, remainingBytes(data));
     }
 
     /**
@@ -5835,15 +5836,16 @@ public final class BrowserOpenGL {
               state.ensureLogicalElementBuffer(state.getVaoEmu());
             }
             const n=length|0;
+            const byteOffset=offset|0;
             if (n===0) {
-              gl.bufferSubData(target,Number(offset),state.linearEmptyBytes());
+              gl.bufferSubData(target,byteOffset,state.linearEmptyBytes());
             } else {
-              gl.bufferSubData(target,Number(offset),state.linearByteView(0),address>>>0,n);
+              gl.bufferSubData(target,byteOffset,state.linearByteView(0),address>>>0,n);
             }
             state.noteBufferUpload(n,n,'subData');
             const buffer=state.boundBuffers.get(target)|0;
             if (buffer) {
-              const start=Number(offset);
+              const start=byteOffset;
               const end=start+n;
               const known=state.bufferSizes.get(buffer);
               const validRange=Number.isFinite(start) && start>=0
@@ -5922,10 +5924,10 @@ public final class BrowserOpenGL {
 
     public static void namedBufferData(int buffer, ByteBuffer data, int usage) {
         if (JsArrays.LINEAR_MEMORY && data != null && data.isDirect()) {
-            namedBufferDataLinearJs(buffer, linearBase(data), data.capacity(), usage);
+            namedBufferDataLinearJs(buffer, (int) MemoryUtil.memAddress(data), data.remaining(), usage);
             return;
         }
-        namedBufferDataJs(buffer, bytes(data), usage);
+        namedBufferDataJs(buffer, remainingBytes(data), usage);
     }
 
     /** {@link #namedBufferDataJs} reading the data at a linear-memory address (WebAssembly GC). */
@@ -5994,10 +5996,10 @@ public final class BrowserOpenGL {
 
     public static void namedBufferSubData(int buffer, long offset, ByteBuffer data) {
         if (JsArrays.LINEAR_MEMORY && data != null && data.isDirect()) {
-            namedBufferSubDataLinearWithCounters(buffer, (int) offset, linearBase(data), data.capacity());
+            namedBufferSubDataLinearWithCounters(buffer, (int) offset, (int) MemoryUtil.memAddress(data), data.remaining());
             return;
         }
-        namedBufferSubDataJs(buffer, (int) offset, bytes(data));
+        namedBufferSubDataJs(buffer, (int) offset, remainingBytes(data));
     }
 
     /** {@link #namedBufferSubDataJs} reading the data at a linear-memory address (WebAssembly GC). */
@@ -9664,6 +9666,7 @@ public final class BrowserOpenGL {
 
     @JSBody(params = {"target", "index", "buffer", "offset", "size"}, script = """
             const state=window.__gaiusGL;
+            const gl=window.__gaiusWebGL;
             const bufferSize=state.bufferSizes.get(buffer)||Number(size);
             const available=Math.max(0,bufferSize-Number(offset));
             const range=target===0x8A11 && available>Number(size)
@@ -9674,9 +9677,17 @@ public final class BrowserOpenGL {
             if (previous && previous.range===true
                 && (previous.buffer|0)===(buffer|0)
                 && Number(previous.offset)===Number(offset)
-                && Number(previous.size)===range) return;
-            window.__gaiusWebGL.bindBufferRange(
+                && Number(previous.size)===range) {
+              // Indexed binds also establish the generic target, even on a slot-cache hit.
+              if ((state.boundBuffers.get(target)|0)!==(buffer|0)) {
+                gl.bindBuffer(target,buffer===0?null:state.buffers.get(buffer));
+                state.boundBuffers.set(target,buffer|0);
+              }
+              return;
+            }
+            gl.bindBufferRange(
               target,index,buffer===0?null:state.buffers.get(buffer),Number(offset),range);
+            state.boundBuffers.set(target,buffer|0);
             if (buffer) state.noteBufferWebglType(target,buffer);
             if (!previous) {
               previous={};
@@ -9697,12 +9708,20 @@ public final class BrowserOpenGL {
 
     @JSBody(params = {"target", "index", "buffer"}, script = """
             const state=window.__gaiusGL;
+            const gl=window.__gaiusWebGL;
             const key=(target|0)*65536+(index|0);
             let previous=state.indexedBufferBindings.get(key);
             if (previous && previous.range===false
-                && (previous.buffer|0)===(buffer|0)) return;
-            window.__gaiusWebGL.bindBufferBase(
+                && (previous.buffer|0)===(buffer|0)) {
+              if ((state.boundBuffers.get(target)|0)!==(buffer|0)) {
+                gl.bindBuffer(target,buffer===0?null:state.buffers.get(buffer));
+                state.boundBuffers.set(target,buffer|0);
+              }
+              return;
+            }
+            gl.bindBufferBase(
               target,index,buffer===0?null:state.buffers.get(buffer));
+            state.boundBuffers.set(target,buffer|0);
             if (buffer) state.noteBufferWebglType(target,buffer);
             if (!previous) {
               previous={};
@@ -10689,32 +10708,32 @@ public final class BrowserOpenGL {
 
     /** The field cache of {@link #reportMinecraftStateChangedJs}, in the order of its parameters. */
     private static final String MINECRAFT_STATE_CHANGED_PREFIX = """
-            var c = globalThis.__gaiusMinecraftStateStrings;
-            if (!c) {
-              c = [null, null, null, null, null, null, null, null, null, null, null, null, null, null];
-              globalThis.__gaiusMinecraftStateStrings = c;
+            var stateStrings = globalThis.__gaiusMinecraftStateStrings;
+            if (!stateStrings) {
+              stateStrings = [null, null, null, null, null, null, null, null, null, null, null, null, null, null];
+              globalThis.__gaiusMinecraftStateStrings = stateStrings;
             }
             if (changed !== 0) {
-              if (changed & 1) c[0] = s0;
-              if (changed & 2) c[1] = s1;
-              if (changed & 4) c[2] = s2;
-              if (changed & 8) c[3] = s3;
-              if (changed & 16) c[4] = s4;
-              if (changed & 32) c[5] = s5;
-              if (changed & 64) c[6] = s6;
-              if (changed & 128) c[7] = s7;
-              if (changed & 256) c[8] = s8;
-              if (changed & 512) c[9] = s9;
-              if (changed & 1024) c[10] = s10;
-              if (changed & 2048) c[11] = s11;
-              if (changed & 4096) c[12] = s12;
-              if (changed & 8192) c[13] = s13;
+              if (changed & 1) stateStrings[0] = s0;
+              if (changed & 2) stateStrings[1] = s1;
+              if (changed & 4) stateStrings[2] = s2;
+              if (changed & 8) stateStrings[3] = s3;
+              if (changed & 16) stateStrings[4] = s4;
+              if (changed & 32) stateStrings[5] = s5;
+              if (changed & 64) stateStrings[6] = s6;
+              if (changed & 128) stateStrings[7] = s7;
+              if (changed & 256) stateStrings[8] = s8;
+              if (changed & 512) stateStrings[9] = s9;
+              if (changed & 1024) stateStrings[10] = s10;
+              if (changed & 2048) stateStrings[11] = s11;
+              if (changed & 4096) stateStrings[12] = s12;
+              if (changed & 8192) stateStrings[13] = s13;
             }
-            var playerClass = c[0], playerMode = c[1], selectedItem = c[2];
-            var screen = c[3], screenTitle = c[4], screenWidgetsJson = c[5];
-            var overlay = c[6], level = c[7];
-            var hitClass = c[8], hitType = c[9], hitBlockPos = c[10], hitDirection = c[11];
-            var hitBlockState = c[12], hitEntity = c[13];
+            var playerClass = stateStrings[0], playerMode = stateStrings[1], selectedItem = stateStrings[2];
+            var screen = stateStrings[3], screenTitle = stateStrings[4], screenWidgetsJson = stateStrings[5];
+            var overlay = stateStrings[6], level = stateStrings[7];
+            var hitClass = stateStrings[8], hitType = stateStrings[9], hitBlockPos = stateStrings[10], hitDirection = stateStrings[11];
+            var hitBlockState = stateStrings[12], hitEntity = stateStrings[13];
             """;
 
     /** The script of the two report bodies above (after the prefix in the wasm one). */
@@ -11080,8 +11099,45 @@ public final class BrowserOpenGL {
 
     /** Diagnostic-only client chunk packet position telemetry. */
     public static void reportMinecraftChunkPacket(int x, int z) {
+        if (CHUNK_TELEMETRY_BRIDGE_ENABLED) {
+            reportChunkCausalPacketHandlerJs(x, z);
+        }
         reportMinecraftChunkPacketJs(x, z);
     }
+
+    @JSBody(script = """
+            return globalThis.__gaiusChunkCausalTelemetryEnabled === true;
+            """)
+    private static native boolean initializeChunkTelemetryBridgeJs();
+
+    @JSBody(params = {"x", "z"}, script = """
+            const root=globalThis.__gaiusChunkPipelineTelemetry||
+              (globalThis.__gaiusChunkPipelineTelemetry={});
+            const causal=root.causal||(root.causal={schemaVersion:'gaius.chunk-causal.v1',enabled:true,
+              sectionCapacity:32768,handlerCapacity:8192,schedulerCapacity:512,
+              handlerTimestampSource:'ClientPacketListener.handleLevelChunkWithLight entry after decode',
+              sections:[],handlerEntries:[],schedulerSamples:[],droppedSections:0,
+              droppedHandlerEntries:0,handlerEntryCount:0,unmappedDraws:0,earlyDraws:0,
+              repeatDraws:0,syntheticDraws:0,uniforms:new Map(),byTicket:new Map(),
+              latestBySection:new Map(),handlerByChunk:new Map(),levelEpoch:1,resourceEpoch:1,nextVisualTicket:-1});
+            if(!causal.handlerByChunk)causal.handlerByChunk=new Map();
+            if(!Array.isArray(causal.handlerEntries))causal.handlerEntries=[];
+            const chunkX=x|0,chunkZ=z|0,at=performance.timeOrigin+performance.now();
+            causal.handlerEntryCount=(Number(causal.handlerEntryCount)||0)+1;
+            if(causal.handlerEntries.length>=causal.handlerCapacity){
+              causal.handlerEntries.shift();causal.droppedHandlerEntries=(Number(causal.droppedHandlerEntries)||0)+1;
+            }
+            causal.handlerEntries.push({chunkX:chunkX,chunkZ:chunkZ,atMillis:at});
+            const key=chunkX+','+chunkZ+','+(Number(causal.levelEpoch)||0)+','+(Number(causal.resourceEpoch)||0);
+            if(causal.handlerByChunk.has(key))causal.handlerByChunk.delete(key);
+            causal.handlerByChunk.set(key,at);
+            while(causal.handlerByChunk.size>causal.handlerCapacity){
+              const oldest=causal.handlerByChunk.keys().next();
+              if(oldest.done)break;
+              causal.handlerByChunk.delete(oldest.value);
+            }
+            """)
+    private static native void reportChunkCausalPacketHandlerJs(int x, int z);
 
     @JSBody(params = {"x", "z"}, script = """
             var packet = globalThis.__gaiusClientChunkPacketPositions;
@@ -11235,6 +11291,16 @@ public final class BrowserOpenGL {
             return null;
         }
         return Int8Array.fromJavaBuffer(buffer);
+    }
+
+    private static Int8Array remainingBytes(ByteBuffer buffer) {
+        if (buffer == null) {
+            return null;
+        }
+        // The typed-array bridge exports the backing view, so give it a zero-copy
+        // slice for a partial window without changing the caller's position/limit.
+        return bytes(buffer.position() == 0 && buffer.limit() == buffer.capacity()
+                ? buffer : buffer.slice());
     }
 
     private static Int8Array allBytes(ByteBuffer buffer) {

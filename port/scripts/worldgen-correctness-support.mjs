@@ -1,11 +1,20 @@
 import {spawnSync} from 'node:child_process';
-import {appendFileSync} from 'node:fs';
+import {appendFileSync, readFileSync} from 'node:fs';
 import {setTimeout} from 'node:timers/promises';
 import {gunzipSync} from 'node:zlib';
 
 export const MINIMUM_HEADROOM = 8 * 1024 ** 3;
 
+export function linuxMemoryHeadroom(meminfo) {
+  const available = /^MemAvailable:\s+(\d+)\s+kB\s*$/m.exec(meminfo);
+  const bytes = available ? Number(available[1]) * 1024 : NaN;
+  if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('Cannot verify Linux memory headroom');
+  return bytes;
+}
+
 export function commitHeadroom() {
+  // Linux admission uses reclaimable physical memory, not Windows commit accounting.
+  if (process.platform === 'linux') return linuxMemoryHeadroom(readFileSync('/proc/meminfo', 'utf8'));
   if (process.platform !== 'win32') throw new Error('LIGHT JVM admission requires Windows commit telemetry');
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     '$memory=Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory; '
@@ -23,6 +32,7 @@ export async function waitJvmHeadroom(log) {
   for (;;) {
     const bytes = commitHeadroom();
     appendFileSync(log, JSON.stringify({at: new Date().toISOString(), bytes,
+      source: process.platform === 'linux' ? 'MemAvailable' : 'WindowsCommitHeadroom',
       minimumBytes: MINIMUM_HEADROOM, admitted: bytes >= MINIMUM_HEADROOM}) + '\n');
     if (bytes >= MINIMUM_HEADROOM) return;
     console.log(`Waiting for JVM admission: ${(bytes / 1024 ** 3).toFixed(2)} GiB commit headroom`);

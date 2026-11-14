@@ -96,12 +96,14 @@
     return Object.seal({key: key >>> 0, ir: bytes, hash: fnv1a64(bytes), inlineLeft: inlineJobs});
   }
 
-  // Builds a framed job: header, generator reference, then `bodyLength` bytes written by `writeBody`.
+  // Builds a framed job in shared memory when isolation allows, otherwise an ArrayBuffer.
   function frame(kind, jobId, gen, inline, bodyLength, writeBody) {
     const irLength = inline ? gen.ir.length : 0;
     const bodyAt = pad(24 + irLength, 8);
     const payloadLength = bodyAt + bodyLength;
-    const buffer = new ArrayBuffer(HEADER_LEN + payloadLength);
+    const buffer = global.crossOriginIsolated === true && typeof global.SharedArrayBuffer === "function"
+      ? new global.SharedArrayBuffer(HEADER_LEN + payloadLength)
+      : new ArrayBuffer(HEADER_LEN + payloadLength);
     const view = new DataView(buffer);
     view.setUint32(0, JOB_MAGIC, true);
     view.setUint16(4, ABI_VERSION, true);

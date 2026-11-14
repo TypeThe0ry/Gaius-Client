@@ -70,3 +70,15 @@ and the float `amplitude` passed to the call. A param key is written once per
 line; the harness fails on a duplicate.
 
 The source Javadoc of each fixture class spells out the exact vanilla calls.
+
+## Chunk save palette encoding
+
+`storage/palette-encode-check.sh [profile...]` (default 26.3) proves that
+`patchPalettedContainerBrowserEncode` (`BrowserPaletteEntryCodec`, `BrowserPaletteRepack`) leaves the NBT
+that chunk saving writes for block state and biome containers byte for byte as vanilla's. It applies the
+patch to the profile's client jar and runs `PalettedContainerEncodeCheck` on the vanilla classes and on the
+patched `PalettedContainer`, over the `r.*.mca` files of `REGION_DIRS` (default: the three tvfix browser
+worlds, 6870 chunks) and seeded random containers, then `cmp`s the per-container SHA-256 digests. The
+same program checks the two helpers against vanilla's own code (every block state and biome, seeded
+nested tags, unreproducible key orders, `reencodeContents` over every bit width). `BENCH=<runs>` adds a
+JVM timing of the container codecs. Nothing is written to `fixtures/`.

@@ -83,6 +83,9 @@ ${asyncMethod}
 ${callbackMethod}
 }`,
     'dev/gaius/browser/HostLoop.java': hostLoop,
+    // The dispatcher's turn budget reads the clock on the runnables this stride picks.
+    'dev/gaius/browser/ClockStride.java': await readFile(resolve(root,
+      'port/overrides/classlib/src/main/java/dev/gaius/browser/ClockStride.java'), 'utf8'),
     // The dispatcher only needs the generation suspension predicate here; the full scheduler
     // is covered by worldgen-scheduler-smoke.mjs and is intentionally outside this TeaVM fixture.
     'dev/gaius/browser/BrowserWorldgenScheduler.java': `

@@ -1,12 +1,19 @@
 #!/usr/bin/env node
+// Cold/warm iterations use separate Chrome processes and one profile per pair.
+// GAIUS_STARTUP_CACHE_WAIT_MS (default 120000 with warm mode) bounds post-title
+// serialization observation; CACHE_SETTLE_MS (default 15000) is a quiet writeback
+// window, not a durable-storage acknowledgement. Title times exclude this wait.
 
-import {spawn} from "node:child_process";
+import {spawn, execFileSync} from "node:child_process";
 import {createServer} from "node:http";
 import {createReadStream} from "node:fs";
-import {mkdir, readFile, stat, unlink, writeFile} from "node:fs/promises";
+import {mkdir, readFile, rm, stat, unlink, writeFile} from "node:fs/promises";
 import {extname, resolve, sep} from "node:path";
 import {pathToFileURL} from "node:url";
 import {analyzeStartupTerrain} from "./wasm-startup-visual.mjs";
+import {chromeLaunchArgs, resolveChromeBinary} from "./chrome-binary.mjs";
+import {cacheObservation} from "./wasm-cache-evidence.mjs";
+import {linuxGpuEnvironment} from "./linux-gpu-env.mjs";
 
 const [siteDirectory, portableFile, outputDirectory] = process.argv.slice(2);
 if (!outputDirectory) throw new Error("Usage: wasm-startup-timeline.mjs <site> <portable> <output>");
@@ -15,10 +22,23 @@ const site = resolve(siteDirectory);
 const count = Number(process.env.GAIUS_STARTUP_RUNS || 3);
 const timeout = Number(process.env.GAIUS_STARTUP_TIMEOUT_MS || 45000);
 const modes = (process.env.GAIUS_STARTUP_MODES || "cold,warm,file").split(",");
+const capture = process.env.GAIUS_STARTUP_CAPTURE !== "0";
+const maxLoad = Number(process.env.GAIUS_STARTUP_MAX_LOAD || 0);
+const cpuProfile = capture && process.env.GAIUS_STARTUP_CPU_PROFILE !== "0";
 if (!Number.isInteger(count) || count < 1 || count > 3) throw new Error("Startup runs must be between 1 and 3");
 if (modes.some(mode => !["cold", "warm", "file"].includes(mode))) throw new Error("Unknown startup mode");
 const sleep = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
 await mkdir(output, {recursive: true});
+
+async function machineSnapshot() {
+  if (process.platform !== "linux") return null;
+  let java = "";
+  try { java = execFileSync("ps", ["-C", "java", "-o", "pid=,pcpu=,rss=,etime=,comm="], {encoding: "utf8"}); }
+  catch (error) { java = String(error.stdout || ""); }
+  return {at: new Date().toISOString(), load: (await readFile("/proc/loadavg", "utf8")).trim(),
+    cpu: (await readFile("/proc/stat", "utf8")).split("\n")[0],
+    uptime: execFileSync("uptime", [], {encoding: "utf8"}).trim(), java};
+}
 
 class Cdp {
   constructor(url) {
@@ -224,7 +244,7 @@ async function openWorld(page, label) {
 
 async function browserRun(mode, iteration) {
   const label = `${mode}-${iteration}`;
-  const profile = resolve(output, "profiles", mode === "warm" ? `cold-${count}` : label);
+  const profile = resolve(output, "profiles", mode === "warm" ? `cold-${iteration}` : label);
   const existingProfile = await stat(profile).catch(error => {
     if (error.code !== "ENOENT") throw error;
     return null;
@@ -235,22 +255,63 @@ async function browserRun(mode, iteration) {
   await unlink(resolve(profile, "DevToolsActivePort")).catch((error) => {
     if (error.code !== "ENOENT") throw error;
   });
-  const chrome = spawn(process.env.GAIUS_CHROME_BIN || "C:/Program Files/Google/Chrome/Application/chrome.exe", [
+  const chrome = spawn(resolveChromeBinary(), [...chromeLaunchArgs(),
     "--headless=new", "--remote-debugging-port=0", "--remote-allow-origins=*", `--user-data-dir=${profile}`,
-    "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
+    "--ignore-gpu-blocklist", "--disable-breakpad",
+    "--password-store=basic", "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
     "--disable-features=Translate,MediaRouter", "--window-size=960,640", "about:blank",
-  ], {stdio: ["ignore", "ignore", "pipe"]});
+  ], {stdio: ["ignore", "ignore", "pipe"], env: linuxGpuEnvironment(process.env)});
   let stderr = "";
   chrome.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-10000); });
   let page;
   let browser;
   let tracing = false;
+  let traceComplete = false;
+  let finishTrace;
+  let traceFinished;
+  const resetTraceCompletion = () => {
+    traceComplete = false;
+    traceFinished = new Promise(done => { finishTrace = done; });
+  };
+  resetTraceCompletion();
+  const noteTraceComplete = () => { traceComplete = true; finishTrace(); };
   const trace = [];
+  const traceSegments = [];
+  const traceCategories = "v8,v8.wasm,devtools.timeline,blink.user_timing,loading,disabled-by-default-devtools.timeline,disabled-by-default-v8.wasm.detailed";
+  async function startTrace() {
+    resetTraceCompletion();
+    await browser.send("Tracing.start", {categories: traceCategories, transferMode: "ReportEvents"});
+    tracing = true;
+  }
+  async function stopTrace() {
+    if (!tracing) return;
+    await browser.send("Tracing.end");
+    let timer;
+    await Promise.race([traceFinished, new Promise(done => { timer = setTimeout(done, 30000); })]);
+    clearTimeout(timer);
+    traceSegments.push({complete: traceComplete, eventCount: trace.length});
+    tracing = false;
+    if (!traceComplete) throw new Error("Trace segment did not finish; cannot verify cache write");
+  }
   const requests = [];
   const workerProfiles = [];
   const requestStarts = new Map();
   const errors = [];
-  const result = {mode, iteration, url: mode === "file" ? pathToFileURL(resolve(portableFile)).href + "?runtime=wasm" : siteUrl};
+  const result = {mode, iteration, capture, machineBefore: await machineSnapshot(), gpuFlags: chromeLaunchArgs(),
+    url: mode === "file" ? pathToFileURL(resolve(portableFile)).href + startupQuery : siteUrl};
+  let loadWatch;
+  let checkingLoad = false;
+  if (maxLoad > 0) loadWatch = setInterval(async () => {
+    if (checkingLoad || result.loadLimitExceeded) return;
+    checkingLoad = true;
+    try {
+      const snapshot = await machineSnapshot();
+      if (Number(snapshot?.load.split(" ")[0]) > maxLoad) {
+        result.loadLimitExceeded = {limit: maxLoad, snapshot};
+        await browser?.send("Browser.close").catch(() => {});
+      }
+    } finally { checkingLoad = false; }
+  }, 1000);
   try {
     let endpoint;
     const deadline = Date.now() + 15000;
@@ -265,6 +326,7 @@ async function browserRun(mode, iteration) {
     await browser.open();
     result.browser = (await browser.send("Browser.getVersion")).product;
     browser.on("Tracing.dataCollected", ({value}) => trace.push(...value));
+    browser.on("Tracing.tracingComplete", noteTraceComplete);
     const attachWorker = async ({sessionId, targetInfo}) => {
       if (targetInfo.type !== "worker") return;
       const worker = {url: targetInfo.url, targetId: targetInfo.targetId, sessionId, attachedAt: Date.now()};
@@ -272,10 +334,12 @@ async function browserRun(mode, iteration) {
       try {
         await page.send("Runtime.enable", {}, sessionId);
         await page.send("Network.enable", {}, sessionId);
-        await page.send("Profiler.enable", {}, sessionId);
-        await page.send("Profiler.setSamplingInterval", {interval: 1000}, sessionId);
-        await page.send("Profiler.start", {}, sessionId);
-        worker.started = true;
+        if (cpuProfile) {
+          await page.send("Profiler.enable", {}, sessionId);
+          await page.send("Profiler.setSamplingInterval", {interval: 1000}, sessionId);
+          await page.send("Profiler.start", {}, sessionId);
+          worker.started = true;
+        }
       } catch (error) { worker.profileError = String(error.message || error); }
       await page.send("Runtime.runIfWaitingForDebugger", {}, sessionId).catch(() => {});
     };
@@ -283,30 +347,44 @@ async function browserRun(mode, iteration) {
     page = new Cdp(targets.find((target) => target.type === "page").webSocketDebuggerUrl);
     await page.open();
     page.on("Tracing.dataCollected", ({value}) => trace.push(...value));
+    page.on("Tracing.tracingComplete", noteTraceComplete);
     page.on("Target.attachedToTarget", attachWorker);
-    await page.send("Target.setAutoAttach", {autoAttach: true, waitForDebuggerOnStart: true,
-      flatten: true, filter: [{type: "worker", exclude: false}, {exclude: true}]});
-    await page.send("Tracing.start", {categories: "v8,v8.wasm,devtools.timeline,blink.user_timing,loading,disabled-by-default-v8.wasm.detailed", transferMode: "ReportEvents"});
-    tracing = true;
+    if (capture) {
+      await page.send("Target.setAutoAttach", {autoAttach: true, waitForDebuggerOnStart: cpuProfile,
+        flatten: true, filter: [{type: "worker", exclude: false}, {exclude: true}]});
+    }
+    if (capture) {
+      await startTrace();
+    }
     await page.send("Page.enable");
     await page.send("Runtime.enable");
     await page.send("Network.enable");
-    await page.send("Profiler.enable");
-    await page.send("Profiler.setSamplingInterval", {interval: 1000});
-    await page.send("Profiler.start");
-    page.on("Network.requestWillBeSent", ({requestId, request, timestamp, wallTime, initiator}, sessionId) =>
+    await page.send("Performance.enable");
+    if (cpuProfile) {
+      await page.send("Profiler.enable");
+      await page.send("Profiler.setSamplingInterval", {interval: 1000});
+      await page.send("Profiler.start");
+    }
+    page.on("Network.requestWillBeSent", ({requestId, request, timestamp, wallTime, initiator}, sessionId) => {
+      // Inline decoded images are not network traffic. Their base64 URLs can dwarf the trace.
+      if (request.url.startsWith("data:")) return;
       requestStarts.set(`${sessionId || "page"}:${requestId}`, {
-        sessionId: sessionId || null, requestId, url: request.url, timestamp, wallTime, initiator
-      }));
+        sessionId: sessionId || null, requestId, url: request.url, timestamp, wallTime, initiator, headers: request.headers, method: request.method
+      });
+    });
     page.on("Network.loadingFinished", ({requestId, timestamp, encodedDataLength}, sessionId) => {
       const start = requestStarts.get(`${sessionId || "page"}:${requestId}`);
       if (start) start.finished = {timestamp, encodedDataLength};
     });
-    page.on("Network.responseReceived", ({requestId, response, timestamp}, sessionId) => requests.push({sessionId: sessionId || null,
+    page.on("Network.responseReceived", ({requestId, response, timestamp}, sessionId) => {
+      if (response.url.startsWith("data:")) return;
+      requests.push({sessionId: sessionId || null,
       requestId, url: response.url, timestamp,
+      mimeType: response.mimeType, headers: response.headers,
       status: response.status, fromServiceWorker: response.fromServiceWorker, fromDiskCache: response.fromDiskCache,
       fromPrefetchCache: response.fromPrefetchCache, timing: response.timing,
-      request: requestStarts.get(`${sessionId || "page"}:${requestId}`) || null}));
+      request: requestStarts.get(`${sessionId || "page"}:${requestId}`) || null});
+    });
     page.on("Runtime.exceptionThrown", ({exceptionDetails}) => errors.push(exceptionDetails.exception?.description || exceptionDetails.text));
     await page.send("Page.addScriptToEvaluateOnNewDocument", {source: probe});
     await page.send("Page.navigate", {url: result.url});
@@ -318,6 +396,33 @@ async function browserRun(mode, iteration) {
         error: String(window.__gaiusBootError || window.__gaiusThreadError || '')})`);
       if (state.titleFrame || state.error) break;
       await sleep(100);
+    }
+    if (state?.titleFrame) await sleep(Number(process.env.GAIUS_STARTUP_CACHE_DWELL_MS || 3000));
+    // A returning user closes a populated cache, not a browser killed immediately after
+    // the first title frame. Trace serialization can precede digest/IPC/disk writeback.
+    // Drain trace in bounded segments, then allow a quiet writeback window. This changes
+    // only post-title observation; title/compile timestamps remain the measured values.
+    const cacheWaitMs = Number(process.env.GAIUS_STARTUP_CACHE_WAIT_MS ?? (modes.includes("warm") ? 120000 : 0));
+    if (state?.titleFrame && mode === "cold" && cacheWaitMs > 0) {
+      if (!capture) throw new Error("Cache write observation requires tracing");
+      const settleMs = Number(process.env.GAIUS_STARTUP_CACHE_SETTLE_MS || 15000);
+      const waitStarted = Date.now();
+      let observation;
+      while (true) {
+        const clock = await page.send("Performance.getMetrics").catch(() => null);
+        const now = clock?.metrics?.find(value => value.name === "Timestamp")?.value;
+        await stopTrace();
+        // User timing markers share the trace clock when Performance metrics are absent.
+        const clockUs = Number.isFinite(now) ? now * 1e6 : Math.max(0, ...trace.slice(-1000).map(e => e.ts || 0));
+        observation = cacheObservation(trace, clockUs, settleMs);
+        if (observation.ready || Date.now() - waitStarted >= cacheWaitMs) break;
+        await startTrace();
+        await sleep(Math.min(10000, cacheWaitMs - (Date.now() - waitStarted)));
+      }
+      result.cachePreparation = {...observation, waitedMs: Date.now() - waitStarted,
+        limitMs: cacheWaitMs, settleMs, durableWriteAcknowledged: false};
+      // Keep observing until shutdown so late writes are not silently dropped.
+      await startTrace();
     }
     result.completed = !!state?.titleFrame;
     result.failure = state?.error || (result.completed ? null : "Title frame timeout");
@@ -332,10 +437,12 @@ async function browserRun(mode, iteration) {
       jspiFrame: window.__gaiusFrameTelemetry || null,
       longTasks: performance.getEntriesByType('longtask').map(entry => ({start: entry.startTime,
         duration: entry.duration})),
-      bootEvents: window.__gaiusBootEvents || [], body: document.body.innerText.slice(0, 1500),
+      bootEvents: window.__gaiusBoot?.events || window.__gaiusBootEvents || [],
+      sounds: window.__gaiusBoot?.sounds?.() || null, body: document.body.innerText.slice(0, 1500),
       resources: performance.getEntriesByType('resource').map(entry => entry.toJSON()),
       controlled: !!navigator.serviceWorker?.controller, isolated: crossOriginIsolated,
       runtime: window.__gaiusBoot?.runtime || null, compile: window.__gaiusWasmCompileTimings || null,
+      moduleCache: window.__gaiusWasmModuleCache || null,
       shaders: window.__gaiusShaderToolchain?.stats?.() || null,
       gpu: window.__gaiusGpuSelection || null})`);
     if (result.page.runtime?.selected !== "wasm") {
@@ -343,25 +450,30 @@ async function browserRun(mode, iteration) {
       result.failure = "The selected client fell back from wasm";
     }
     await writeFile(resolve(output, `${label}.png`), Buffer.from((await page.send("Page.captureScreenshot", {format: "png"})).data, "base64"));
-    await sleep(400);
-    const {profile: mainProfile} = await page.send("Profiler.stop");
-    await writeFile(resolve(output, `${label}.title.main.cpuprofile`), JSON.stringify(mainProfile));
-    result.mainProfile = `${label}.title.main.cpuprofile`;
+    if (cpuProfile) {
+      await sleep(400);
+      const {profile: mainProfile} = await page.send("Profiler.stop");
+      await writeFile(resolve(output, `${label}.title.main.cpuprofile`), JSON.stringify(mainProfile));
+      result.mainProfile = `${label}.title.main.cpuprofile`;
+    }
     if (result.completed && process.env.GAIUS_STARTUP_WORLD === label) {
-      await page.send("Profiler.start");
+      if (cpuProfile) await page.send("Profiler.start");
       result.world = await openWorld(page, label);
-      const {profile: worldProfile} = await page.send("Profiler.stop");
-      await writeFile(resolve(output, `${label}.world.main.cpuprofile`), JSON.stringify(worldProfile));
-      result.world.mainProfile = `${label}.world.main.cpuprofile`;
+      if (cpuProfile) {
+        const {profile: worldProfile} = await page.send("Profiler.stop");
+        await writeFile(resolve(output, `${label}.world.main.cpuprofile`), JSON.stringify(worldProfile));
+        result.world.mainProfile = `${label}.world.main.cpuprofile`;
+      }
     }
     for (const [index, worker] of workerProfiles.entries()) {
-      if (!worker.started) continue;
       try {
-        const {profile} = await page.send("Profiler.stop", {}, worker.sessionId);
-        worker.profile = `${label}.worker-${index}.cpuprofile`;
-        await writeFile(resolve(output, worker.profile), JSON.stringify(profile));
+        if (worker.started) {
+          const {profile} = await page.send("Profiler.stop", {}, worker.sessionId);
+          worker.profile = `${label}.worker-${index}.cpuprofile`;
+          await writeFile(resolve(output, worker.profile), JSON.stringify(profile));
+        }
         const snapshot = await page.send("Runtime.evaluate", {
-          expression: `JSON.stringify(globalThis.GaiusWasmWorker&&GaiusWasmWorker.info() || {})`, returnByValue: true,
+          expression: `JSON.stringify({timeOrigin:performance.timeOrigin,runtime:globalThis.GaiusWasmWorker&&GaiusWasmWorker.info() || null})`, returnByValue: true,
         }, worker.sessionId).catch(() => null);
         worker.runtime = snapshot?.result?.value ? JSON.parse(snapshot.result.value) : null;
       } catch (error) { worker.stopError = String(error.message || error); }
@@ -369,11 +481,14 @@ async function browserRun(mode, iteration) {
     result.workers = workerProfiles.map(({sessionId, ...worker}) => worker);
   } catch (error) { result.completed = false; result.failure = String(error.stack || error); }
   finally {
+    clearInterval(loadWatch);
+    if (result.loadLimitExceeded) { result.completed = false; result.failure = "Machine load exceeded measurement limit"; }
     if (tracing) {
-      const complete = new Promise((done) => page?.on("Tracing.tracingComplete", done));
-      await page?.send("Tracing.end").catch(() => {});
-      await Promise.race([complete, sleep(3000)]);
+      await stopTrace().catch(error => { result.traceError = String(error.message || error); });
     }
+    result.traceSegments = traceSegments;
+    result.traceComplete = capture ? traceSegments.length > 0 && traceSegments.every(segment => segment.complete) : null;
+    result.traceEventCount = trace.length;
     result.traceCounts = {};
     for (const event of trace) if (/wasm|cache|decompress/i.test(event.name)) result.traceCounts[event.name] = (result.traceCounts[event.name] || 0) + 1;
     result.requests = requests;
@@ -395,13 +510,21 @@ async function browserRun(mode, iteration) {
       result.failure = "Navigation/title trace evidence is incomplete";
     }
     result.stderr = result.failure ? stderr : null;
+    result.machineAfter = await machineSnapshot();
     await writeFile(resolve(output, `${label}.trace.json`), JSON.stringify({traceEvents: trace}));
     await writeFile(resolve(output, `${label}.json`), JSON.stringify(result, null, 2));
+    const shutdownStarted = Date.now();
+    const exited = new Promise(done => chrome.once("exit", done));
     await browser?.send("Browser.close").catch(() => {});
     page?.close();
     browser?.close();
-    await Promise.race([new Promise((done) => chrome.once("exit", done)), sleep(3000)]);
-    if (chrome.exitCode === null) chrome.kill();
+    let exitTimer;
+    if (chrome.exitCode === null) await Promise.race([exited,
+      new Promise(done => { exitTimer = setTimeout(done, 90000); })]);
+    clearTimeout(exitTimer);
+    result.shutdown = {elapsedMs: Date.now() - shutdownStarted, forced: chrome.exitCode === null};
+    if (chrome.exitCode === null) { chrome.kill(); await Promise.race([exited, sleep(5000)]); }
+    await writeFile(resolve(output, `${label}.json`), JSON.stringify(result, null, 2));
   }
   console.log(JSON.stringify({label, completed: result.completed, titleMs: result.titleMs,
     worldMs: result.world?.elapsedMs, worldFailure: result.world?.failure, failure: result.failure}));
@@ -410,8 +533,26 @@ async function browserRun(mode, iteration) {
 
 const results = [];
 try {
-  for (const mode of modes) for (let iteration = 1; iteration <= count; iteration++) results.push(await browserRun(mode, iteration));
+  for (let iteration = 1; iteration <= count; iteration++) {
+    for (const mode of modes) {
+      if (maxLoad > 0) {
+        const snapshot = await machineSnapshot();
+        if (Number(snapshot?.load.split(" ")[0]) > maxLoad) {
+          await writeFile(resolve(output, "load-limit.json"), JSON.stringify({limit: maxLoad, snapshot}, null, 2));
+          throw new Error("Machine load exceeds measurement limit before run");
+        }
+      }
+      const result = await browserRun(mode, iteration);
+      results.push(result);
+      if (result.loadLimitExceeded) throw new Error("Machine load exceeded measurement limit during run");
+    }
+  }
   await writeFile(resolve(output, "summary.json"), JSON.stringify(results.map(({page, traceCounts, ...result}) => ({...result,
     boot: page?.boot, wasm: page?.wasm, traceCounts})), null, 2));
-} finally { await new Promise((done) => server.close(done)); }
+} finally {
+  await new Promise((done) => server.close(done));
+  if (process.env.GAIUS_STARTUP_KEEP_PROFILES !== "1") {
+    await rm(resolve(output, "profiles"), {recursive: true, force: true});
+  }
+}
 if (results.some((result) => !result.completed || result.world?.failure)) process.exitCode = 1;

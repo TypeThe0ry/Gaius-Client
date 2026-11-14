@@ -49,8 +49,12 @@ public final class BrowserTerrainBatchGlue {
 
     /** Copies the frame's section records before vanilla writes them into uniform slices. */
     public static void captureSections(List<DynamicUniforms.ChunkSectionInfo> sections) {
-        if (sections == null || !BrowserTerrainBatch.enabled()) {
+        boolean gpuIndirect = BrowserGpuIndirectTerrain.requested();
+        if (sections == null || (!BrowserTerrainBatch.enabled() && !gpuIndirect)) {
             BrowserTerrainBatch.beginSections(0);
+            if (gpuIndirect) {
+                BrowserTerrainBatch.publishGpuIndirectTerrain();
+            }
             return;
         }
         int count = sections.size();
@@ -59,6 +63,9 @@ public final class BrowserTerrainBatchGlue {
             DynamicUniforms.ChunkSectionInfo section = sections.get(index);
             BrowserTerrainBatch.addSection(
                     section.x(), section.y(), section.z(), section.visibility());
+        }
+        if (gpuIndirect) {
+            BrowserTerrainBatch.publishGpuIndirectTerrain();
         }
     }
 

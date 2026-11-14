@@ -29,6 +29,40 @@
   const UNIFORM_SLOTS = 256;
   const BLOOM_LEVELS = 4;
 
+  // Hi-Z uses a max-depth pyramid (zero-to-one depth: larger values are farther away).
+  // The first level is copied from the previous frame's depth attachment and each following
+  // level takes the maximum of its four children.  A max pyramid is conservative for rejection:
+  // a section is rejected only when its nearest depth is beyond every sampled value.
+  const HIZ_COPY = `
+@group(0) @binding(0) var<uniform> unused: vec4f;
+@group(0) @binding(1) var depthTex: texture_depth_2d;
+@vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+  let p = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
+  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
+  let d = textureLoad(depthTex, vec2i(position.xy), 0);
+  return vec4f(d, d, d, 1.0);
+}`;
+  const HIZ_DOWN = `
+@group(0) @binding(0) var<uniform> unused: vec4f;
+@group(0) @binding(1) var source: texture_2d<f32>;
+@group(0) @binding(2) var nearestSampler: sampler;
+@vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+  let p = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
+  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
+  let p = vec2i(position.xy) * 2;
+  let size = vec2i(textureDimensions(source, 0));
+  let a = textureLoad(source, clamp(p, vec2i(0), size - 1), 0).r;
+  let b = textureLoad(source, clamp(p + vec2i(1, 0), vec2i(0), size - 1), 0).r;
+  let c = textureLoad(source, clamp(p + vec2i(0, 1), vec2i(0), size - 1), 0).r;
+  let d = textureLoad(source, clamp(p + vec2i(1, 1), vec2i(0), size - 1), 0).r;
+  let m = max(max(a, b), max(c, d));
+  return vec4f(m, m, m, 1.0);
+}`;
+
   // One uniform block layout for every pass: texel/clamp of the pass's main input, the world
   // rectangle, the projection terms and three per-pass parameter vectors.
   const COMMON = `
@@ -449,6 +483,8 @@ fn stepScale(i: i32) -> f32 {
       nextSlot: 0,
       submitMark: null,
       linear: device.createSampler({minFilter: "linear", magFilter: "linear", addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge"}),
+      hizSampler: device.createSampler({minFilter: "nearest", magFilter: "nearest", addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge"}),
+      hizConfig: device.createBuffer({label: "gaius indirect Hi-Z config", size: 16, usage: 0x48}),
       modules: new Map(),
       pipelines: new Map(),
       pool: new Map(),
@@ -470,7 +506,9 @@ fn stepScale(i: i32) -> f32 {
       layouts: new WeakMap(),
       groups: new Map(),
       ids: new WeakMap(),
-      nextId: 0
+      nextId: 0,
+      hiz: null
+      ,hizProjectionKey: null
     };
     return state;
   }
@@ -563,6 +601,36 @@ fn stepScale(i: i32) -> f32 {
       res.views.set(texture, view);
     }
     return view;
+  }
+
+  function buildHiZ(res, encoder, frame, depthView) {
+    if (!depthView || !frame || frame.width < 1 || frame.height < 1) return null;
+    let w = frame.width, h = frame.height;
+    const levels = [];
+    const first = target(res, "gpuIndirectHiZ0", w, h, "rgba32float");
+    const copy = pipeline(res, "gpuIndirectHiZCopy", HIZ_COPY, "rgba32float");
+    pass(res, encoder, first, copy, params(res, {texel: [1, 1], clampUv: [1, 1], rectSize: [frame.width, frame.height], rectMax: [frame.width - 1, frame.height - 1]}), {1: depthView}, frame.rectWidth, frame.rectHeight);
+    levels.push(first);
+    while (w > 1 || h > 1) {
+      const prev = levels[levels.length - 1];
+      w = Math.max(1, Math.ceil(w / 2));
+      h = Math.max(1, Math.ceil(h / 2));
+      const next = target(res, "gpuIndirectHiZ" + levels.length, w, h, "rgba32float");
+      pass(res, encoder, next, pipeline(res, "gpuIndirectHiZDown", HIZ_DOWN, "rgba32float"),
+        params(res, {texel: [1, 1], clampUv: [1, 1], rectSize: [w, h], rectMax: [w - 1, h - 1]}),
+        {1: prev.view, 2: res.hizSampler}, w, h);
+      levels.push(next);
+    }
+    // Keep the pooled texture alive for the next frame. The caller may publish this object
+    // after the terrain pass; no render pass samples the current frame's depth pyramid.
+    const coarse = levels[levels.length - 1];
+    const projectionKey = frame.projection ? frame.projection.join(",") : "";
+    const cameraCut = res.hizProjectionKey !== null && res.hizProjectionKey !== projectionKey;
+    res.hizProjectionKey = projectionKey;
+    res.hiz = {view: coarse.view, sampler: res.hizSampler, config: res.hizConfig,
+      mipCount: levels.length, width: coarse.width, height: coarse.height, margin: 0.001,
+      generation: (res.hiz && res.hiz.generation ? res.hiz.generation + 1 : 1), cameraCut: cameraCut};
+    return res.hiz;
   }
 
   // Writes one uniform block (Params, 112 bytes; 128 bytes are written) into the next ring slot;
@@ -697,10 +765,27 @@ fn stepScale(i: i32) -> f32 {
     stats.passes++;
   }
 
+  // Parameter objects are consumed synchronously by params(). Keep one scratch block and
+  // typed vectors instead of allocating five arrays plus an object for every post pass.
+  const rectScratch = {texel: new Float32Array(2), clampUv: new Float32Array(2),
+    rectSize: new Float32Array(2), rectMax: new Float32Array(2), projection: null,
+    a: null, b: null, c: null};
+  const vecA = new Float32Array(4), vecB = new Float32Array(4), vecC = new Float32Array(4);
+  function vec4(target, x, y, z, w) { target[0] = x; target[1] = y; target[2] = z; target[3] = w; return target; }
   function rectParams(width, height, rectW, rectH, frame) {
-    return {texel: [1 / width, 1 / height], clampUv: [(rectW - 0.5) / width, (rectH - 0.5) / height],
-      rectSize: [frame.rectWidth, frame.rectHeight], rectMax: [frame.rectWidth - 1, frame.rectHeight - 1],
-      projection: frame.projection};
+    const p = rectScratch;
+    p.texel[0] = 1 / width; p.texel[1] = 1 / height;
+    p.clampUv[0] = (rectW - 0.5) / width; p.clampUv[1] = (rectH - 0.5) / height;
+    p.rectSize[0] = frame.rectWidth; p.rectSize[1] = frame.rectHeight;
+    p.rectMax[0] = frame.rectWidth - 1; p.rectMax[1] = frame.rectHeight - 1;
+    p.projection = frame.projection; p.a = p.b = p.c = null;
+    return p;
+  }
+  function rectParamsWith(res, base, a, b, c) {
+    base.a = a || null; base.b = b || null; base.c = c || null;
+    const offset = params(res, base);
+    base.a = base.b = base.c = null;
+    return offset;
   }
 
   function runSsao(res, encoder, frame, settings, depthView) {
@@ -713,14 +798,14 @@ fn stepScale(i: i32) -> f32 {
     const base = rectParams(frame.width, frame.height, frame.rectWidth, frame.rectHeight, frame);
     const zeroToOne = frame.zeroToOne ? 1 : 0;
     pass(res, encoder, raw, pipeline(res, "ssao", SSAO, "rgba8unorm"),
-      params(res, Object.assign({}, base, {a: [settings.ssaoRadius, settings.ssaoIntensity, 0, 0], c: [0, 0, 0, zeroToOne]})),
+      rectParamsWith(res, base, vec4(vecA, settings.ssaoRadius, settings.ssaoIntensity, 0, 0), null, vec4(vecC, 0, 0, 0, zeroToOne)),
       {9: depthView}, rectW, rectH);
     const blur = pipeline(res, "aoBlur", AO_BLUR, "rgba8unorm");
     pass(res, encoder, blurred, blur,
-      params(res, Object.assign({}, base, {a: [1, 0, rectW - 1, rectH - 1], c: [0, 0, 0, zeroToOne]})),
+      rectParamsWith(res, base, vec4(vecA, 1, 0, rectW - 1, rectH - 1), null, vec4(vecC, 0, 0, 0, zeroToOne)),
       {1: raw.view, 9: depthView}, rectW, rectH);
     pass(res, encoder, raw, blur,
-      params(res, Object.assign({}, base, {a: [0, 1, rectW - 1, rectH - 1], c: [0, 0, 0, zeroToOne]})),
+      rectParamsWith(res, base, vec4(vecA, 0, 1, rectW - 1, rectH - 1), null, vec4(vecC, 0, 0, 0, zeroToOne)),
       {1: blurred.view, 9: depthView}, rectW, rectH);
     return {view: raw.view, width: aoW, height: aoH, rectWidth: rectW, rectHeight: rectH};
   }
@@ -743,8 +828,8 @@ fn stepScale(i: i32) -> f32 {
     }
     const linear = res.linear;
     pass(res, encoder, levels[0].down, pipeline(res, "bloomPrefilter", BLOOM_PREFILTER, format),
-      params(res, Object.assign(rectParams(frame.width, frame.height, frame.rectWidth, frame.rectHeight, frame),
-        {a: [Math.pow(settings.bloomThreshold, 2.2), 0, 0, 0]})),
+        rectParamsWith(res, rectParams(frame.width, frame.height, frame.rectWidth, frame.rectHeight, frame),
+          vec4(vecA, Math.pow(settings.bloomThreshold, 2.2), 0, 0, 0), null, null),
       {1: colorView, 2: linear}, levels[0].rectWidth, levels[0].rectHeight);
     const down = pipeline(res, "bloomDown", BLOOM_DOWN, format);
     for (let i = 1; i < BLOOM_LEVELS; i++) {
@@ -759,8 +844,8 @@ fn stepScale(i: i32) -> f32 {
     for (let i = BLOOM_LEVELS - 2; i >= 0; i--) {
       const cur = levels[i];
       pass(res, encoder, cur.up, up,
-        params(res, Object.assign(rectParams(lowLevel.width, lowLevel.height, lowLevel.rectWidth, lowLevel.rectHeight, frame),
-          {a: [1 / cur.width, 1 / cur.height, (cur.rectWidth - 0.5) / cur.width, (cur.rectHeight - 0.5) / cur.height]})),
+        rectParamsWith(res, rectParams(lowLevel.width, lowLevel.height, lowLevel.rectWidth, lowLevel.rectHeight, frame),
+          vec4(vecA, 1 / cur.width, 1 / cur.height, (cur.rectWidth - 0.5) / cur.width, (cur.rectHeight - 0.5) / cur.height), null, null),
         {1: low.view, 2: linear, 3: cur.down.view}, cur.rectWidth, cur.rectHeight);
       low = cur.up;
       lowLevel = cur;
@@ -819,12 +904,14 @@ fn stepScale(i: i32) -> f32 {
       const colorView = viewOf(res, frame.color);
       const depthView = depthOk ? depthViewOf(res, frame.depth) : null;
       const finalTarget = {view: colorView, width: frame.width, height: frame.height};
-      const base = rectParams(frame.width, frame.height, frame.rectWidth, frame.rectHeight, frame);
       const zeroToOne = frame.zeroToOne ? 1 : 0;
       let ao = null;
       let bloom = null;
       if (useAo) ao = runSsao(res, encoder, frame, settings, depthView);
       if (useBloom) bloom = runBloom(res, encoder, frame, settings, colorView);
+      // The chains reuse rectScratch for smaller targets. Restore full-frame
+      // coordinates only after they finish, before encoding composite and output.
+      const base = rectParams(frame.width, frame.height, frame.rectWidth, frame.rectHeight, frame);
       let current = null; // a pooled view holding the result so far; null: frame.color itself
       if (useComposite) {
         const composite = target(res, "composite", frame.width, frame.height, colorFormat);
@@ -837,9 +924,11 @@ fn stepScale(i: i32) -> f32 {
         if (useSsr) entries[9] = depthView;
         const p = pipeline(res, useSsr ? "compositeSsr" : "composite", compositeSource(useSsr), colorFormat);
         pass(res, encoder, composite, p,
-          params(res, Object.assign({}, base, {a: [ao ? 1 : 0, bloom ? 1 : 0, useTonemap ? 1 : 0, useSsr ? 1 : 0],
-            b: ao ? [0.5 / ao.width, 0.5 / ao.height, (ao.rectWidth - 0.5) / ao.width, (ao.rectHeight - 0.5) / ao.height] : [0, 0, 0, 0],
-            c: [0.85, settings.bloomIntensity, 0, zeroToOne]})),
+          rectParamsWith(res, base,
+            vec4(vecA, ao ? 1 : 0, bloom ? 1 : 0, useTonemap ? 1 : 0, useSsr ? 1 : 0),
+            vec4(vecB, ao ? 0.5 / ao.width : 0, ao ? 0.5 / ao.height : 0,
+              ao ? (ao.rectWidth - 0.5) / ao.width : 0, ao ? (ao.rectHeight - 0.5) / ao.height : 0),
+            vec4(vecC, 0.85, settings.bloomIntensity, 0, zeroToOne)),
           entries, frame.rectWidth, frame.rectHeight);
         current = composite.view;
       }
@@ -887,6 +976,24 @@ fn stepScale(i: i32) -> f32 {
     }
   }
 
+  function updateHiZ(frame) {
+    const gpu = root.GaiusWebGpu;
+    if (!gpu || !gpu.device || !frame || !frame.depth) return false;
+    const encoder = typeof gpu.externalEncoder === "function" ? gpu.externalEncoder() : null;
+    if (!encoder) return false;
+    try {
+      const res = resources(gpu.device);
+      if (res.encoder !== encoder) { flushParams(res); res.encoder = encoder; }
+      buildHiZ(res, encoder, frame, depthViewOf(res, frame.depth));
+      endCompute(res);
+      flushParams(res);
+      return !!res.hiz;
+    } catch (error) {
+      stats.lastError = String(error && error.message ? error.message : error);
+      return false;
+    }
+  }
+
   function dispose() {
     if (!state) return false;
     const old = state;
@@ -910,6 +1017,8 @@ fn stepScale(i: i32) -> f32 {
 
   Q.webgpuPost = Object.freeze({
     run: run,
+    updateHiZ: updateHiZ,
+    previousHiZ: function () { return state && state.hiz ? state.hiz : null; },
     anyStage: anyStage,
     dispose: dispose,
     stats: stats,

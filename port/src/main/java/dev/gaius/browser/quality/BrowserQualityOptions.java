@@ -7,13 +7,6 @@ import org.teavm.jso.JSBody;
  * Option-level hooks of the graphics quality tiers.
  *
  * <ul>
- *   <li>{@link #replayGraphicsPresetAtStartup}: vanilla {@code Minecraft.<init>} re-applies the
- *       saved graphics preset on every start, which overwrote the per-tier first-launch options
- *       that {@code BrowserFilePersistence} seeds (and any option saved under a named preset).
- *       {@code GraphicsPresetStartupPatcher} routes that call through
- *       {@code Options.gaius$applyStartupGraphicsPreset}, which only replays the preset when this
- *       returns true: with {@code ?gaiusPresetReplay=1} (the vanilla behaviour). Choosing a preset
- *       in Video Settings still applies it as before.</li>
  *   <li>{@link #filterQualityOptions}: 26.3 Video Settings lists the Improved Transparency
  *       option only when {@link BrowserQualityCaps#improvedTransparencyAllowed()} says it can
  *       run, so the menu never offers a switch that does nothing.</li>
@@ -47,12 +40,6 @@ public final class BrowserQualityOptions {
         return debugQuality.isEmpty() ? base : base + ", " + debugQuality;
     }
 
-    public static boolean replayGraphicsPresetAtStartup() {
-        boolean replay = queryPresetReplay();
-        reportPresetStartup(replay ? "replayed" : "kept-saved-options");
-        return replay;
-    }
-
     /**
      * Returns {@code options} without {@code improvedTransparency} unless the runtime allows
      * order-independent transparency. The result keeps the runtime array type of
@@ -78,22 +65,6 @@ public final class BrowserQualityOptions {
         return result;
     }
 
-    @JSBody(script = """
-            try {
-              var quality = globalThis.GaiusQuality;
-              if (quality && quality.runtime) return !!quality.runtime.presetReplay();
-            } catch (e) {
-              // Fall back to the URL parameter below.
-            }
-            try {
-              var search = globalThis.location ? String(globalThis.location.search || '') : '';
-              return new URLSearchParams(search).get('gaiusPresetReplay') === '1';
-            } catch (e2) {
-              return false;
-            }
-            """)
-    private static native boolean queryPresetReplay();
-
     /** "Gaius quality high (auto)", "... (override)", "... (player settings)"; empty if unknown. */
     @JSBody(script = """
             try {
@@ -111,15 +82,4 @@ public final class BrowserQualityOptions {
             """)
     private static native String queryDebugQuality();
 
-    @JSBody(params = "detail", script = """
-            try {
-              var counters = globalThis.__gaiusMinecraftCounters
-                  || (globalThis.__gaiusMinecraftCounters = {});
-              var key = 'quality:graphics-preset-startup:' + detail;
-              counters[key] = (counters[key] || 0) + 1;
-            } catch (e) {
-              // Telemetry only.
-            }
-            """)
-    private static native void reportPresetStartup(String detail);
 }

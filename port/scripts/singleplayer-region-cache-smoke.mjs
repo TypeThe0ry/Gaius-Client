@@ -184,7 +184,7 @@ function createIndexedDb(records) {
         return request;
       }
       transaction.objectStore = () => store;
-      setTimeout(() => transaction.oncomplete?.(), 0);
+      setTimeout(() => transaction.oncomplete?.(), Number(records.commitDelayMillis) || 0);
       return transaction;
     },
   };
@@ -290,6 +290,8 @@ function createRuntime({opfsFiles, idbRecords, budgetBytes = 64 * 1024, configur
     ...(opfsLockProbeMillis ? {__gaiusOpfsLockProbeMillis: opfsLockProbeMillis} : {}),
     ...(recoveryCrashStep ? {__gaiusRecoveryCrashStep: recoveryCrashStep} : {}),
     __gaiusStartIntegratedServerPump() {},
+    TeaVM: {},
+    GaiusJspi: {},
     ...extraGlobals,
   };
   if (opfsFiles) {
@@ -308,6 +310,12 @@ function createRuntime({opfsFiles, idbRecords, budgetBytes = 64 * 1024, configur
   context.close = () => events.push({type: "harness-close"});
   context.importScripts = () => {};
   context.main = () => events.push({type: "harness-main"});
+  context.GaiusWasmWorker = {
+    async compile() {},
+    async instantiate() {},
+    async startMain() { context.main(); },
+    info() { return {phase: "test"}; },
+  };
   let runtimeStopped = false;
   context.stopIntegratedServer = () => { runtimeStopped = true; };
   context.isIntegratedServerStopped = () => runtimeStopped;
@@ -334,7 +342,9 @@ function startRuntime(runtime, worldId = "region-cache-world", storageConfig = D
       storageOpfsDirectory: storageConfig.storageOpfsDirectory,
       renderDistance: 6,
       simulationDistance: 4,
-      serverScriptUrl: "https://client.example/singleplayer-server.js",
+      serverRuntime: "wasm",
+      serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+      wasmRuntimeScripts: [],
       port,
     },
     ports: [port],
@@ -1429,6 +1439,25 @@ assert.deepEqual(parseMca(deadOpfsSuccessor.context.__gaiusPersistentFiles[deadO
   "the successor lost the dead session's flushed OPFS region");
 deadOpfsSuccessor.context.onmessage({data: {type: "stop"}, ports: []});
 await waitForEvent(deadOpfsSuccessor.events, "stopped", 3000);
+
+const linearPath = "/gaius/saves/read-after-write-world/options.txt";
+const linearRecords = new Map([[linearPath, {path: linearPath, value: "initial"}]]);
+const linear = createRuntime({opfsFiles: null, idbRecords: linearRecords});
+await startRuntime(linear, "read-after-write-world");
+await waitForEvent(linear.events, "runtime-ready");
+assert.equal(linear.context.__gaiusPersistentFiles[linearPath], "initial");
+linearRecords.commitDelayMillis = 40;
+assert.equal(linear.context.__gaiusFsPut(linearPath, "first write"), true);
+const firstFlush = linear.context.__gaiusFsFlush();
+assert.equal(linear.context.__gaiusFsPut(linearPath, "latest write"), true);
+assert.equal(linear.context.__gaiusPersistentFiles[linearPath], "latest write",
+  "a same-path read during an earlier IndexedDB flush returned stale file data");
+await firstFlush;
+assert.equal(linear.context.__gaiusPersistentFiles[linearPath], "latest write");
+assert.equal(linearRecords.get(linearPath).value, "latest write");
+linear.context.onmessage({data: {type: "stop"}, ports: []});
+await waitForEvent(linear.events, "stopped", 3000);
+console.log("ok same-path read-after-write during delayed IndexedDB flush");
 
 console.log(JSON.stringify({
   ok: true,

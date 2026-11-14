@@ -145,6 +145,14 @@ public final class TeaVMClasslibPatcher {
                         "(Lorg/teavm/classlib/java/util/regex/TPattern;)"
                                 + "Ljava/util/function/Predicate;")
         });
+        patches.put("org/teavm/classlib/java/util/regex/TMatcher", new MethodSpec[] {
+                instanceDelegate("replaceAll", "(Ljava/util/function/Function;)Ljava/lang/String;",
+                        "org/teavm/classlib/java/util/regex/TMatcherModernSupport", "replaceAll",
+                        "(Lorg/teavm/classlib/java/util/regex/TMatcher;Ljava/util/function/Function;)Ljava/lang/String;"),
+                instanceDelegate("results", "()Ljava/util/stream/Stream;",
+                        "org/teavm/classlib/java/util/regex/TMatcherModernSupport", "results",
+                        "(Lorg/teavm/classlib/java/util/regex/TMatcher;)Ljava/util/stream/Stream;")
+        });
         patches.put("org/teavm/classlib/java/util/TLocale", new MethodSpec[] {
                 staticDelegate("forLanguageTag",
                         "(Ljava/lang/String;)Lorg/teavm/classlib/java/util/TLocale;",
@@ -342,10 +350,102 @@ public final class TeaVMClasslibPatcher {
         patchDefaultFileSystemProviderStreams(jar, root);
         patchZipFileRawInflaterPadding(jar, root);
         patchFormatterPercentArgument(jar, root);
+        patchMatcherReplacementGroups(jar, root);
         patchTemplateCollectionLookups(jar, root);
+        patchTemplateMapEntryArray(root);
+        patchTemplateListHashCode(jar, root);
         patchUnmodifiableViewLookups(jar, root);
+        patchArrayDequeIteratorRemove(jar, root);
         if (BuildTarget.wasmGc()) {
             patchDateToStringWasmGC(root);
+            patchSystemNanoTime(root);
+        }
+    }
+
+    /**
+     * {@code System.nanoTime()} of the WebAssembly GC build reads the clock through
+     * {@code Performance.now()}, which TeaVM compiles to {@code global("performance")} (a C++
+     * getter of the browser) and a JavaScript method call: three crossings between WebAssembly
+     * and JavaScript and one trip through a browser accessor for every reading. The server
+     * Worker makes tens of thousands of readings per second while it generates terrain. The
+     * method now returns {@code HostClock.nanoTime()}, which keeps the {@code performance}
+     * object (the same value, {@code (long) (performance.now() * 1e6)}). The old body is
+     * checked to be the one that call replaces; the JavaScript build keeps TeaVM's own.
+     */
+    private static void patchSystemNanoTime(Path root) throws IOException {
+        String className = "org/teavm/classlib/java/lang/TSystem";
+        ClassNode node = readClass(root.resolve(className + ".class"));
+        MethodNode method = node.methods.stream()
+                .filter(candidate -> candidate.name.equals("nanoTime") && candidate.desc.equals("()J"))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(className + ".nanoTime not found"));
+        boolean readsPerformance = false;
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn instanceof MethodInsnNode call
+                    && call.getOpcode() == Opcodes.INVOKESTATIC
+                    && call.owner.equals("org/teavm/jso/browser/Performance")
+                    && call.name.equals("now") && call.desc.equals("()D")) {
+                readsPerformance = true;
+            }
+        }
+        if (!readsPerformance) {
+            throw new IllegalStateException(className + ".nanoTime no longer reads Performance.now()");
+        }
+        method.instructions.clear();
+        method.tryCatchBlocks.clear();
+        method.localVariables = null;
+        method.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "dev/gaius/browser/HostClock", "nanoTime", "()J", false));
+        method.instructions.add(new InsnNode(Opcodes.LRETURN));
+        method.maxStack = 2;
+        method.maxLocals = 0;
+        writeClass(root, className, node);
+    }
+
+    /** Replacement references to an unmatched group expand to the empty string. */
+    private static void patchMatcherReplacementGroups(String jarPath, Path root) throws IOException {
+        String matcher = "org/teavm/classlib/java/util/regex/TMatcher";
+        for (String className : new String[] {matcher, matcher + "$1"}) {
+            Path patched = root.resolve(className + ".class");
+            ClassNode node = Files.isRegularFile(patched)
+                    ? readClass(patched)
+                    : readClass(jarPath, className);
+            String methodName = className.equals(matcher) ? "processReplacement" : "toString";
+            int replaced = 0;
+            for (MethodNode method : node.methods) {
+                if (!method.name.equals(methodName)) continue;
+                if (className.equals(matcher) && method.desc.equals("(Ljava/lang/String;)Ljava/lang/String;")) {
+                    method.instructions.clear();
+                    method.tryCatchBlocks.clear();
+                    method.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                    method.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                    method.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                            matcher + "ModernSupport", "expandReplacement",
+                            "(L" + matcher + ";Ljava/lang/String;)Ljava/lang/String;", false));
+                    method.instructions.add(new InsnNode(Opcodes.ARETURN));
+                    method.maxStack = 2;
+                    method.maxLocals = 2;
+                    replaced++;
+                    continue;
+                }
+                for (AbstractInsnNode instruction : method.instructions.toArray()) {
+                    if (instruction instanceof MethodInsnNode call
+                            && call.getOpcode() == Opcodes.INVOKEVIRTUAL
+                            && call.owner.equals(matcher) && call.name.equals("group")
+                            && call.desc.equals("(I)Ljava/lang/String;")) {
+                        call.setOpcode(Opcodes.INVOKESTATIC);
+                        call.owner = matcher + "ModernSupport";
+                        call.name = "replacementGroup";
+                        call.desc = "(L" + matcher + ";I)Ljava/lang/String;";
+                        replaced++;
+                    }
+                }
+            }
+            if (replaced != 1) {
+                throw new IllegalStateException(className + "." + methodName
+                        + " replacement group lookup changed: " + replaced);
+            }
+            writeClass(root, className, node);
         }
     }
 
@@ -1095,6 +1195,60 @@ public final class TeaVMClasslibPatcher {
         method.maxLocals = 2;
     }
 
+    private static final String ARRAY_DEQUE = "org/teavm/classlib/java/util/TArrayDeque";
+
+    /**
+     * TeaVM's {@code ArrayDeque.iterator().remove()} resumes at the wrong slot after it removed an
+     * element of the back half. {@code removeAt} then moves the elements behind the removed one
+     * one slot to the front and answers {@code true}; the iterator advanced its position by one
+     * more ({@code modInc}) instead of staying at the slot that the next element moved into. The
+     * element after the removed one is skipped and the scan reads {@code null} from the cleared
+     * slot behind the new tail, at the end or earlier: 285 of 945 single removals of a scan in
+     * {@code ArrayDequeIteratorRemoveCheck}. Everything that removes through the iterator is
+     * affected: {@code removeIf}, {@code removeAll}, {@code retainAll} and a loop that calls
+     * {@code Iterator.remove()} and goes on (vanilla's {@code ParticleGroup.tickParticles} over its
+     * ArrayDeque of particles, {@code CrossFrameResourcePool.endFrame}, {@code ParticleEngine.tick}),
+     * on {@code ConcurrentLinkedQueue}, {@code ConcurrentLinkedDeque} and {@code LinkedBlockingQueue}
+     * too (Gaius' wrappers are ArrayDeques). The patched iterator continues at {@code lastIndex}
+     * after a removal that moved the tail; the front-half case ({@code removeAt} answers
+     * {@code false}) was right and is unchanged. The old body is checked to be TeaVM's.
+     */
+    static void patchArrayDequeIteratorRemove(String jarPath, Path root) throws IOException {
+        String className = ARRAY_DEQUE + "$1";
+        ClassNode node = readClass(jarPath, className);
+        MethodNode method = node.methods.stream()
+                .filter(candidate -> candidate.name.equals("remove") && candidate.desc.equals("()V"))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("TArrayDeque iterator remove() was not found"));
+        MethodInsnNode advance = null;
+        for (AbstractInsnNode instruction : method.instructions) {
+            if (instruction instanceof MethodInsnNode call
+                    && call.getOpcode() == Opcodes.INVOKESTATIC
+                    && call.owner.equals(ARRAY_DEQUE)
+                    && call.name.equals("modInc")
+                    && call.desc.equals("(II)I")) {
+                if (advance != null) {
+                    throw new IllegalStateException("TArrayDeque iterator remove() has several modInc calls");
+                }
+                advance = call;
+            }
+        }
+        AbstractInsnNode store = advance == null ? null : nextOpcodeInsn(advance);
+        if (store == null || store.getOpcode() != Opcodes.PUTFIELD
+                || !((FieldInsnNode) store).owner.equals(className)
+                || !((FieldInsnNode) store).name.equals("index")
+                || node.fields.stream().noneMatch(field -> field.name.equals("lastIndex") && field.desc.equals("I"))) {
+            throw new IllegalStateException("TArrayDeque iterator remove() is not TeaVM's: index = modInc(index, length) expected");
+        }
+        InsnList stay = new InsnList();
+        stay.add(new InsnNode(Opcodes.POP2));
+        stay.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        stay.add(new FieldInsnNode(Opcodes.GETFIELD, className, "lastIndex", "I"));
+        method.instructions.insert(advance, stay);
+        method.instructions.remove(advance);
+        writeClass(root, className, node);
+    }
+
     private static final String COLLECTIONS = "org/teavm/classlib/java/util/TCollections";
     private static final String T_MAP = "org/teavm/classlib/java/util/TMap";
     private static final String T_SET = "org/teavm/classlib/java/util/TSet";
@@ -1223,6 +1377,136 @@ public final class TeaVMClasslibPatcher {
                 "mapGet", "(" + MAP_ENTRIES + "[ILjava/lang/Object;)Ljava/lang/Object;",
                 Opcodes.ARETURN);
         writeClassWithFrames(root, TEMPLATE_MAP, map);
+    }
+
+    /**
+     * The member calls of TeaVM 0.15's {@code NEtriesMap.toEntryArray}, in order: the shape the
+     * replacement reproduces ({@code TCollectionsModernSupport.mapEntryArray} keeps a transcript
+     * of this body as its general path).
+     */
+    private static final String[] TEMPLATE_MAP_ENTRY_ARRAY_CALLS = {
+        "java/util/Arrays.fill([Ljava/lang/Object;Ljava/lang/Object;)V",
+        "org/teavm/classlib/java/util/TMap$Entry.getKey()Ljava/lang/Object;",
+        "java/util/Objects.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object;",
+        "org/teavm/classlib/java/util/TMap$Entry.getValue()Ljava/lang/Object;",
+        "java/util/Objects.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object;",
+        "org/teavm/classlib/java/util/TMap$Entry.getKey()Ljava/lang/Object;",
+        "java/lang/Object.hashCode()I",
+        "java/lang/Math.abs(I)I",
+        "org/teavm/classlib/java/util/TMap$Entry.getKey()Ljava/lang/Object;",
+        "org/teavm/classlib/java/util/TMap$Entry.getKey()Ljava/lang/Object;",
+        "java/lang/Object.equals(Ljava/lang/Object;)Z",
+        "java/lang/IllegalArgumentException.<init>()V",
+        "org/teavm/classlib/java/util/TMap$Entry.getKey()Ljava/lang/Object;",
+        "org/teavm/classlib/java/util/TMap$Entry.getKey()Ljava/lang/Object;",
+        "java/lang/Object.equals(Ljava/lang/Object;)Z",
+        "java/lang/IllegalArgumentException.<init>()V",
+        "org/teavm/classlib/java/util/TMap$Entry.getKey()Ljava/lang/Object;",
+        "org/teavm/classlib/java/util/TMap$Entry.getValue()Ljava/lang/Object;",
+        "org/teavm/classlib/java/util/TTemplateCollections$ImmutableEntry.<init>(Ljava/lang/Object;Ljava/lang/Object;)V",
+    };
+
+    /**
+     * Map.of / Map.ofEntries / Map.copyOf place their n entries in an n-slot array by linear
+     * probing from |hash| % n, wrapping once, comparing the key with every occupied slot it
+     * passes (NEtriesMap.toEntryArray). At 100% load the probe runs grow long: Language's
+     * Map.copyOf of ~7k translations spends tens of milliseconds there. toEntryArray now calls
+     * TCollectionsModernSupport.mapEntryArray, which puts every entry in the same slot (the first
+     * free slot from |hash| % n, found with a next-free table) when the keys are boxed primitives
+     * or strings in known entry classes, and otherwise runs a transcript of TeaVM's body. The
+     * old body is checked to be the one the transcript copies.
+     */
+    private static void patchTemplateMapEntryArray(Path root) throws IOException {
+        Path file = root.resolve(TEMPLATE_MAP + ".class");
+        ClassNode map = readClass(file);
+        String desc = "(" + MAP_ENTRIES + ")" + MAP_ENTRIES;
+        MethodNode method = map.methods.stream()
+                .filter(candidate -> candidate.name.equals("toEntryArray") && candidate.desc.equals(desc))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(TEMPLATE_MAP + ".toEntryArray not found"));
+        java.util.List<String> calls = new java.util.ArrayList<>();
+        int remainders = 0;
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn instanceof MethodInsnNode call) {
+                calls.add(call.owner + "." + call.name + call.desc);
+            } else if (insn.getOpcode() == Opcodes.IREM) {
+                remainders++;
+            }
+        }
+        if (!calls.equals(java.util.List.of(TEMPLATE_MAP_ENTRY_ARRAY_CALLS)) || remainders != 1
+                || !method.tryCatchBlocks.isEmpty()) {
+            throw new IllegalStateException(TEMPLATE_MAP + ".toEntryArray is not TeaVM 0.15's probing body: "
+                    + calls);
+        }
+        method.instructions.clear();
+        method.tryCatchBlocks.clear();
+        method.localVariables = null;
+        method.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        method.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC, COLLECTIONS_SUPPORT,
+                "mapEntryArray", desc, false));
+        method.instructions.add(new InsnNode(Opcodes.ARETURN));
+        method.maxStack = 1;
+        method.maxLocals = 2;
+        writeClass(root, TEMPLATE_MAP, map);
+    }
+
+    private static final String TEMPLATE_LIST =
+            "org/teavm/classlib/java/util/TTemplateCollections$ImmutableArrayList";
+
+    /**
+     * List.of / List.copyOf (ImmutableArrayList) inherit TAbstractList.hashCode, which walks a
+     * fresh TAbstractList iterator (size, modCount check and a virtual get per element) to fold
+     * {@code 31 * h + Objects.hashCode(e)}. StateDefinition hashes one such list per block state.
+     * ImmutableArrayList gets its own hashCode that folds its array the same way: the same
+     * elements in the same order, the same Objects.hashCode calls (its iterator reads get(i), which
+     * is list[i], and the list never changes). Refused when the class or a subclass in the class
+     * library already declares hashCode.
+     */
+    private static void patchTemplateListHashCode(String jarPath, Path root) throws IOException {
+        Path file = root.resolve(TEMPLATE_LIST + ".class");
+        ClassNode list = Files.isRegularFile(file) ? readClass(file) : readClass(jarPath, TEMPLATE_LIST);
+        if (list.methods.stream().anyMatch(method -> method.name.equals("hashCode") && method.desc.equals("()I"))) {
+            throw new IllegalStateException(TEMPLATE_LIST + " already declares hashCode");
+        }
+        if (list.fields.stream().noneMatch(field -> field.name.equals("list") && field.desc.equals("[Ljava/lang/Object;"))
+                || !list.superName.equals("org/teavm/classlib/java/util/TTemplateCollections$AbstractImmutableList")) {
+            throw new IllegalStateException(TEMPLATE_LIST + " is not TeaVM 0.15's array list");
+        }
+        for (String inherited : new String[] {
+                "org/teavm/classlib/java/util/TTemplateCollections$AbstractImmutableList",
+                "org/teavm/classlib/java/util/TAbstractList"}) {
+            ClassNode parent = readClass(jarPath, inherited);
+            boolean declares = parent.methods.stream()
+                    .anyMatch(method -> method.name.equals("hashCode") && method.desc.equals("()I"));
+            if (declares != inherited.endsWith("TAbstractList")) {
+                throw new IllegalStateException(inherited + " hashCode is not where TeaVM 0.15 has it");
+            }
+        }
+        try (ZipFile jar = new ZipFile(jarPath)) {
+            var entries = jar.entries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                if (!entry.getName().endsWith(".class")) {
+                    continue;
+                }
+                try (var stream = jar.getInputStream(entry)) {
+                    if (new ClassReader(stream.readAllBytes()).getSuperName() instanceof String parent
+                            && parent.equals(TEMPLATE_LIST)) {
+                        throw new IllegalStateException(entry.getName() + " extends " + TEMPLATE_LIST);
+                    }
+                }
+            }
+        }
+        MethodNode hashCode = new MethodNode(Opcodes.ACC_PUBLIC, "hashCode", "()I", null, null);
+        hashCode.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        hashCode.instructions.add(new FieldInsnNode(Opcodes.GETFIELD, TEMPLATE_LIST, "list", "[Ljava/lang/Object;"));
+        hashCode.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC, COLLECTIONS_SUPPORT,
+                "arrayListHashCode", "([Ljava/lang/Object;)I", false));
+        hashCode.instructions.add(new InsnNode(Opcodes.IRETURN));
+        hashCode.maxStack = 1;
+        hashCode.maxLocals = 1;
+        list.methods.add(hashCode);
+        writeClass(root, TEMPLATE_LIST, list);
     }
 
     private static void addTemplateIndexField(ClassNode node) {
@@ -1431,6 +1715,12 @@ public final class TeaVMClasslibPatcher {
         }
         ClassNode node = new ClassNode();
         new ClassReader(input).accept(node, 0);
+        return node;
+    }
+
+    private static ClassNode readClass(Path classFile) throws IOException {
+        ClassNode node = new ClassNode();
+        new ClassReader(Files.readAllBytes(classFile)).accept(node, 0);
         return node;
     }
 

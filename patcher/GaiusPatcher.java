@@ -59,11 +59,11 @@ import java.util.zip.ZipFile;
 public final class GaiusPatcher {
     /**
      * The patcher is versioned with the Gaius release it reproduces: patcher
-     * 0.4.0-pre.5 builds the same client as Gaius release v0.4.0-pre.5, and
+     * 0.4.0-pre.6 builds the same client as Gaius release v0.4.0-pre.6, and
      * that client reports GAIUS_VERSION (the release's VERSION file) in its
      * About screen, exactly like the official build.
      */
-    static final String GAIUS_RELEASE = "0.4.0-pre.5";
+    static final String GAIUS_RELEASE = "0.4.0-pre.6";
     static final String GAIUS_VERSION = "0.4.0";
     static final String TOOL_VERSION = GAIUS_RELEASE;
 

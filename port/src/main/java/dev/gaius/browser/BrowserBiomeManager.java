@@ -2,14 +2,31 @@ package dev.gaius.browser;
 
 import org.teavm.jso.JSBody;
 
-/** Exact browser implementation of biome zoom's nearest-corner calculation. */
+/**
+ * Exact browser implementation of biome zoom's nearest-corner calculation.
+ *
+ * <p>The WebAssembly GC build runs {@link BrowserBiomeNearestCorner} (Java {@code long}, which
+ * is a native {@code i64} there); the JavaScript build keeps the BigInt implementation below,
+ * because its {@code long} is emulated. {@link HostLoop#isWasmGc} is a platform marker that
+ * TeaVM folds to a constant before dependency analysis, so each build compiles only its own
+ * implementation and the JavaScript one costs the WebAssembly build nothing, no
+ * WebAssembly-to-JavaScript call included.
+ */
 public final class BrowserBiomeManager {
     private BrowserBiomeManager() {
     }
 
-    // BiomeManager.getBiome runs this for every biome lookup (~190k calls/s while the Worker
-    // generates chunks), and each call derives the same per-quart "fiddle" offsets eight
-    // times with BigInt LCG chains. The offsets depend only on the seed and the quart corner,
+    /** Index of the nearest of the eight quart corners around {@code (shifted + 2)}. */
+    public static int nearestCorner(long seed, int shiftedX, int shiftedY, int shiftedZ) {
+        if (HostLoop.isWasmGc()) {
+            return BrowserBiomeNearestCorner.nearestCorner(seed, shiftedX, shiftedY, shiftedZ);
+        }
+        return nearestCornerBigInt(seed, shiftedX, shiftedY, shiftedZ);
+    }
+
+    // JavaScript build only. BiomeManager.getBiome runs this for every biome lookup (~190k
+    // calls/s while the Worker generates chunks), and each call derives the same per-quart
+    // "fiddle" offsets eight times with BigInt LCG chains. The offsets depend only on the seed and the quart corner,
     // and neighbouring lookups share corners, so they are kept in a direct-mapped cache.
     @JSBody(params = {"seed", "shiftedX", "shiftedY", "shiftedZ"}, script = """
             const nearestCorner = globalThis.__gaiusBiomeNearestCorner
@@ -91,5 +108,6 @@ public final class BrowserBiomeManager {
               })());
             return nearestCorner(seed, shiftedX, shiftedY, shiftedZ) | 0;
             """)
-    public static native int nearestCorner(long seed, int shiftedX, int shiftedY, int shiftedZ);
+    private static native int nearestCornerBigInt(
+            long seed, int shiftedX, int shiftedY, int shiftedZ);
 }

@@ -9,6 +9,7 @@
 //   const pool = await GaiusKernelPool.create({moduleBytes: bytes, workerSource, name: "light"});
 //   const job = GaiusLightJob.lightColumn({
 //     ops: GaiusLightJob.OPS.INITIAL, sky: true, block: true, emitOutgoing: true,
+//     fastOcclusion: true,                         // opt-in class-pair cache
 //     chunkX, chunkZ, minSection: -4, sectionCount: 24, skyBottomSection: -5,
 //     table: tableBytes, tableEpoch: epoch,           // table optional, see below
 //     column: {flags, sections, sky, block},          // see below
@@ -63,6 +64,7 @@
   const OPS = Object.freeze({INITIAL: 1, CHECKS: 2});
   const FLAGS = Object.freeze({
     SKY: 1, BLOCK: 2, SKY_LIGHT_ON: 4, BLOCK_LIGHT_ON: 8, PULL_RING: 16, EMIT_OUTGOING: 32, OMIT_UNCHANGED: 64,
+    FAST_OCCLUSION: 128,
   });
   const SECTION_FLAGS = Object.freeze({SKY_STORING: 1, BLOCK_STORING: 2, SKY_DATA: 4, BLOCK_DATA: 8});
   const ENCODING = Object.freeze({SINGLE: 0, NETWORK: 1, FLAT_U16: 2, RING_PALETTE: 3});
@@ -267,6 +269,7 @@
     if (job.pullRing) flags |= FLAGS.PULL_RING;
     if (job.emitOutgoing !== false) flags |= FLAGS.EMIT_OUTGOING;
     if (job.omitUnchanged) flags |= FLAGS.OMIT_UNCHANGED;
+    if (job.fastOcclusion) flags |= FLAGS.FAST_OCCLUSION;
 
     let length = pad8(PAYLOAD_HEADER_LEN + table.byteLength);
     length = pad8(length + lightSections * slots.length);

@@ -9,7 +9,8 @@ command that puts them together for a wasm dist:
 
   1. Every file of the internal JavaScript dist is copied except its pages (index.html and the
      portable Gaius.html with Gaius.manifest.json). Client and server JavaScript bundles are not
-     release inputs; existing support files are only replaced by newer ones.
+     release inputs; existing support files are only replaced by newer ones. The active Wasm
+     resource pack and its identity are preserved regardless of fallback timestamps.
   2. The page runtime always comes from this tree, not from the JavaScript dist, which may have
      been built from another tree (an older one has no WasmGC runtime configuration):
      stage-web-runtime.py stages gaius-boot.js, gaius-sw.js,
@@ -108,8 +109,15 @@ def stage_tree_runtime(wasm_dist: Path, stage_web_runtime) -> list[str]:
 
 
 def copy_javascript_dist(js_dist: Path, wasm_dist: Path) -> None:
+    owns_pack = (wasm_dist / "vanilla-assets.pack.gz").is_file()
     for entry in js_dist.iterdir():
         if entry.name.startswith(SKIP_PREFIXES):
+            continue
+        if owns_pack and entry.name in ("vanilla-assets.pack.gz", "vanilla-assets.pack.gz.build.json",
+                                        "gaius-unihex.bin.gz"):
+            # Its resource list is compiled into classes.wasm. The fallback's
+            # timestamps cannot establish compatibility with that list (nor with
+            # the unihex glyph table build-wasmgc.sh made from this pack).
             continue
         target = wasm_dist / entry.name
         if entry.is_dir():

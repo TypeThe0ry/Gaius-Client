@@ -27,6 +27,7 @@ import {createServer as httpServer} from "node:http";
 import {createServer as netServer} from "node:net";
 import {extname, isAbsolute, join, normalize, relative, resolve} from "node:path";
 import {chromeIsolationArgs} from "./bench/harness-common.mjs";
+import {chromeLaunchArgs, resolveChromeBinary} from "./chrome-binary.mjs";
 
 export const DEVICES = {
   phone: {label: "Pixel 7 class phone", width: 412, height: 915, dpr: 2.625, model: "Pixel 7", memory: 4},
@@ -51,7 +52,8 @@ const deviceMemory = Number(env.DEVICE_MEMORY || device.memory);
 const bootTimeout = Number(env.BOOT_TIMEOUT_MS || 900000);
 const worldTimeout = Number(env.WORLD_TIMEOUT_MS || 420000);
 const seed = String(env.SEED || "26300");
-const chromeBin = env.GAIUS_CHROME_BIN || "C:/Program Files/Google/Chrome/Application/chrome.exe";
+const chromeBin = resolveChromeBinary();
+const linuxChromeArgs = chromeLaunchArgs();
 await mkdir(out, {recursive: true});
 const logFile = join(out, "console.log");
 await writeFile(logFile, "");
@@ -338,7 +340,7 @@ async function waitForScreen(pattern, ms, label) {
 // ---------------------------------------------------------------- run
 const profileDir = await mkdtemp(join(out, "chrome-profile-"));
 const port = await freePort();
-const chrome = spawn(chromeBin, ["--headless=new", `--remote-debugging-port=${port}`, "--remote-allow-origins=*",
+const chrome = spawn(chromeBin, [...linuxChromeArgs, "--headless=new", `--remote-debugging-port=${port}`, "--remote-allow-origins=*",
   `--user-data-dir=${profileDir}`, `--window-size=${device.width},${device.height}`, "--ignore-gpu-blocklist", "--enable-unsafe-swiftshader",
   ...chromeIsolationArgs(), "about:blank"], {stdio: "ignore"});
 const exceptions = [];

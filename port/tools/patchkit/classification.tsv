@@ -12,11 +12,18 @@
 # 'wasm-only' for a patch of the wasmgc target only.
 id	kind	census	wasm	reason
 MinecraftClientPatcher.patchLevelStorageAccessBrowserDelete	REQUIRED	platform	same	deleting a world goes through the browser storage bridge so every world file and marker is removed from IndexedDB/OPFS
+MinecraftClientPatcher.patchPalettedContainerBrowserEncode	PERF	perf	same	speed only (chunk save: palette entry encodings reused, palette repack once per source id); the saved bytes are the vanilla codec output
+MinecraftClientPatcher.patchMultiNoiseBiomeSourceBrowserCachedParameters	PERF	-	wasm-only	speed only: MultiNoiseBiomeSource.parameters() unwraps its final Either once
+MinecraftClientPatcher.patchTagKeyBrowserHashCodeCache	PERF	-	wasm-only	speed only: TagKey (record of an interned ResourceKey and an Identifier) keeps its hashCode; Holder.Reference.is hashes it on every block tag test
 MinecraftClientPatcher.patchTickPacketParity	TELEMETRY	-	wasm-only	Tick-exact acquisition and its capture executor schedule; no bytecode edits without an explicit packet-parity debug flag; JS target always skipped.
 AbstractSpliteratorBrowserPatcher.classOverrides	REQUIRED	-	same	Browser spliterator and checksum compatibility; record the previously unregistered replacements
 MinecraftServerWorkerPatcher.classOverrides	REQUIRED	-	same	Worker executor and management service compatibility; record the previously unregistered replacements
 MinecraftServerWorkerPatcher.lightKernelPatches	PERF	-	same	Optional light kernel dispatch with the unchanged vanilla fallback
 MinecraftServerWorkerPatcher.worldgenKernelPatches	PERF	-	same	Optional worldgen kernel dispatch with the unchanged vanilla fallback
+MinecraftServerWorkerPatcher.lightWakePatches	PERF	-	wasm-only	Wake the parked server thread when a light task is queued so the poll that schedules the light update runs now instead of at the next tick; only when the poll runs changes, off unless the page asks (?gaiusServerWake=1)
+MinecraftServerWorkerPatcher.worldLoaderCache	PERF	-	wasm-only	Answer the data pack stages of WorldLoader.load from a record made while the idle Worker waited; vanilla runs unchanged without it
+MinecraftClientPatcher.patchWorldGenRegionBrowserCachedHeight	PERF	-	wasm-only	speed only: WorldGenRegion.getMinY/getHeight read the DimensionType the region already holds instead of the ServerLevel holder chain
+MinecraftClientPatcher.patchWorldGenRegionBrowserLastChunk	PERF	-	wasm-only	speed only: WorldGenRegion.getChunk(x, z) keeps its last answer (the region chunk table is written once in the constructor); not applicable where the table holds holders
 MinecraftClientPatcher.prepareAfterOcclusionUpdate	REQUIRED	-	same	Required renderer seam where declared applicable; part of the existing renderer registration
 MinecraftClientPatcher.refreshVisibleSections	REQUIRED	-	same	Required graph publication seam where declared applicable; part of the existing renderer registration
 MinecraftClientPatcher.sectionVertexHeaps	REQUIRED	-	same	Required heap budgets where declared applicable; part of the existing upload registration
@@ -27,8 +34,6 @@ InputPatches263.patchSdlEventHandlerDispatch	REQUIRED	platform	same	SDLEventHand
 JdkCompatPatches263.redirectJdkApis	REQUIRED	platform	same	redirects JDK 25 APIs that the TeaVM class library lacks to BrowserJdkCompat; otherwise the TeaVM link fails
 JdkCompatPatches263.remapScopedValue	REQUIRED	platform	same	java.lang.ScopedValue is not in the TeaVM class library; remapped to the Gaius implementation
 Minecraft12111BrowserPatcher.patchChunkGenerationCooperation	REQUIRED	coroutine-yield	js-only	coroutine contract: chunk generation yields between holders (1.21.11 task-layer cursor); the JavaScript build has one thread and would freeze or never let the waiting side run
-Minecraft12111BrowserPatcher.patchGraphicsPresetBrowserDistances	FEATURE	-	same	browser graphics preset distances (1.21.11)
-Minecraft12111BrowserPatcher.patchGraphicsPresetStartupReplay	FEATURE	feature	same	replays the graphics preset at start-up (1.21.11)
 Minecraft12111BrowserPatcher.patchInitRendererDeviceFactory	REQUIRED	-	wasm-only	the blaze3d-direct-0 render seam registration: initRenderer constructs its one device through D0Devices.create, WebGPU behind ?gpu=webgpu, else vanilla's GlDevice (1.21.11 has no backend loop)
 Minecraft12111BrowserPatcher.patchLineWidthVertexFormatAlignment	REQUIRED	-	wasm-only	WebGPU addresses vertex attributes in whole 4-byte words: POSITION_COLOR_NORMAL_LINE_WIDTH (LineWidth at 19, stride 23) gets one byte of padding before LineWidth when the page asks for WebGPU, none otherwise
 Minecraft262BrowserPatcher.meshKernelPatches	PERF	perf-kernel	same	mesh kernel hook: when it is off the vanilla Java mesher runs (D14 kernel auto-disable)
@@ -45,11 +50,10 @@ Minecraft262BrowserPatcher.patchFileFixerUpperHardLinks	REQUIRED	platform	same	s
 Minecraft262BrowserPatcher.patchFramerateLimiter	REQUIRED	platform	same	FramerateLimiter.limitDisplayFPS sleeps and spins on the thread that must return to the browser event loop
 Minecraft262BrowserPatcher.patchGlBufferMappedViewRanges	REQUIRED	gl-backend	same	WebGL2 (BrowserOpenGL) renders every current build; D14 M3-M4 relabels it FEATURE(gl-fallback) once WebGPU is the default: mapped buffer views flush only their range (26.2; 26.3 RenderPatches263.patchGlBufferExplicitFlush)
 Minecraft262BrowserPatcher.patchGlDeviceCapabilities	REQUIRED	gl-backend	same	WebGL2 (BrowserOpenGL) renders every current build; D14 M3-M4 relabels it FEATURE(gl-fallback) once WebGPU is the default: device capabilities as WebGL2 reports them
-Minecraft262BrowserPatcher.patchGraphicsPresetBrowserDistances	FEATURE	feature	same	browser graphics preset distances
-Minecraft262BrowserPatcher.patchGraphicsPresetStartupReplay	FEATURE	feature	same	replays the graphics preset at start-up
 Minecraft262BrowserPatcher.patchIdentifierResolveAgainst	REQUIRED	-	same	Identifier.resolveAgainst calls Path.resolve(String, String...), which the TeaVM class library lacks (BrowserJdkCompat)
 Minecraft262BrowserPatcher.patchLiveFrameTargeting	REQUIRED	coroutine-yield	same	terrain contract: the deferred frame pick and its refresh (verifyTerrainChain), and the yielding pick of the JavaScript build
 Minecraft262BrowserPatcher.patchMacosUtil	REQUIRED	platform	same	MacosUtil's NSWindow/colour-space entry points reach the Objective-C bridge (native)
+Minecraft262BrowserPatcher.patchModelBakeryInterner	PERF	perf	same	speed or memory only (the model bake interns vectors and material infos through BrowserStrongInterner, a HashMap with the first-wins canonical instance of Guava's strong interner, instead of Guava's concurrent map; the bake's tasks run one at a time on the main thread and nothing suspends inside intern); the vanilla code stays correct
 Minecraft262BrowserPatcher.patchNativeLibrariesBootstrap	REQUIRED	platform	same	NativeLibrariesBootstrap loads desktop native libraries and probes the Vulkan loader
 Minecraft262BrowserPatcher.patchNativeModuleLister	REQUIRED	platform	same	NativeModuleLister.tryGetModuleVersion reads Windows module versions through JNA
 Minecraft262BrowserPatcher.patchNoiseChunkGraphMapper	PERF	perf	same	speed or memory only (26.2 density graph mapping through BrowserNoiseGraphMapper); the vanilla code stays correct
@@ -76,7 +80,7 @@ MinecraftClientPatcher.patchAbstractButtonBrowserFastSprite	PERF	perf	same	speed
 MinecraftClientPatcher.patchAquiferBrowserNearestCenters	PERF	js-accel	js-only	JavaScript accelerator (nearest-center fast path); the vanilla code is exact, and on wasmgc also fast
 MinecraftClientPatcher.patchAtlasManagerReloadTaskLabels	TELEMETRY	diagnostics	same	resource reload profiling and task labels only
 MinecraftClientPatcher.patchBeardifierBrowserPackedCompute	PERF	js-accel	js-only	JavaScript accelerator (JSBody Beardifier kernel over packed structure pieces); the vanilla code is exact, and on wasmgc also fast
-MinecraftClientPatcher.patchBiomeManagerBrowserNearestCorner	PERF	js-accel	js-only	speed only (nearest-corner biome lookup); the vanilla code stays correct
+MinecraftClientPatcher.patchBiomeManagerBrowserNearestCorner	PERF	js-accel	same	speed only (nearest-corner biome lookup: a BigInt JSBody on the JavaScript target, an exact Java long loop with a corner cache on wasmgc, checked bit for bit against the vanilla BiomeManager by port/scripts/biome-corner-parity.mjs); the vanilla code stays correct
 MinecraftClientPatcher.patchBitmapFontImageSharing	PERF	perf	same	speed or memory only (bitmap font glyphs share one image); the vanilla code stays correct
 MinecraftClientPatcher.patchBlockCacheSupportMemo	PERF	perf	same	speed or memory only (block support shape memo); the vanilla code stays correct
 MinecraftClientPatcher.patchBlockPosBrowserPackedCoordinates	PERF	js-accel	js-only	JavaScript accelerator (BigInt-free BlockPos packing); the vanilla code is exact, and on wasmgc also fast
@@ -128,6 +132,7 @@ MinecraftClientPatcher.patchDebugScreenOverlayBrowserNoChunk	REQUIRED	bugfix	sam
 MinecraftClientPatcher.patchDedicatedServerBrowser	REQUIRED	platform	same	the integrated server of the Worker reuses DedicatedServer; query, RCON, JMX, the management server and the tick watchdog need sockets and threads
 MinecraftClientPatcher.patchDedicatedServerBrowserConsole	REQUIRED	platform	same	the DedicatedServer console thread reads System.in
 MinecraftClientPatcher.patchDedicatedSettingsBrowser	REQUIRED	platform	same	Settings.store writes server.properties to the host file system
+MinecraftClientPatcher.patchDeferredChoiceTypeChecks	PERF	perf	same	speed or memory only (the dropped Util.fetchChoiceType schema checks of EntityType$Builder.build and the block entity register record their pair in BrowserChoiceTypeChecks and run through the vanilla method once the real data fixer is built, instead of building the historical fixer graph during bootstrap; every pair resolves on the current profiles, so no log line changes); the vanilla code stays correct
 MinecraftClientPatcher.patchDensityFunctionsPureTransformersBrowserDirect	PERF	perf	js-only	JavaScript accelerator (JSBody density transformers); the vanilla code is exact, and on wasmgc also fast
 MinecraftClientPatcher.patchDetectedVersion	REQUIRED	platform	same	DetectedVersion reads version.json from the class path; the browser has the profile's version constant
 MinecraftClientPatcher.patchDownloadQueueBrowser	REQUIRED	platform	same	DownloadQueue's executor stays pending forever in the browser; runs through the cooperative pump instead
@@ -183,9 +188,11 @@ MinecraftClientPatcher.patchMinecraft	REQUIRED	platform	same	Minecraft: browser 
 MinecraftClientPatcher.patchMinecraftRunFrameBoundary	REQUIRED	-	wasm-only	design D4: the WebAssembly GC client waits for the next frame at the head of Minecraft.run; without it the JSPI main loop never gives the page a turn
 MinecraftClientPatcher.patchMinecraftServer	REQUIRED	platform	same	MinecraftServer: Worker start-up (prepareLevels, initial spawn), the run-loop yield and the server-ready signal
 MinecraftClientPatcher.patchMobBrowserAiCooperation	REQUIRED	coroutine-yield	same	coroutine contract: mob AI ticks yield in the Worker; the JavaScript build has one thread and would freeze or never let the waiting side run
-MinecraftClientPatcher.patchMultiPlayerGameModeBrowserHitSound	FEATURE	bugfix	same	mining hit sound volume (/8 to /4) for the browser audio mix; dropped on 26.3
+MinecraftClientPatcher.patchMultiPlayerGameModeBrowserHitSound	FEATURE	bugfix	same	mining hit sound shape validation; dropped on 26.3 when the callback moved to ClientLevel
 MinecraftClientPatcher.patchMultiplayerExecutor	REQUIRED	platform	same	the server list pings servers on a thread pool of real threads
 MinecraftClientPatcher.patchNativeImageBulkCopyRect	PERF	perf	same	speed or memory only (bulk NativeImage rectangle copies); the vanilla code stays correct
+MinecraftClientPatcher.patchMipmapGeneratorAtlasPrebake	PERF	perf	wasm-only	speed only: replays a build-time vanilla mip chain only when sprite name, image count, size, format, level, strategy, bias bits, transparency and the 128-bit level-0 pixel hash all match; a miss, ?gaiusAtlasPrebake=0 or a failure keeps vanilla generateMipLevels
+MinecraftClientPatcher.patchStitcherAtlasPrebake	PERF	perf	wasm-only	speed only: replays a build-time vanilla stitch layout (storage size and the walk's load calls in order) only for the exact ordered sprite names and sizes, mip level, padding and maximum-size range; a miss, ?gaiusAtlasPrebake=0 or a failure keeps vanilla stitch/gatherSprites
 MinecraftClientPatcher.patchNativeImageBrowserPng	REQUIRED	compat	same	write PNG through the vanilla channel without a native libffi callback descriptor
 MinecraftClientPatcher.patchNativeModuleLister	REQUIRED	platform	same	NativeModuleLister.listModules enumerates native modules through JNA
 MinecraftClientPatcher.patchNaturalSpawnerGenerationSpawnTelemetry	TELEMETRY	diagnostics	same	generation-time spawn telemetry only
@@ -236,6 +243,7 @@ MinecraftClientPatcher.patchSingleplayerLogin	REQUIRED	platform	same	the Worker 
 MinecraftClientPatcher.patchSkinManagerUploadedSkinSecurity	FEATURE	bugfix	same	uploaded data: skins render for other players; vanilla's signature rule shows the default skin
 MinecraftClientPatcher.patchSkinTextureDownloader	REQUIRED	platform	same	skins download through the browser fetch proxy instead of HttpURLConnection and the host file cache
 MinecraftClientPatcher.patchStagedVertexBufferGpuPoolCache	REQUIRED	gl-backend	same	WebGL2 (BrowserOpenGL) renders every current build; D14 M3-M4 relabels it FEATURE(gl-fallback) once WebGPU is the default: GPU buffer pool cache and its recycle order (terrain contract, verifyTerrainChain)
+MinecraftClientPatcher.patchStateDefinitionNeighbourTables	PERF	perf	same	speed or memory only (multi-property block and fluid states and their neighbour tables are built by index arithmetic in GaiusStateNeighbourTables instead of the HashMap of value lists and the StateCollection pivot cache; same states, order, list, tables, shared rows and identity-hash requests; other value classes fall back to the vanilla body); the vanilla code stays correct
 MinecraftClientPatcher.patchSubmitNodeStorageDrainRemoveIf	PERF	perf	same	speed or memory only (allocation-free phase draining); the vanilla code stays correct
 MinecraftClientPatcher.patchStructureTemplateManagerBrowserGzip	REQUIRED	platform	same	structure templates read through the browser gzip codec (java.util.zip.GZIPInputStream is not usable in TeaVM)
 MinecraftClientPatcher.patchSurfaceRulesContextBrowserReusableBiomeSupplier	PERF	perf	same	speed or memory only (reusable surface biome supplier); the vanilla code stays correct
@@ -265,6 +273,8 @@ MinecraftClientPatcher.patchWorldSelectionListTelemetry	TELEMETRY	diagnostics	sa
 MinecraftClientPatcher.patchWorldStemBrowserSave	REQUIRED	platform	same	world saves go through the browser storage bridge (gaius$saveDataTag)
 MinecraftClientPatcher.patchWorldUnloadTelemetry	TELEMETRY	diagnostics	same	world unload telemetry only
 MinecraftClientPatcher.patchWorldgenRecordHashCodeCaches	PERF	js-accel	js-only	speed only (cached hash codes of worldgen records); the vanilla code stays correct
+MinecraftClientPatcher.patchBulkSectionAccessLookup	PERF	perf	same	speed only (BulkSectionAccess answers its last section before the level queries; OreFeature uses the access as its Function instead of a lambda per block); the vanilla code stays correct
+MinecraftClientPatcher.patchHolderReferenceTagMemo	PERF	perf	same	speed only (Holder.Reference remembers the last tag it answered true and the last it answered false); the vanilla code stays correct
 RenderPatches263.patchGlBackendLibrary	REQUIRED	gl-backend	same	WebGL2 (BrowserOpenGL) renders every current build; D14 M3-M4 relabels it FEATURE(gl-fallback) once WebGPU is the default: GlBackend.loadLibrary has no function provider in the browser (NullPointerException)
 RenderPatches263.patchGlBufferExplicitFlush	REQUIRED	gl-backend	same	WebGL2 (BrowserOpenGL) renders every current build; D14 M3-M4 relabels it FEATURE(gl-fallback) once WebGPU is the default: write mappings flush their range; an unmapped unseeded shadow buffer corrupted unwritten bytes
 RenderPatches263.patchImprovedTransparencyByTier	REQUIRED	feature	same	order-independent transparency only where the context can render and blend float targets; vanilla offers it on contexts that cannot
@@ -272,6 +282,7 @@ RenderPatches263.patchInventoryWorldRenderThrottle	FEATURE	feature	same	renders 
 RenderPatches263.patchLevelQualityHooks	FEATURE	feature	same	world render-scale and post-processing hooks of the graphics quality tiers
 RenderPatches263.patchMacosUtil	REQUIRED	platform	same	26.3 MacosUtil's ObjC bridge and SDL hint setters
 RenderPatches263.patchSetupDrawUseProgramBeforeVertexArrayBind	REQUIRED	gl-backend	same	WebGL2 (BrowserOpenGL) renders every current build; D14 M3-M4 relabels it FEATURE(gl-fallback) once WebGPU is the default: the program is current before the vertex array binds; otherwise GL_INVALID_ENUM on every draw
+RenderPatches263.patchShaderPipelineWarmup	PERF	perf	same	speed only: the render pipelines the title screen does not draw are compiled by PipelineCache.get in the frames after it instead of inside ShaderManager's reload (same pipelines, sources and compile path; a reload with a shader from a non-vanilla pack keeps the vanilla order); the vanilla code stays correct
 RenderPatches263.patchSystemSpecsCpuInfo	REQUIRED	platform	same	DebugEntrySystemSpecs.getCpuInfo reaches oshi (native)
 RenderPatches263.patchVulkanBackend	REQUIRED	platform	same	26.3 VulkanBackend reaches Vulkan, VMA and SDLVulkan natives; reported as a missing loader
 RenderPatches263.patchVulkanFeatureSetsBootstrap	REQUIRED	platform	same	VulkanFeatureSets.<clinit> reads LWJGL struct layouts by reflection; the client crashed in Bootstrap
@@ -283,7 +294,7 @@ StrictMath263.roundWorldgenArithmetic	REQUIRED	js-accel	same	26.3 worldgen float
 TerrainPatches263.forceSeparateTerrainDraws	REQUIRED	perf-kernel	same	WebGL2 has no indirect draws and the chunk-draw telemetry follows the per-draw path; multiDrawIndirectAvailable is pinned to false
 TerrainPatches263.patchReusableDrawGroupCache	PERF	perf-render	same	Reuse LevelRenderer's per-frame integer draw-group lookup table after clear; visible-section and layer traversal, draw order and vertex data stay unchanged
 TerrainPatches263.verifyTerrainChain	REQUIRED	-	same	verification: every paired terrain hook is present on both sides
-UiPatches263.patchClientLevelBreakingSoundVolume	FEATURE	bugfix	same	26.3 mining hit sound volume (/8 to /4) for the browser audio mix
+UiPatches263.patchClientLevelBreakingSoundVolume	FEATURE	bugfix	same	26.3 mining hit sound shape validation while retaining vanilla volume and pitch
 UiPatches263.patchVanillaPackResourcesSingleLayer	PERF	perf	same	speed or memory only (one vanilla pack layer instead of one duplicate per layer (memory, reload time)); the vanilla code stays correct
 WorldgenPatches263.patchCarvingMaskDeepPulses	REQUIRED	coroutine-yield	same	coroutine contract: 26.3 carving mask application yields at deep checkpoints; the JavaScript build has one thread and would freeze or never let the waiting side run
 WorldgenPatches263.patchMaterialRuleContextIntCounters	PERF	js-accel	js-only	int shadows of MaterialRuleContext's long counters for TeaVM's emulated long (counters and both lazy conditions in one patch)

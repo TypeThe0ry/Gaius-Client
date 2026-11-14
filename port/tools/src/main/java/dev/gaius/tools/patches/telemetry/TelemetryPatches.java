@@ -1052,7 +1052,8 @@ public final class TelemetryPatches {
 
     public static void patchClientPacketListenerLoadingDiagnostics(String jar, Path output)
             throws IOException {
-        ClassNode node = read(jar, "net/minecraft/client/multiplayer/ClientPacketListener.class");
+        ClassNode node = Files.exists(output) ? read(output)
+                : read(jar, "net/minecraft/client/multiplayer/ClientPacketListener.class");
         boolean handleLoginHooked = false;
         boolean startWaitingHooked = false;
         boolean levelChunkHooked = false;

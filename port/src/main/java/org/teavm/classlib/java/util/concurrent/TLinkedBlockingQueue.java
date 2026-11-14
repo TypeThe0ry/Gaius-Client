@@ -8,6 +8,11 @@ import java.util.Iterator;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * Gaius' {@code LinkedBlockingQueue} of the TeaVM builds: an {@link ArrayDeque} that never blocks ({@code take()}
+ * throws on an empty queue, {@code put()} on a full one). Its iterator is not weakly consistent as the JDK's is
+ * (see {@link TConcurrentLinkedQueue}).
+ */
 public class TLinkedBlockingQueue<E> extends AbstractQueue<E>
         implements BlockingQueue<E>, Serializable {
     private final ArrayDeque<E> values = new ArrayDeque<>();
@@ -24,8 +29,9 @@ public class TLinkedBlockingQueue<E> extends AbstractQueue<E>
         this.capacity = capacity;
     }
 
+    /** Unbounded, as the JDK's {@code LinkedBlockingQueue(Collection)}: later offers must not fail. */
     public TLinkedBlockingQueue(Collection<? extends E> source) {
-        this(Math.max(1, source.size()));
+        this(Integer.MAX_VALUE);
         addAll(source);
     }
 

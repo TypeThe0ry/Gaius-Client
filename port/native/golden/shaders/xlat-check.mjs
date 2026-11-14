@@ -41,6 +41,7 @@ import {createServer} from "node:http";
 import {tmpdir} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath, pathToFileURL} from "node:url";
+import {chromeLaunchArgs, resolveChromeBinary} from "../../../scripts/chrome-binary.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const native = resolve(here, "../..");
@@ -61,7 +62,7 @@ const wasmFile = resolve(options.wasm ||
 const iterations = Number(options.iterations);
 const deviceFeatures = (options["device-features"] || "float32-blendable,float32-filterable")
   .split(",").filter((f) => f && f !== "none");
-const chromeBin = options.chrome || process.env.GAIUS_CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe";
+const chromeBin = resolveChromeBinary({overrides: [options.chrome, process.env.GAIUS_CHROME]});
 for (const [label, path] of [["corpus", join(corpusDir, "corpus.json")], ["native results", join(nativeDir, "results.json")],
   ["wasm module", wasmFile]]) {
   if (!existsSync(path)) {
@@ -419,7 +420,7 @@ async function stageChrome() {
   const keepProfile = Boolean(options["profile-dir"]);
   const profile = keepProfile ? resolve(options["profile-dir"]) : mkdtempSync(join(tmpdir(), "gaius-xlat-chrome-"));
   const debugPort = 9400 + Math.floor(Math.random() * 500);
-  const chrome = spawn(chromeBin, ["--headless=new", `--remote-debugging-port=${debugPort}`, "--remote-allow-origins=*",
+  const chrome = spawn(chromeBin, [...chromeLaunchArgs(), "--headless=new", `--remote-debugging-port=${debugPort}`, "--remote-allow-origins=*",
     `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
     "--disable-component-update", "--ignore-gpu-blocklist",
     // No external network: everything but loopback goes to a closed local port.

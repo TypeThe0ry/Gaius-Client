@@ -1,7 +1,7 @@
 //! A few quick checks with tiny synthetic tables and sections, through the
 //! same binary formats the Java exporter and the page write.
 
-use crate::job::{flags as jf, SectionJobData};
+use crate::job::{flags as jf, region_index, SectionJob, SectionJobData, VOLUME};
 use crate::output::{self, STATUS_MESHED, STATUS_NEEDS_VANILLA, STATUS_TABLE_MISSING};
 use crate::table::*;
 use crate::Kernel;
@@ -31,6 +31,111 @@ fn f32_at(b: &[u8], at: usize) -> f32 {
 /// (quad_count, vanilla_offset) of a layer.
 fn layer(b: &[u8], k: usize) -> (u32, usize) {
     (u32_at(b, 64 + 32 * k), u32_at(b, 64 + 32 * k + 4) as usize)
+}
+
+#[test]
+fn packed_section_ids_match_the_flat_region_with_edges_and_missing_sections() {
+    let mut packed = vec![0, 27];
+    let mut expected = vec![0u32; VOLUME];
+    for section_index in 0..27usize {
+        let dx = section_index as i32 % 3 - 1;
+        let dz = (section_index as i32 / 3) % 3 - 1;
+        let dy = section_index as i32 / 9 - 1;
+        let x0 = if dx < 0 { 14 } else { 0 };
+        let x1 = if dx > 0 { 1 } else { 15 };
+        let y0 = if dy < 0 { 14 } else { 0 };
+        let y1 = if dy > 0 { 1 } else { 15 };
+        let z0 = if dz < 0 { 14 } else { 0 };
+        let z1 = if dz > 0 { 1 } else { 15 };
+        if section_index == 0 {
+            packed.extend_from_slice(&[0, 0, 0]);
+            continue;
+        }
+        if section_index == 1 {
+            packed.extend_from_slice(&[0, 1, 0, WATER]);
+            for y in y0..=y1 {
+                for z in z0..=z1 {
+                    for x in x0..=x1 {
+                        expected[region_index(dx * 16 + x, dy * 16 + y, dz * 16 + z)] = WATER;
+                    }
+                }
+            }
+            continue;
+        }
+
+        let global = section_index == 2;
+        let bits = if global { 3 } else { (section_index % 3) + 1 };
+        let palette_len = if global { -1 } else { 1 << bits };
+        let values_per_word = 64 / bits;
+        let word_count = 4096usize.div_ceil(values_per_word);
+        packed.extend_from_slice(&[bits as u32, palette_len as u32, word_count as u32]);
+        if !global {
+            for entry in 0..palette_len as u32 {
+                packed.push((entry + section_index as u32) % 7);
+            }
+        }
+        let mut words = vec![0u64; word_count];
+        let mask = (1u64 << bits) - 1;
+        for local in 0..4096usize {
+            let value = if global {
+                (local as u32 * 13 + section_index as u32) % 9
+            } else {
+                (local as u32 + section_index as u32) & mask as u32
+            };
+            let word = local / values_per_word;
+            let shift = (local % values_per_word) * bits;
+            words[word] |= (value as u64 & mask) << shift;
+        }
+        for word in words {
+            packed.push(word as u32);
+            packed.push((word >> 32) as u32);
+        }
+        for y in y0..=y1 {
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    let local = (y * 256 + z * 16 + x) as usize;
+                    let value = if global {
+                        (local as u32 * 13 + section_index as u32) % 9
+                    } else {
+                        (local as u32 + section_index as u32) & mask as u32
+                    };
+                    let id = if global {
+                        if value < 8 {
+                            value
+                        } else {
+                            0
+                        }
+                    } else {
+                        (value + section_index as u32) % 7
+                    };
+                    expected[region_index(dx * 16 + x, dy * 16 + y, dz * 16 + z)] = id;
+                }
+            }
+        }
+    }
+
+    let mut flat = SectionJobData::empty(7);
+    flat.states = expected;
+    let mut packed_job = SectionJobData::empty(7);
+    packed_job.packed_states = Some(packed);
+    let flat_bytes = flat.encode();
+    let packed_bytes = packed_job.encode();
+    let flat_decoded = SectionJob::decode(&flat_bytes).unwrap();
+    let packed_decoded = SectionJob::decode(&packed_bytes).unwrap();
+    let mut flat_ids = Vec::new();
+    let mut packed_ids = Vec::new();
+    flat_decoded.read_ids(&table(), &mut flat_ids).unwrap();
+    packed_decoded.read_ids(&table(), &mut packed_ids).unwrap();
+    assert_eq!(packed_ids, flat_ids);
+    assert_eq!(packed_decoded.light, flat_decoded.light);
+    assert_eq!(packed_decoded.biome_quarts, flat_decoded.biome_quarts);
+    assert_eq!(packed_decoded.palette, flat_decoded.palette);
+    let mut flat_kernel = kernel();
+    let mut packed_kernel = kernel();
+    assert_eq!(
+        flat_kernel.mesh_section(&flat_bytes).unwrap(),
+        packed_kernel.mesh_section(&packed_bytes).unwrap()
+    );
 }
 
 #[test]

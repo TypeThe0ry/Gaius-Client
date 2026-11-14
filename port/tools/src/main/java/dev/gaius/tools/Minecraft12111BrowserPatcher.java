@@ -1,7 +1,6 @@
 package dev.gaius.tools;
 
 import dev.gaius.tools.patches.render.LegacyRenderPatches;
-import dev.gaius.tools.patches.ui.LegacyUiPatches;
 import dev.gaius.tools.patches.worldgen.LegacyWorldgenPatches;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -31,9 +30,7 @@ public final class Minecraft12111BrowserPatcher {
         }
         PatchRegistry.configureProfile(profile);
         PatchRegistry.configureOutput(root);
-        PatchRegistry.run("Minecraft12111BrowserPatcher.patchGraphicsPresetBrowserDistances", "FEATURE js wasmgc 1.21.11", () -> LegacyUiPatches.patchGraphicsPresetBrowserDistances(jar, root));
         PatchRegistry.run("Minecraft12111BrowserPatcher.patchChunkGenerationCooperation", "REQUIRED js 1.21.11", () -> LegacyWorldgenPatches.patchChunkGenerationCooperation(jar, root));
-        PatchRegistry.run("Minecraft12111BrowserPatcher.patchGraphicsPresetStartupReplay", "FEATURE js wasmgc 1.21.11", () -> LegacyUiPatches.patchGraphicsPresetStartupReplay(jar, root));
         // The blaze3d-direct-0 render seam (WebAssembly GC only; the JavaScript build keeps GlDevice).
         PatchRegistry.run("Minecraft12111BrowserPatcher.patchInitRendererDeviceFactory", "REQUIRED wasmgc 1.21.11", () -> LegacyRenderPatches.patchInitRendererDeviceFactory(jar, root));
         PatchRegistry.run("Minecraft12111BrowserPatcher.patchLineWidthVertexFormatAlignment", "REQUIRED wasmgc 1.21.11", () -> LegacyRenderPatches.patchLineWidthVertexFormatAlignment(jar, root));

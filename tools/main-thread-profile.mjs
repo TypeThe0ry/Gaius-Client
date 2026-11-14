@@ -2,9 +2,16 @@ import {createReadStream} from "node:fs";
 import {open, writeFile} from "node:fs/promises";
 import {join} from "node:path";
 
+const profileDistance = Number(process.env.RENDER_DISTANCE || 8);
+if (!Number.isInteger(profileDistance) || profileDistance < 2 || profileDistance > 32)
+  throw new Error('RENDER_DISTANCE must be an integer from 2 through 32');
+const profileMaxFps = Number(process.env.PROFILE_MAX_FPS || 260);
+if (!Number.isInteger(profileMaxFps) || profileMaxFps < 1 || profileMaxFps > 1000)
+  throw new Error('PROFILE_MAX_FPS must be a positive integer <= 1000');
+const profileVsync = process.env.PROFILE_VSYNC === '0' ? false : true;
 const options = [
-  'graphicsPreset:"fancy"', "renderDistance:8", "simulationDistance:6", "maxFps:260",
-  "enableVsync:true", 'inactivityFpsLimit:"minimized"', 'renderClouds:"true"', "cloudRange:64",
+  'graphicsPreset:"fancy"', `renderDistance:${profileDistance}`, "simulationDistance:6", `maxFps:${profileMaxFps}`,
+  `enableVsync:${profileVsync}`, 'inactivityFpsLimit:"minimized"', 'renderClouds:"true"', "cloudRange:64",
   "ao:true", "cutoutLeaves:true", "vignette:true", "improvedTransparency:false", "weatherRadius:10",
   "chunkSectionFadeInTime:0.0", "prioritizeChunkUpdates:1", "mipmapLevels:4", "maxAnisotropyBit:1",
   "textureFiltering:1", "biomeBlendRadius:2", "particles:0", "entityShadows:true", "bobView:false",
@@ -103,7 +110,8 @@ export async function summarizeTrace(path, profile, frames, wallMs) {
     traceHot: Object.entries(names).sort((a,b) => b[1]-a[1]).slice(0,60)};
 }
 
-export async function captureMainThreadWindow({cdp, evaluate, output, mode, durationMs, sleep}) {
+export async function captureMainThreadWindow({cdp, evaluate, output, mode, durationMs, sleep,
+  beforeWindow, afterWindow}) {
   const snapshot = `(()=>({backend:globalThis.__gaiusGpuBackend,player:globalThis.__gaiusMinecraftState?.player,
     frame:globalThis.__gaiusFrameTelemetry,gl:globalThis.__gaiusGLStats,gpu:globalThis.GaiusWebGpu?.stats,
     presented:globalThis.__gaiusGlFrameGuard?.frames,quality:globalThis.GaiusQuality?.stats}))()`;
@@ -119,11 +127,13 @@ export async function captureMainThreadWindow({cdp, evaluate, output, mode, dura
   await cdp.send("Tracing.start", {transferMode:"ReturnAsStream", traceConfig:{recordMode:"recordAsMuchAsPossible",
     includedCategories:["toplevel","v8","blink","gpu","__metadata"], excludedCategories:["*"]}});
   await cdp.send("Profiler.start");
+  if (beforeWindow) await beforeWindow();
   if (mode === "turning") await evaluate(`globalThis.__gaiusProfileTurn=setInterval(()=>globalThis.__gaiusInput?.look(0.5,0),16);true`);
   await sleep(durationMs);
   if (mode === "turning") await evaluate("clearInterval(globalThis.__gaiusProfileTurn);true");
   const {profile} = await cdp.send("Profiler.stop");
   const after = await evaluate(snapshot), b = await metric();
+  if (afterWindow) await afterWindow();
   await cdp.send("Tracing.end");
   const stream = await done, path = join(output, `${mode}.trace.json`);
   const file = await open(path,"w");
@@ -137,7 +147,7 @@ export async function captureMainThreadWindow({cdp, evaluate, output, mode, dura
   const wallMs = (b.Timestamp-a.Timestamp)*1000;
   const frames = after.presented-before.presented;
   await writeFile(join(output,`${mode}.cpuprofile`),JSON.stringify(profile));
-  const summary = await summarizeTrace(path,profile,frames,durationMs);
+  const summary = await summarizeTrace(path,profile,frames,wallMs);
   const result = {mode,before,after,metricsWallMs:wallMs,taskDurationMs:(b.TaskDuration-a.TaskDuration)*1000, ...summary};
   await writeFile(join(output,`${mode}.summary.json`),JSON.stringify(result,null,2));
   return result;

@@ -14,6 +14,7 @@ import {
 
 const sleep = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
 import { expectedResourcePack } from './resource-pack-expectation.mjs';
+import {chromeLaunchArgs, resolveChromeBinary} from '../port/scripts/chrome-binary.mjs';
 const cdpResourcePackBufferBytes = 96 * 1024 * 1024;
 const cdpTotalNetworkBufferBytes = 256 * 1024 * 1024;
 
@@ -877,7 +878,7 @@ async function main() {
   const relay = process.env.RELAY || 'wss://ellan.site/tunnel';
   const packChoice = String(process.env.PACK_CHOICE || 'Yes').trim();
   const acceptanceSeconds = envInteger('ACCEPTANCE_SECONDS', 180, 10);
-  const chromeBinary = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+  const chromeBinary = resolveChromeBinary({overrides: [process.env.CHROME]});
   const suffix = Date.now().toString().slice(-9);
   const username = `Terrain${suffix}`;
   const password = `Gaius${profile.replaceAll('.', '')}P${suffix}`;
@@ -951,6 +952,7 @@ async function main() {
   };
 
   const chrome = spawn(chromeBinary, [
+    ...chromeLaunchArgs(),
     '--headless=new',
     `--remote-debugging-port=${debugPort}`,
     '--remote-allow-origins=*',

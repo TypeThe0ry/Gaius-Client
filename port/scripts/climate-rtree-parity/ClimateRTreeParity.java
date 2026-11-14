@@ -18,8 +18,13 @@ import java.util.TreeSet;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.function.Consumer;
+import net.minecraft.SharedConstants;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.server.Bootstrap;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.OverworldBiomeBuilder;
+import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 
 /**
  * JVM parity and speed check of the WasmGC multi-noise lookup patch
@@ -57,8 +62,10 @@ public final class ClimateRTreeParity {
         String harness = null;
         int scale = 1;
         int benchRounds = 7;
+        int survey = 0;
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
+                case "--survey" -> survey = Integer.parseInt(args[++i]);
                 case "--vanilla" -> vanilla = args[++i];
                 case "--patched" -> patched = args[++i];
                 case "--harness" -> harness = args[++i];
@@ -125,6 +132,17 @@ public final class ClimateRTreeParity {
             json.append(String.format(",\"bench\":{\"lookups\":%d,\"vanillaNsPerLookup\":%.1f,"
                     + "\"patchedNsPerLookup\":%.1f,\"speedup\":%.3f}", lookups, vanillaNs, patchedNs,
                     vanillaNs / patchedNs));
+            long[] vanillaReal = (long[]) invoke(vanillaLoader, "benchReal", benchRounds);
+            long[] patchedReal = (long[]) invoke(patchedLoader, "benchReal", benchRounds);
+            double vanillaRealNs = Arrays.stream(vanillaReal, 1, vanillaReal.length).min().orElseThrow()
+                    / (double) vanillaReal[0];
+            double patchedRealNs = Arrays.stream(patchedReal, 1, patchedReal.length).min().orElseThrow()
+                    / (double) vanillaReal[0];
+            System.out.printf("CLIMATE_RTREE_BENCH_REAL lookups=%d vanilla=%.1fns patched=%.1fns speedup=%.2fx%n",
+                    vanillaReal[0], vanillaRealNs, patchedRealNs, vanillaRealNs / patchedRealNs);
+            json.append(String.format(",\"benchReal\":{\"lookups\":%d,\"vanillaNsPerLookup\":%.1f,"
+                    + "\"patchedNsPerLookup\":%.1f,\"speedup\":%.3f}", vanillaReal[0], vanillaRealNs,
+                    patchedRealNs, vanillaRealNs / patchedRealNs));
             long[] work = (long[]) invoke(vanillaLoader, "searchWork");
             System.out.printf("CLIMATE_RTREE_WORK lookups=%d vanillaMetricCalls=%.2f flatDistances=%.2f"
                     + " subtreeVisits=%.2f (per lookup)%n", work[0], work[1] / (double) work[0],
@@ -133,6 +151,17 @@ public final class ClimateRTreeParity {
                     + "\"flatDistancesPerLookup\":%.3f,\"subtreeVisitsPerLookup\":%.3f}",
                     work[0], work[1] / (double) work[0], work[2] / (double) work[0],
                     work[3] / (double) work[0]));
+        }
+        if (survey > 0) {
+            long[] found = (long[]) invoke(vanillaLoader, "survey", survey);
+            System.out.printf("CLIMATE_RTREE_SURVEY chunks=%d lookups=%d nearestBoxContainsTarget=%.3f%%"
+                    + " previousResultInsideBox=%.3f%% previousResultNearest=%.2f%%"
+                    + " lookupsWithTiedLeaves=%d(%.4f%%) lookupsWithTiedBiomes=%d(%.4f%%)"
+                    + " chunksWithTiedLeaves=%d(%.2f%%) chunksWithTiedBiomes=%d(%.2f%%)%n",
+                    found[0], found[1], 100.0 * found[2] / found[1], 100.0 * found[3] / found[1],
+                    100.0 * found[4] / found[1], found[5], 100.0 * found[5] / found[1], found[6],
+                    100.0 * found[6] / found[1], found[7], 100.0 * found[7] / found[0], found[8],
+                    100.0 * found[8] / found[0]);
         }
         json.append("}");
         System.out.println("CLIMATE_RTREE_JSON " + json);
@@ -217,6 +246,22 @@ public final class ClimateRTreeParity {
         results.put("single-point", singleThread(List.of(Climate.parameters(0.1F, -0.2F, 0.3F, 0.0F, 0.0F, 0.5F, 0.0F)),
                 uniformTargets(new Random(9L), 1_000, 20_000)));
         results.put("rebuilt-8-children", singleThreadRebuilt(overworld, 8, chunkTargets(new Random(10L), 40 * scale)));
+        // The real overworld preset (7594 entries) with climate targets sampled from real noise
+        // in generation order: this is where biome boundaries and their exact ties occur.
+        results.put("overworld-real", singleThread(overworld, realTargets(REAL_SEEDS, 12 * scale)));
+        List<Climate.ParameterPoint> overlap = overlapPoints(new Random(12L), 300);
+        results.put("overlap-runs", singleThread(overlap, overlapTargets(new Random(13L), 200_000 * scale)));
+        results.put("overlap-runs-threads", threads(overlap, new Random(14L), 3, 40 * scale));
+        // Squared distances that wrap around in 64 bits (2^31 squared is 2^62): the early-exit
+        // distance of GaiusClimateIndex must stay off there, with in-range and out-of-range bounds.
+        results.put("wrap-narrow-bounds", singleThread(wrapPoints(new Random(15L), false),
+                wrapTargets(new Random(16L), 200_000 * scale)));
+        results.put("wrap-wide-bounds", singleThread(wrapPoints(new Random(17L), true),
+                wrapTargets(new Random(18L), 200_000 * scale)));
+        // Few leaves: all of them are children of the root, so none hides in a subtree whose box
+        // distance would not wrap.
+        results.put("wrap-flat-tree", singleThread(wrapPoints(new Random(19L), false).subList(0, 6),
+                wrapTargets(new Random(20L), 200_000 * scale)));
         return results;
     }
 
@@ -244,6 +289,126 @@ public final class ClimateRTreeParity {
             System.out.println("unlikely");
         }
         return nanos;
+    }
+
+    /** Like {@link #bench} on the real preset and real sampled climate (24 chunks per seed, 3 seeds). */
+    static long[] benchReal(int rounds) {
+        Climate.ParameterList<Integer> list = parameterList(overworldPoints());
+        Climate.TargetPoint[] targets = realTargets(REAL_SEEDS, 24);
+        long sink = 0;
+        for (int warmup = 0; warmup < 3; warmup++) {
+            for (Climate.TargetPoint target : targets) {
+                sink += list.findValue(target);
+            }
+        }
+        long[] nanos = new long[rounds + 1];
+        nanos[0] = targets.length;
+        for (int round = 1; round <= rounds; round++) {
+            long started = System.nanoTime();
+            for (Climate.TargetPoint target : targets) {
+                sink += list.findValue(target);
+            }
+            nanos[round] = System.nanoTime() - started;
+        }
+        if (sink == 42) {
+            System.out.println("unlikely");
+        }
+        return nanos;
+    }
+
+    /**
+     * Brute-force statistics of real overworld lookups ({@code chunksPerSeed} chunks of each of
+     * three seeds, in {@code fillBiomesFromNoise} order) against the real preset: how often the
+     * nearest box contains the target, how often the previous result is still nearest (the case
+     * vanilla's warm start exists for), and how many lookups have several equally near leaves,
+     * i.e. an answer that depends on the thread's previous result, with and without different
+     * biomes among them. Returns {chunks, lookups, nearestBoxContains, previousInside,
+     * previousNearest, tiedLeafLookups, tiedBiomeLookups, chunksWithTiedLeaves, chunksWithTiedBiomes}.
+     */
+    static long[] survey(int chunksPerSeed) throws Exception {
+        List<Pair<Climate.ParameterPoint, Object>> entries = overworldEntries();
+        int n = entries.size();
+        long[][] lo = new long[n][7];
+        long[][] hi = new long[n][7];
+        int[] biome = new int[n];
+        Map<Object, Integer> biomeIds = new java.util.HashMap<>();
+        List<Climate.ParameterPoint> points = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            Climate.ParameterPoint point = entries.get(i).getFirst();
+            points.add(point);
+            Climate.Parameter[] space = {point.temperature(), point.humidity(), point.continentalness(),
+                point.erosion(), point.depth(), point.weirdness(), new Climate.Parameter(point.offset(), point.offset())};
+            for (int d = 0; d < 7; d++) {
+                lo[i][d] = space[d].min();
+                hi[i][d] = space[d].max();
+            }
+            biome[i] = biomeIds.computeIfAbsent(entries.get(i).getSecond(), key -> biomeIds.size());
+        }
+        Climate.ParameterList<Integer> list = parameterList(points);
+        Method toArray = Climate.TargetPoint.class.getDeclaredMethod("toParameterArray");
+        toArray.setAccessible(true);
+        long[] out = new long[9];
+        for (long seed : REAL_SEEDS) {
+            Climate.TargetPoint[] targets = realTargets(new long[] {seed}, chunksPerSeed);
+            int previous = -1;
+            boolean tiedLeaves = false;
+            boolean tiedBiomes = false;
+            for (int t = 0; t < targets.length; t++) {
+                long[] v = (long[]) toArray.invoke(targets[t]);
+                long best = Long.MAX_VALUE;
+                int tied = 0;
+                java.util.BitSet biomes = new java.util.BitSet();
+                long previousDistance = -1;
+                for (int i = 0; i < n; i++) {
+                    long distance = 0;
+                    for (int d = 0; d < 7; d++) {
+                        long above = v[d] - hi[i][d];
+                        long below = lo[i][d] - v[d];
+                        long delta = above > 0 ? above : Math.max(below, 0);
+                        distance += delta * delta;
+                    }
+                    if (i == previous) {
+                        previousDistance = distance;
+                    }
+                    if (distance < best) {
+                        best = distance;
+                        tied = 1;
+                        biomes.clear();
+                        biomes.set(biome[i]);
+                    } else if (distance == best) {
+                        tied++;
+                        biomes.set(biome[i]);
+                    }
+                }
+                out[1]++;
+                if (best == 0) {
+                    out[2]++;
+                }
+                if (previous >= 0 && previousDistance == 0) {
+                    out[3]++;
+                }
+                if (previous >= 0 && previousDistance == best) {
+                    out[4]++;
+                }
+                tiedLeaves |= tied > 1;
+                tiedBiomes |= biomes.cardinality() > 1;
+                if (tied > 1) {
+                    out[5]++;
+                }
+                if (biomes.cardinality() > 1) {
+                    out[6]++;
+                }
+                previous = list.findValue(targets[t]);
+                if ((t + 1) % (CHUNK_QUARTS_XZ * CHUNK_QUARTS_XZ * CHUNK_QUARTS_Y) == 0) {
+                    out[0]++;
+                    out[7] += tiedLeaves ? 1 : 0;
+                    out[8] += tiedBiomes ? 1 : 0;
+                    tiedLeaves = false;
+                    tiedBiomes = false;
+                }
+            }
+        }
+        return out;
     }
 
     /**
@@ -463,15 +628,24 @@ public final class ClimateRTreeParity {
         return new Climate.ParameterList<>(values);
     }
 
-    @SuppressWarnings("unchecked")
     private static List<Climate.ParameterPoint> overworldPoints() {
+        List<Climate.ParameterPoint> points = new ArrayList<>();
+        for (Pair<Climate.ParameterPoint, Object> entry : overworldEntries()) {
+            points.add(entry.getFirst());
+        }
+        return points;
+    }
+
+    /** The overworld preset's entries (point and biome key), in preset order. */
+    @SuppressWarnings("unchecked")
+    private static List<Pair<Climate.ParameterPoint, Object>> overworldEntries() {
         try {
-            List<Climate.ParameterPoint> points = new ArrayList<>();
+            List<Pair<Climate.ParameterPoint, Object>> entries = new ArrayList<>();
             Method addBiomes = OverworldBiomeBuilder.class.getDeclaredMethod("addBiomes", Consumer.class);
             addBiomes.setAccessible(true);
             addBiomes.invoke(new OverworldBiomeBuilder(),
-                    (Consumer<Pair<Climate.ParameterPoint, ?>>) pair -> points.add(pair.getFirst()));
-            return points;
+                    (Consumer<Pair<Climate.ParameterPoint, Object>>) entries::add);
+            return entries;
         } catch (ReflectiveOperationException failure) {
             throw new IllegalStateException(failure);
         }
@@ -508,6 +682,221 @@ public final class ClimateRTreeParity {
             long[] v = new long[6];
             for (int d = 0; d < 6; d++) {
                 v[d] = (random.nextInt(21) - 10) * 1250L + (random.nextInt(4) == 0 ? random.nextInt(3) - 1 : 0);
+            }
+            targets[i] = new Climate.TargetPoint(v[0], v[1], v[2], v[3], v[4], v[5]);
+        }
+        return targets;
+    }
+
+    private static final long[] REAL_SEEDS = {12345L, 987654321L, 20261112L};
+
+    /**
+     * Climate targets of real overworld noise (the vanilla sampler), for {@code chunksPerSeed}
+     * chunks per seed, in the lookup order of {@code fillBiomesFromNoise}: sections bottom-up, x,
+     * y, z quarts within them. Chunks of a seed are adjacent (row-major around the origin). The
+     * sampler API differs between generations, so it is reached by reflection; the preset points
+     * are those of {@link #overworldPoints()}.
+     */
+    private static Climate.TargetPoint[] realTargets(long[] seeds, int chunksPerSeed) {
+        try {
+            SharedConstants.tryDetectVersion();
+            Bootstrap.bootStrap();
+            Class<?> vanillaRegistries = Class.forName("net.minecraft.data.registries.VanillaRegistries");
+            HolderLookup.Provider lookup = null;
+            for (String factory : new String[] {"createWorldLookup", "createLookup"}) {
+                try {
+                    lookup = (HolderLookup.Provider) vanillaRegistries.getMethod(factory).invoke(null);
+                    break;
+                } catch (NoSuchMethodException next) {
+                    // The other generation's name.
+                }
+            }
+            if (lookup == null) {
+                throw new IllegalStateException("no VanillaRegistries lookup factory");
+            }
+            NoiseGeneratorSettings settings = lookup.lookupOrThrow(Registries.NOISE_SETTINGS)
+                    .getOrThrow(NoiseGeneratorSettings.OVERWORLD).value();
+            Object noises = lookup.lookupOrThrow(Registries.NOISE);
+            Class<?> randomState = Class.forName("net.minecraft.world.level.levelgen.RandomState");
+            int side = (int) Math.ceil(Math.sqrt(chunksPerSeed));
+            List<Climate.TargetPoint> targets = new ArrayList<>();
+            for (long seed : seeds) {
+                Climate.Sampler sampler = climateSampler(randomState, createRandomState(randomState, seed, settings, noises));
+                for (int chunk = 0; chunk < chunksPerSeed; chunk++) {
+                    int chunkX = chunk % side - side / 2;
+                    int chunkZ = chunk / side - side / 2;
+                    for (int section = 0; section < CHUNK_QUARTS_Y / 4; section++) {
+                        for (int qx = 0; qx < 4; qx++) {
+                            for (int qy = 0; qy < 4; qy++) {
+                                for (int qz = 0; qz < 4; qz++) {
+                                    targets.add(sampler.sample(
+                                            chunkX * 4 + qx, -16 + section * 4 + qy, chunkZ * 4 + qz));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return targets.toArray(Climate.TargetPoint[]::new);
+        } catch (ReflectiveOperationException | LinkageError failure) {
+            throw new IllegalStateException("cannot sample real climate on this generation", failure);
+        }
+    }
+
+    /** The 3-argument {@code RandomState.create} of the generation, arguments matched by type. */
+    private static Object createRandomState(Class<?> randomState, long seed, Object settings, Object noises)
+            throws ReflectiveOperationException {
+        for (Method method : randomState.getMethods()) {
+            if (!method.getName().equals("create") || method.getParameterCount() != 3
+                    || !java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
+                continue;
+            }
+            Class<?>[] types = method.getParameterTypes();
+            Object[] arguments = new Object[3];
+            boolean usable = true;
+            for (int i = 0; i < 3 && usable; i++) {
+                if (types[i] == long.class) {
+                    arguments[i] = seed;
+                } else if (types[i].isInstance(settings)) {
+                    arguments[i] = settings;
+                } else if (types[i].isInstance(noises) && types[i] == net.minecraft.core.HolderGetter.class) {
+                    arguments[i] = noises;
+                } else {
+                    usable = false;
+                }
+            }
+            if (usable) {
+                return method.invoke(null, arguments);
+            }
+        }
+        throw new NoSuchMethodException("RandomState.create(settings, noises, seed)");
+    }
+
+    /** {@code RandomState.sampler()}, or {@code createClimateSampler(SamplerContext with caches)}. */
+    private static Climate.Sampler climateSampler(Class<?> randomState, Object state)
+            throws ReflectiveOperationException {
+        try {
+            return (Climate.Sampler) randomState.getMethod("sampler").invoke(state);
+        } catch (NoSuchMethodException newer) {
+            Class<?> contextType = Class.forName("net.minecraft.world.level.levelgen.densityfunction.SamplerContext");
+            Object builder = contextType.getMethod("builder").invoke(null);
+            builder = builder.getClass().getMethod("enableCaches").invoke(builder);
+            Object context = builder.getClass().getMethod("build").invoke(builder);
+            return (Climate.Sampler) randomState.getMethod("createClimateSampler", contextType).invoke(state, context);
+        }
+    }
+
+    /** Large overlapping boxes: most targets lie inside several of them (zero-distance ties). */
+    private static List<Climate.ParameterPoint> overlapPoints(Random random, int count) {
+        List<Climate.ParameterPoint> points = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            Climate.Parameter[] parameters = new Climate.Parameter[6];
+            for (int d = 0; d < 6; d++) {
+                float a = (random.nextInt(9) - 4) * 0.25F;
+                parameters[d] = Climate.Parameter.span(a, a + (1 + random.nextInt(5)) * 0.25F);
+            }
+            points.add(Climate.parameters(parameters[0], parameters[1], parameters[2], parameters[3],
+                    parameters[4], parameters[5], random.nextInt(3) == 0 ? 0.25F : 0.0F));
+        }
+        return points;
+    }
+
+    /**
+     * Runs of nearby targets (so the previous result is often at distance zero) with jumps and
+     * coordinates on box edges (so it is sometimes just outside).
+     */
+    private static Climate.TargetPoint[] overlapTargets(Random random, int count) {
+        Climate.TargetPoint[] targets = new Climate.TargetPoint[count];
+        long[] v = new long[6];
+        for (int i = 0; i < count; i++) {
+            if (i % 37 == 0) {
+                for (int d = 0; d < 6; d++) {
+                    v[d] = (random.nextInt(21) - 10) * 1250L;
+                }
+            } else {
+                int d = random.nextInt(6);
+                v[d] += random.nextInt(3) == 0 ? (random.nextInt(5) - 2) * 1250L : random.nextInt(7) - 3;
+            }
+            targets[i] = new Climate.TargetPoint(v[0], v[1], v[2], v[3], v[4], v[5]);
+        }
+        return targets;
+    }
+
+    /**
+     * Boxes at and around the origin (some with bounds beyond the early exit's range when
+     * {@code wide}), so that targets around 2^31 give the previous result a wrapped distance of
+     * zero (four squares of 2^62) while another leaf's wrapped distance is negative.
+     */
+    private static List<Climate.ParameterPoint> wrapPoints(Random random, boolean wide) {
+        List<Climate.ParameterPoint> points = new ArrayList<>();
+        points.add(rawPoint(new long[] {0, 0, 0, 0, 0, 0}, new long[] {0, 0, 0, 0, 0, 0}, 0L));
+        points.add(rawPoint(new long[] {0, 0, 0, 1L << 28, 0, 0}, new long[] {0, 0, 0, 1L << 28, 0, 0}, 0L));
+        points.add(rawPoint(new long[] {0, 0, 0, 0, 0, 0}, new long[] {0, 0, 0, 0, 0, 0}, 1L << 27));
+        for (int i = 0; i < 60; i++) {
+            long[] min = new long[6];
+            long[] max = new long[6];
+            for (int d = 0; d < 6; d++) {
+                long a = (random.nextInt(2001) - 1000) * 100L;
+                min[d] = a;
+                max[d] = a + random.nextInt(4) * 5000L;
+            }
+            // Away from the origin, so that the origin target has the first leaf as its only nearest.
+            min[0] = 30_000L + (i % 7) * 4000L;
+            max[0] = min[0] + 3000L;
+            points.add(rawPoint(min, max, random.nextInt(3) * 1000L));
+        }
+        if (wide) {
+            points.add(rawPoint(new long[] {-(1L << 40), 0, 0, 0, 0, 0}, new long[] {1L << 40, 0, 0, 0, 0, 0}, 0L));
+            points.add(rawPoint(new long[] {0, 0, 0, Long.MIN_VALUE, 0, 0},
+                    new long[] {0, 0, 0, Long.MAX_VALUE, 0, 0}, 0L));
+            points.add(rawPoint(new long[] {1L << 31, 1L << 31, 1L << 31, 0, 0, 0},
+                    new long[] {1L << 31, 1L << 31, 1L << 31, 0, 0, 0}, 0L));
+        }
+        return points;
+    }
+
+    private static Climate.ParameterPoint rawPoint(long[] min, long[] max, long offset) {
+        return new Climate.ParameterPoint(
+                new Climate.Parameter(min[0], max[0]), new Climate.Parameter(min[1], max[1]),
+                new Climate.Parameter(min[2], max[2]), new Climate.Parameter(min[3], max[3]),
+                new Climate.Parameter(min[4], max[4]), new Climate.Parameter(min[5], max[5]), offset);
+    }
+
+    /**
+     * Every other target is the origin (the first leaf is its only nearest, so it becomes the
+     * previous result); in between come targets with two to six coordinates at plus or minus 2^31
+     * (the square wraps the 64-bit sum to zero for four of them, to a negative value for three)
+     * and targets around the early exit's range limit.
+     */
+    private static Climate.TargetPoint[] wrapTargets(Random random, int count) {
+        long[] interesting = {0, 1, -1, 1L << 28, -(1L << 28), (1L << 28) + 1, -(1L << 28) - 1, 1L << 29,
+            1L << 30, 1L << 31, -(1L << 31), (1L << 31) + 1, 1L << 32, -(1L << 32), 1L << 40, 1L << 62,
+            Long.MAX_VALUE, Long.MIN_VALUE, 3037000500L, 3037000499L};
+        Climate.TargetPoint[] targets = new Climate.TargetPoint[count];
+        for (int i = 0; i < count; i++) {
+            if ((i & 1) == 0) {
+                targets[i] = new Climate.TargetPoint(0, 0, 0, 0, 0, 0);
+                continue;
+            }
+            long[] v = new long[6];
+            int kind = random.nextInt(3);
+            if (kind == 0) {
+                int wrapped = 2 + random.nextInt(5);
+                for (int placed = 0; placed < wrapped; ) {
+                    int d = random.nextInt(6);
+                    if (v[d] == 0) {
+                        v[d] = random.nextBoolean() ? 1L << 31 : -(1L << 31);
+                        placed++;
+                    }
+                }
+            } else if (kind == 1) {
+                for (int d = 0; d < 6; d++) {
+                    v[d] = interesting[random.nextInt(interesting.length)];
+                }
+            } else {
+                for (int d = 0; d < 6; d++) {
+                    v[d] = random.nextBoolean() ? 0 : (random.nextInt(2001) - 1000) * 100L;
+                }
             }
             targets[i] = new Climate.TargetPoint(v[0], v[1], v[2], v[3], v[4], v[5]);
         }

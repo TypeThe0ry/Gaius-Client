@@ -27,6 +27,26 @@
 //    while its storage opens and instantiates it afterwards (gaius-wasm-worker.js).
 // 6. Epoch clock.  System.currentTimeMillis uses Date.now() to read the same epoch milliseconds
 //    without allocating a Date for every clock read.
+// 7. Lazy @JSBody functions.  TeaVM's start function creates every @JSBody function up front
+//    (teavmJso.createFunctionN: one `new Function` per JSBody method, ~640 in the client, ~30 ms
+//    of the start function on the Linux workstation).  createFunctionN now returns a function of
+//    the same arity that compiles the body on its first call and then calls it with the same
+//    receiver (the global object, as the bound function had) and the same leading
+//    wrapCallFromJavaToJs argument; the returned function is the one per call site that TeaVM
+//    stores, as before.  Differences: a body is parsed when it first runs (a syntax error, which
+//    the eager form reported while instantiating, is reported at that call; the loaded module's
+//    bodies are checked by load(..).jsBodies.materialize() in the tests) and JS stack traces show
+//    one more frame.  options.lazyJsBodies === false keeps the eager form.
+// 8. Deferred string weak references.  StringInternPool interns every string literal in the
+//    start function, and each one gets a WeakRef and a FinalizationRegistry registration (~65k,
+//    20-25 ms on the Linux workstation, mostly WeakRef creation).  With
+//    options.deferStartStringRegistrations === true, createStringWeakRef returns, while the start
+//    function runs, a DeferredStringRef that holds the string strongly and answers deref() like a
+//    WeakRef; after instantiation, in idle slices (requestIdleCallback, 60 s timeout; setTimeout
+//    where there is none) and in creation order, each one gets its WeakRef and its referent its
+//    registration.  Until then a referent stays reachable a little longer, which neither WeakRef
+//    nor FinalizationRegistry semantics can tell apart (no timing guarantee); the string
+//    literals these are are never collected anyway.
 //
 // Every patch locates its anchor exactly and fails when the TeaVM text differs.
 //
@@ -247,6 +267,157 @@ replaceOnce(`    imports.teavm = {
       createWeakRef(value, ref, queue) {`, `    const nullWeakRef = Object.freeze({ deref() { return void 0; } });
     imports.teavm = {
       createWeakRef(value, ref, queue) {`, "nullWeakRef");
+
+// 7. Lazy @JSBody functions (see the header).
+replaceOnce(`      imports.teavmJso["createFunction" + i] = new Function(
+        "wrapCallFromJavaToJs",
+        ...argumentList,
+        "body",
+        \`return new Function('wrapCallFromJavaToJs', \${argsAndBody}).bind(this, wrapCallFromJavaToJs);\`
+      ).bind(null, wrapCallFromJavaToJs);`, `      // Gaius: lazy @JSBody functions (see the patch header).
+      imports.teavmJso["createFunction" + i] = context.lazyJsBodies ? new Function(
+        "wrapCallFromJavaToJs",
+        "lazyJsBodies",
+        ...argumentList,
+        "body",
+        \`const self = this;
+let fn = null;
+const make = () => fn = new Function('wrapCallFromJavaToJs', \${argsAndBody});
+lazyJsBodies.push(() => fn !== null ? fn : make());
+return function (\${args}) {
+  return (fn !== null ? fn : make()).call(self, wrapCallFromJavaToJs\${args ? ", " + args : ""});
+};\`
+      ).bind(null, wrapCallFromJavaToJs, context.jsBodies) : new Function(
+        "wrapCallFromJavaToJs",
+        ...argumentList,
+        "body",
+        \`return new Function('wrapCallFromJavaToJs', \${argsAndBody}).bind(this, wrapCallFromJavaToJs);\`
+      ).bind(null, wrapCallFromJavaToJs);`, "lazy createFunction");
+replaceOnce(`  function defaults(imports, userExports, stringBuiltins) {
+    const context = {
+      exports: null,
+      userExports,
+      stackDeobfuscator: null
+    };`, `  function defaults(imports, userExports, stringBuiltins, gaiusOptions) {
+    const context = {
+      exports: null,
+      userExports,
+      stackDeobfuscator: null,
+      // Gaius: lazy @JSBody functions and deferred string registrations (see the patch header).
+      lazyJsBodies: !(gaiusOptions && gaiusOptions.lazyJsBodies === false),
+      jsBodies: [],
+      deferredStrings: null,
+      registerDeferredStrings: null
+    };`, "defaults options");
+replaceOnce(`      supplyStackDeobfuscator(deobfuscator) {
+        context.stackDeobfuscator = deobfuscator;
+      }
+    };
+  }`, `      supplyStackDeobfuscator(deobfuscator) {
+        context.stackDeobfuscator = deobfuscator;
+      },
+      // Gaius: the start-function window of deferred string registrations.
+      beginStart(deferStrings) {
+        if (deferStrings) context.deferredStrings = [];
+      },
+      endStart() {
+        const pending = context.deferredStrings;
+        context.deferredStrings = null;
+        if (pending !== null && pending.length > 0) context.registerDeferredStrings(pending);
+      },
+      jsBodies: {
+        get count() { return context.jsBodies.length; },
+        materialize() {
+          const errors = [];
+          for (const make of context.jsBodies) {
+            try { make(); } catch (e) { errors.push(String(e)); }
+          }
+          return errors;
+        }
+      }
+    };
+  }`, "defaults result");
+replaceOnce(`      createStringWeakRef(value, heldValue) {
+        stringFinalizationRegistry.register(value, heldValue);
+        return new WeakRef(value);
+      },`, `      createStringWeakRef(value, heldValue) {
+        if (context.deferredStrings !== null) {
+          // Gaius: a strong reference until the idle conversion (see the patch header).
+          const ref = new DeferredStringRef(value);
+          context.deferredStrings.push(ref, heldValue);
+          return ref;
+        }
+        stringFinalizationRegistry.register(value, heldValue);
+        return new WeakRef(value);
+      },`, "deferred createStringWeakRef");
+replaceOnce(`  function coreImports(imports, context) {`, `  // Gaius: the reference createStringWeakRef returns during the start function (see the patch header):
+  // strong until registerDeferredStrings gives it a WeakRef; deref() answers like a WeakRef.
+  class DeferredStringRef {
+    constructor(value) {
+      this.value = value;
+      this.weak = null;
+    }
+    deref() {
+      return this.weak !== null ? this.weak.deref() : this.value;
+    }
+  }
+  function coreImports(imports, context) {`, "DeferredStringRef");
+replaceOnce(`    const stringFinalizationRegistry = new FinalizationRegistry((heldValue) => {
+      const report = context.exports?.["teavm.reportGarbageCollectedString"];
+      if (typeof report === "function") {
+        report(heldValue);
+      }
+    });`, `    const stringFinalizationRegistry = new FinalizationRegistry((heldValue) => {
+      const report = context.exports?.["teavm.reportGarbageCollectedString"];
+      if (typeof report === "function") {
+        report(heldValue);
+      }
+    });
+    context.registerDeferredStrings = (pending) => {
+      // Gaius: [ref, heldValue, ...] in idle slices, in the order the start function made them:
+      // the WeakRef replaces the strong reference, then the referent is registered as before.
+      let next = 0;
+      const idle = typeof requestIdleCallback === "function";
+      const slice = (deadline) => {
+        const until = idle ? 0 : performance.now() + 4;
+        while (next < pending.length) {
+          const ref = pending[next], value = ref.value;
+          ref.weak = new WeakRef(value);
+          ref.value = void 0;
+          stringFinalizationRegistry.register(value, pending[next + 1]);
+          pending[next] = pending[next + 1] = void 0;
+          next += 2;
+          if ((next & 1023) === 0 && (idle ? deadline.timeRemaining() < 1 : performance.now() >= until)) break;
+        }
+        if (next < pending.length) schedule();
+        else pending.length = 0;
+      };
+      const schedule = () => idle ? requestIdleCallback(slice, { timeout: 60000 }) : setTimeout(slice, 0);
+      schedule();
+    };`, "deferred string registration");
+replaceOnce(`    const defaultsResult = defaults(importObj, userExports, await hasStringBuiltins());`,
+  `    const defaultsResult = defaults(importObj, userExports, await hasStringBuiltins(), options);`, "load defaults options");
+replaceOnce(`    const instance = await WebAssembly.instantiate(module, importObj);
+    allocator.malloc = instance.exports["teavm.malloc"];`, `    // Gaius: deferred string registrations cover exactly the start function (see the patch header).
+    defaultsResult.beginStart(options.deferStartStringRegistrations === true);
+    let instance;
+    try {
+      instance = await WebAssembly.instantiate(module, importObj);
+    } finally {
+      defaultsResult.endStart();
+    }
+    allocator.malloc = instance.exports["teavm.malloc"];`, "load start window");
+replaceOnce(`    const teavm = {
+      exports: userExports,
+      instance,
+      module
+    };`, `    const teavm = {
+      exports: userExports,
+      instance,
+      module,
+      // Gaius: lazy @JSBody functions (see the patch header).
+      jsBodies: defaultsResult.jsBodies
+    };`, "load result jsBodies");
 
 text = "// TeaVM 0.15 WebAssembly GC runtime, patched by Gaius"
   + " (port/web/runtime/wasmgc/patch-wasm-gc-runtime.mjs).\n" + text;

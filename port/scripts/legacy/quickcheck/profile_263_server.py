@@ -127,11 +127,13 @@ def checks(root: Path, overlay_dir: Path, javap: Callable[[Path, str], str]) -> 
     position = method_body(listener_impl, "handlePlayerPositionChange(double, double, double")
     move_player = method_body(listener_impl, "public void handleMovePlayer(")
     results.append((
-        "26.3 player movement keeps the Worker fast path and browser chunk tracking",
+        "Player movement keeps vanilla handling and browser chunk tracking",
         position.count("BrowserIntegratedServerMain.moveServerPlayerChunkTracking") == 2
         and "ServerChunkCache.move:" not in position
-        and "BrowserIntegratedServerMain.applyWorkerMovement" in move_player
-        and "BrowserIntegratedServerMain.isWorkerServer" in move_player,
+        and "BrowserIntegratedServerMain.applyWorkerMovement" not in move_player
+        and "handlePlayerPositionChange" in move_player
+        and "checkMovementStatistics" in position
+        and "doCheckFallDamage" in position,
     ))
 
     validator = javap(client, "net.minecraft.util.SignatureValidator")

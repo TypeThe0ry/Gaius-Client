@@ -11,9 +11,24 @@ public class TMessageDigest implements Cloneable {
     private final String algorithm;
     private byte[] input = new byte[64];
     private int size;
+    // SHA-1 is updated while a server pack is streamed. Keep only one partial block instead of
+    // retaining and copying the complete download until digest().
+    private final byte[] sha1Block = new byte[64];
+    private int sha1BlockSize;
+    private long sha1TotalBytes;
+    private int sha1H0;
+    private int sha1H1;
+    private int sha1H2;
+    private int sha1H3;
+    private int sha1H4;
+    private final int[] sha1Words = new int[80];
+    private final byte[] sha1BufferScratch = new byte[16 * 1024];
 
     protected TMessageDigest(String algorithm) {
         this.algorithm = algorithm;
+        if (algorithm.equals("SHA-1")) {
+            resetSha1State();
+        }
     }
 
     public static TMessageDigest getInstance(String algorithm) throws TNoSuchAlgorithmException {
@@ -35,6 +50,15 @@ public class TMessageDigest implements Cloneable {
     }
 
     public void update(byte value) {
+        if (algorithm.equals("SHA-1")) {
+            sha1Block[sha1BlockSize++] = value;
+            sha1TotalBytes++;
+            if (sha1BlockSize == sha1Block.length) {
+                processSha1Block(sha1Block, 0);
+                sha1BlockSize = 0;
+            }
+            return;
+        }
         ensureCapacity(size + 1);
         input[size++] = value;
     }
@@ -47,12 +71,24 @@ public class TMessageDigest implements Cloneable {
         if (offset < 0 || length < 0 || offset > values.length - length) {
             throw new IndexOutOfBoundsException();
         }
+        if (algorithm.equals("SHA-1")) {
+            updateSha1(values, offset, length);
+            return;
+        }
         ensureCapacity(size + length);
         System.arraycopy(values, offset, input, size, length);
         size += length;
     }
 
     public void update(ByteBuffer buffer) {
+        if (algorithm.equals("SHA-1")) {
+            while (buffer.hasRemaining()) {
+                int length = Math.min(sha1BufferScratch.length, buffer.remaining());
+                buffer.get(sha1BufferScratch, 0, length);
+                updateSha1(sha1BufferScratch, 0, length);
+            }
+            return;
+        }
         int remaining = buffer.remaining();
         ensureCapacity(size + remaining);
         buffer.get(input, size, remaining);
@@ -62,7 +98,7 @@ public class TMessageDigest implements Cloneable {
     public byte[] digest() {
         byte[] result = switch (algorithm) {
             case "MD5" -> md5(input, size);
-            case "SHA-1" -> sha1(input, size);
+            case "SHA-1" -> digestSha1();
             default -> sha256(input, size);
         };
         reset();
@@ -89,6 +125,9 @@ public class TMessageDigest implements Cloneable {
 
     public void reset() {
         size = 0;
+        if (algorithm.equals("SHA-1")) {
+            resetSha1State();
+        }
     }
 
     @Override
@@ -96,7 +135,123 @@ public class TMessageDigest implements Cloneable {
         TMessageDigest copy = new TMessageDigest(algorithm);
         copy.input = Arrays.copyOf(input, input.length);
         copy.size = size;
+        copy.sha1BlockSize = sha1BlockSize;
+        copy.sha1TotalBytes = sha1TotalBytes;
+        copy.sha1H0 = sha1H0;
+        copy.sha1H1 = sha1H1;
+        copy.sha1H2 = sha1H2;
+        copy.sha1H3 = sha1H3;
+        copy.sha1H4 = sha1H4;
+        System.arraycopy(sha1Block, 0, copy.sha1Block, 0, sha1Block.length);
         return copy;
+    }
+
+    private void updateSha1(byte[] values, int offset, int length) {
+        int position = offset;
+        int remaining = length;
+        sha1TotalBytes += remaining;
+        if (sha1BlockSize > 0) {
+            int copied = Math.min(remaining, sha1Block.length - sha1BlockSize);
+            System.arraycopy(values, position, sha1Block, sha1BlockSize, copied);
+            sha1BlockSize += copied;
+            position += copied;
+            remaining -= copied;
+            if (sha1BlockSize == sha1Block.length) {
+                processSha1Block(sha1Block, 0);
+                sha1BlockSize = 0;
+            }
+        }
+        while (remaining >= sha1Block.length) {
+            processSha1Block(values, position);
+            position += sha1Block.length;
+            remaining -= sha1Block.length;
+        }
+        if (remaining > 0) {
+            System.arraycopy(values, position, sha1Block, 0, remaining);
+            sha1BlockSize = remaining;
+        }
+    }
+
+    private void resetSha1State() {
+        sha1BlockSize = 0;
+        sha1TotalBytes = 0;
+        sha1H0 = 0x67452301;
+        sha1H1 = 0xefcdab89;
+        sha1H2 = 0x98badcfe;
+        sha1H3 = 0x10325476;
+        sha1H4 = 0xc3d2e1f0;
+    }
+
+    private byte[] digestSha1() {
+        long bitLength = sha1TotalBytes * 8L;
+        byte[] tail = new byte[128];
+        System.arraycopy(sha1Block, 0, tail, 0, sha1BlockSize);
+        tail[sha1BlockSize] = (byte) 0x80;
+        int paddedLength = ((sha1BlockSize + 9 + 63) / 64) * 64;
+        for (int index = 0; index < 8; index++) {
+            tail[paddedLength - 1 - index] = (byte) (bitLength >>> (index * 8));
+        }
+        for (int offset = 0; offset < paddedLength; offset += 64) {
+            processSha1Block(tail, offset);
+        }
+        byte[] result = new byte[20];
+        writeBigEndian(result, 0, sha1H0);
+        writeBigEndian(result, 4, sha1H1);
+        writeBigEndian(result, 8, sha1H2);
+        writeBigEndian(result, 12, sha1H3);
+        writeBigEndian(result, 16, sha1H4);
+        reset();
+        return result;
+    }
+
+    private void processSha1Block(byte[] data, int offset) {
+        int[] words = sha1Words;
+        for (int index = 0; index < 16; index++) {
+            int at = offset + index * 4;
+            words[index] = ((data[at] & 0xff) << 24)
+                    | ((data[at + 1] & 0xff) << 16)
+                    | ((data[at + 2] & 0xff) << 8)
+                    | (data[at + 3] & 0xff);
+        }
+        for (int index = 16; index < words.length; index++) {
+            words[index] = Integer.rotateLeft(
+                    words[index - 3] ^ words[index - 8]
+                            ^ words[index - 14] ^ words[index - 16], 1);
+        }
+        int a = sha1H0;
+        int b = sha1H1;
+        int c = sha1H2;
+        int d = sha1H3;
+        int e = sha1H4;
+        for (int index = 0; index < words.length; index++) {
+            int function;
+            int constant;
+            if (index < 20) {
+                function = (b & c) | (~b & d);
+                constant = 0x5a827999;
+            } else if (index < 40) {
+                function = b ^ c ^ d;
+                constant = 0x6ed9eba1;
+            } else if (index < 60) {
+                function = (b & c) | (b & d) | (c & d);
+                constant = 0x8f1bbcdc;
+            } else {
+                function = b ^ c ^ d;
+                constant = 0xca62c1d6;
+            }
+            int temporary = Integer.rotateLeft(a, 5)
+                    + function + e + constant + words[index];
+            e = d;
+            d = c;
+            c = Integer.rotateLeft(b, 30);
+            b = a;
+            a = temporary;
+        }
+        sha1H0 += a;
+        sha1H1 += b;
+        sha1H2 += c;
+        sha1H3 += d;
+        sha1H4 += e;
     }
 
     public static boolean isEqual(byte[] left, byte[] right) {

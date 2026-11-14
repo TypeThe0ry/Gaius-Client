@@ -34,11 +34,19 @@ public final class BrowserWorldgenDispatcherScheduler {
     private static final int HOP_THREAD = 0;
     private static final int HOP_MESSAGE = 1;
     private static final Map<Runnable, Pump> PUMPS = new IdentityHashMap<>();
+    // Bookkeeping runnables cost microseconds each, so the turn's clock is read on the runnables
+    // ClockStride picks: every one near the end of the inline budget, one in up to eight
+    // while it is far away. Only the bookkeeping loop of one turn touches this state: the
+    // runnables it runs cannot suspend, and a generation runnable ends the turn.
+    private static final ClockStride TURN_STRIDE = new ClockStride();
+    private static int runnablesUntilClockCheck = 1;
 
     private BrowserWorldgenDispatcherScheduler() {
     }
 
     public static long beginTurn() {
+        runnablesUntilClockCheck = 1;
+        TURN_STRIDE.reset();
         return nowNanos();
     }
 
@@ -61,9 +69,17 @@ public final class BrowserWorldgenDispatcherScheduler {
         if (nextPriority >= GENERATION_PRIORITY) {
             return STOP_NEXT_GENERATION;
         }
-        if (executed >= MAX_RUNNABLES_PER_TURN
-                || nowNanos() - startedAtNanos >= INLINE_BUDGET_NANOS) {
+        if (executed >= MAX_RUNNABLES_PER_TURN) {
             return STOP_BUDGET;
+        }
+        if (--runnablesUntilClockCheck <= 0) {
+            long elapsedNanos = nowNanos() - startedAtNanos;
+            if (elapsedNanos >= INLINE_BUDGET_NANOS) {
+                runnablesUntilClockCheck = 1;
+                return STOP_BUDGET;
+            }
+            runnablesUntilClockCheck =
+                    TURN_STRIDE.observe(elapsedNanos, INLINE_BUDGET_NANOS - elapsedNanos);
         }
         return CONTINUE_TURN;
     }
@@ -123,6 +139,9 @@ public final class BrowserWorldgenDispatcherScheduler {
                     recordHopTelemetry(HOP_MESSAGE);
                     TModernRuntimeSupport.yieldToEventLoop(0);
                 }
+                // The chain is idle: the main-thread work its tasks queued (light engine update, ticket
+                // updates, pending generation tasks) should not wait for the server thread's next tick.
+                BrowserIntegratedServerMain.wakeServerForPoll();
                 completed = true;
             } finally {
                 PUMPS.remove(dispatcher);

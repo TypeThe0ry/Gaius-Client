@@ -20,6 +20,21 @@ import java.util.HashMap;
  * ({@link #suspend()}, {@link #resume()}).</p>
  */
 public final class CorePass {
+    private static boolean terrainGpuIndirectRequested;
+    private static int terrainGpuIndirectSections;
+    private static float[] terrainGpuIndirectBounds;
+    private static float[] terrainGpuIndirectPlanes;
+    private static float[] terrainGpuIndirectProjected;
+
+    /** Narrow runtime contract published by the canonical terrain layer. */
+    public static void publishGpuIndirectTerrain(boolean requested, int sections, float[] bounds,
+            float[] planes, float[] projected) {
+        terrainGpuIndirectRequested = requested;
+        terrainGpuIndirectSections = Math.max(0, sections);
+        terrainGpuIndirectBounds = bounds;
+        terrainGpuIndirectPlanes = planes;
+        terrainGpuIndirectProjected = projected;
+    }
     private static final int MAX_INLINE_OFFSETS = 4;
     private static final int MAX_CACHED_BIND_GROUPS = 4096;
     private static final int MAX_VERTEX_BUFFERS = 8;
@@ -367,9 +382,9 @@ public final class CorePass {
             throw new IllegalArgumentException("Vertex buffer slot " + slot + " is out of range");
         }
         this.vertexHandles[slot] = buffer.handle;
-        this.vertexOffsets[slot] = offset;
+        this.vertexOffsets[slot] = buffer.baseOffset() + offset;
         this.vertexSizes[slot] = length;
-        WebGpuGlue.setVertexBuffer(slot, buffer.handle, offset, length);
+        WebGpuGlue.setVertexBuffer(slot, buffer.handle, this.vertexOffsets[slot], length);
     }
 
     public void setIndexBuffer(CoreBuffer buffer, CoreIndexType type, int offset) {
@@ -379,7 +394,7 @@ public final class CorePass {
         this.indexWide = wide;
         this.indexOffset = offset;
         this.indexOverridden = false;
-        WebGpuGlue.setIndexBuffer(buffer.handle, this.indexWide, offset);
+        WebGpuGlue.setIndexBuffer(buffer.handle, this.indexWide, buffer.baseOffset() + offset);
     }
 
     public void drawIndexed(int indexCount, int instanceCount, int firstIndex, int baseVertex, int firstInstance) {
@@ -389,7 +404,8 @@ public final class CorePass {
         }
         if (this.indexOverridden && this.indexHandle != 0) {
             this.indexOverridden = false;
-            WebGpuGlue.setIndexBuffer(this.indexHandle, this.indexWide, this.indexOffset);
+            WebGpuGlue.setIndexBuffer(this.indexHandle, this.indexWide,
+                    this.indexBuffer.baseOffset() + this.indexOffset);
         }
         int pending = this.prepareDraw();
         if (pending == 0) {
@@ -417,7 +433,8 @@ public final class CorePass {
         }
         if (this.indexOverridden && this.indexHandle != 0) {
             this.indexOverridden = false;
-            WebGpuGlue.setIndexBuffer(this.indexHandle, this.indexWide, this.indexOffset);
+            WebGpuGlue.setIndexBuffer(this.indexHandle, this.indexWide,
+                    this.indexBuffer.baseOffset() + this.indexOffset);
         }
         int pending = this.prepareDraw();
         if (pending < 0) {
@@ -429,7 +446,145 @@ public final class CorePass {
                     commands.handle, offset, drawCount);
             return;
         }
-        WebGpuGlue.drawIndexedIndirect(commands.handle, offset, drawCount);
+        if (WebGpuGlue.gpuIndirectRequested()) {
+            // The glue owns the generated stream and capability/parity decision. Passing the
+            // source as the mandatory fallback keeps the call byte-identical when the switch is
+            // off, while allowing a later encode stage to replace it with a generated buffer.
+            WebGpuGlue.gpuIndirectDrawIndexedSource(commands.handle, offset, drawCount);
+        } else {
+            WebGpuGlue.drawIndexedIndirect(commands.handle, offset, drawCount);
+        }
+    }
+
+    /**
+     * Replays a generated indirect stream with an explicit vanilla stream fallback. The generated
+     * buffer is selected only by the JS glue's named, default-off GPU-indirect switch. Dynamic
+     * uniform offsets deliberately use the original stream until the fused ABI has a parity-aware
+     * generated-buffer entry point; this keeps the fallback exact for existing terrain groups.
+     */
+    public void drawIndexedIndirectGpu(CoreBuffer generated, CoreBuffer fallback, int offset, int drawCount) {
+        if (drawCount <= 0) {
+            return;
+        }
+        if (!validIndirectRange(fallback, offset, drawCount)) {
+            if (this.encoder.device() != null) {
+                this.encoder.device().debugMessage("GPU indirect fallback buffer or range is invalid");
+            }
+            return;
+        }
+        if (generated == fallback) {
+            this.drawIndexedIndirect(fallback, offset, drawCount);
+            return;
+        }
+        if (!validIndirectRange(generated, offset, drawCount)
+                || (generated.usage() & CoreUsage.BUFFER_TEXEL) == 0) {
+            this.drawIndexedIndirect(fallback, offset, drawCount);
+            return;
+        }
+        String capability = drawCount > 1 ? "multi-draw-indirect" : "draw-indirect";
+        if (!this.encoder.device().supportsCapability(capability)) {
+            this.drawIndexedIndirect(fallback, offset, drawCount);
+            return;
+        }
+        if (this.indexOverridden && this.indexHandle != 0) {
+            this.indexOverridden = false;
+            WebGpuGlue.setIndexBuffer(this.indexHandle, this.indexWide,
+                    this.indexBuffer.baseOffset() + this.indexOffset);
+        }
+        int pending = this.prepareDraw();
+        if (pending < 0) {
+            return;
+        }
+        if (pending != 0) {
+            int[] o = this.offsets;
+            WebGpuGlue.drawIndexedIndirectWithOffsets(this.boundGroup0, pending, o[0], o[1], o[2], o[3],
+                    fallback.handle, offset, drawCount);
+            return;
+        }
+        WebGpuGlue.gpuIndirectDrawIndexed(generated.handle, fallback.handle, offset, drawCount);
+        // Debug-only asynchronous readback. The glue checks gaiusGpuIndirectReadback and keeps
+        // the hot path untouched when the switch is absent.
+        WebGpuGlue.gpuIndirectParityReadbackLive(generated.handle, fallback.handle, offset, drawCount);
+    }
+
+    /** Live terrain overload: section bounds and vanilla frustum planes are supplied by the hook. */
+    public void drawIndexedIndirectGpu(CoreBuffer fallback, int offset, int drawCount,
+            float[] bounds, float[] planes, float[] projected) {
+        drawIndexedIndirectGpu(fallback, offset, drawCount, bounds, planes, projected,
+                Math.min(bounds == null ? 0 : bounds.length / 8, projected == null ? 0 : projected.length / 8));
+    }
+
+    private void drawIndexedIndirectGpu(CoreBuffer fallback, int offset, int drawCount,
+            float[] bounds, float[] planes, float[] projected, int sectionCount) {
+        if (drawCount <= 0 || fallback == null) {
+            return;
+        }
+        CoreSlice generated = this.encoder.prepareGpuIndirectFrustum(fallback, offset, drawCount, bounds, planes,
+                projected, sectionCount);
+        if (generated == null) {
+            this.drawIndexedIndirect(fallback, offset, drawCount);
+            return;
+        }
+        if (generated.buffer() == fallback) {
+            this.drawIndexedIndirect(fallback, offset, drawCount);
+            return;
+        }
+        if (!validIndirectRange(generated.buffer(), 0, drawCount)) {
+            this.drawIndexedIndirect(fallback, offset, drawCount);
+            return;
+        }
+        String capability = drawCount > 1 ? "multi-draw-indirect" : "draw-indirect";
+        if (!this.encoder.device().supportsCapability(capability)) {
+            this.drawIndexedIndirect(fallback, offset, drawCount);
+            return;
+        }
+        if (this.indexOverridden && this.indexHandle != 0) {
+            this.indexOverridden = false;
+            WebGpuGlue.setIndexBuffer(this.indexHandle, this.indexWide,
+                    this.indexBuffer.baseOffset() + this.indexOffset);
+        }
+        int pending = this.prepareDraw();
+        if (pending < 0) return;
+        if (pending != 0) {
+            int[] o = this.offsets;
+            WebGpuGlue.drawIndexedIndirectWithOffsets(this.boundGroup0, pending, o[0], o[1], o[2], o[3],
+                    fallback.handle, offset, drawCount);
+            return;
+        }
+        WebGpuGlue.gpuIndirectDrawIndexedRanges(generated.buffer().handle, fallback.handle, 0, offset, drawCount);
+    }
+
+    /** Terrain seam entry point; the seam does not depend on the canonical port module. */
+    public void drawIndexedIndirectGpuTerrain(CoreBuffer fallback, int offset, int drawCount) {
+        if (!terrainGpuIndirectRequested || terrainGpuIndirectSections <= 0
+                || terrainGpuIndirectBounds == null || terrainGpuIndirectPlanes == null
+                || terrainGpuIndirectProjected == null) {
+            this.drawIndexedIndirect(fallback, offset, drawCount);
+            return;
+        }
+        this.drawIndexedIndirectGpu(fallback, offset, drawCount, terrainGpuIndirectBounds,
+                terrainGpuIndirectPlanes, terrainGpuIndirectProjected, terrainGpuIndirectSections);
+    }
+
+    /** Encodes the conservative frustum stage before a later render pass consumes {@code output}. */
+    public boolean encodeGpuIndirectFrustum(CoreBuffer input, CoreBuffer bounds, CoreBuffer planes,
+            CoreBuffer output, int count) {
+        return this.encoder.encodeGpuIndirectFrustum(input, bounds, planes, output, count);
+    }
+
+    /** Hi-Z remains unavailable until projected-rectangle coverage is proven. */
+    public boolean encodeGpuIndirectHiZ(CoreBuffer input, CoreBuffer projected, CoreTextureView hiz,
+            CoreSampler sampler, CoreBuffer config, CoreBuffer output, int count) {
+        return this.encoder.encodeGpuIndirectHiZ(input, projected, hiz, sampler, config, output, count);
+    }
+
+    private static boolean validIndirectRange(CoreBuffer buffer, int offset, int drawCount) {
+        if (buffer == null || buffer.isClosed() || buffer.handle == 0 || offset < 0 || (offset & 3) != 0
+                || (buffer.usage() & CoreUsage.BUFFER_INDIRECT) == 0) {
+            return false;
+        }
+        long length = (long) drawCount * 20L;
+        return offset <= buffer.size() && length <= buffer.size() - offset;
     }
 
     public void draw(int vertexCount, int instanceCount, int firstVertex, int firstInstance) {
@@ -521,7 +676,8 @@ public final class CorePass {
             }
         }
         if (this.indexHandle != 0) {
-            WebGpuGlue.setIndexBuffer(this.indexHandle, this.indexWide, this.indexOffset);
+            WebGpuGlue.setIndexBuffer(this.indexHandle, this.indexWide,
+                    this.indexBuffer.baseOffset() + this.indexOffset);
         }
         this.indexOverridden = false;
         if (this.scissorSet) {

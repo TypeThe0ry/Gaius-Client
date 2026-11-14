@@ -964,8 +964,18 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             const defaultTargetAffinityMs = 5 * 60 * 1000;
             const maximumDiscoveryCacheEntries = 1024;
             // MessagePort has TCP-stream semantics here, so adjacent Netty writes can share one
-            // transferable buffer. Bound batches to retain low input latency and fair delivery.
-            const maximumLocalBatchBytes = 16 * 1024;
+            // transferable buffer. The larger value is an explicit opt-in for chunk delivery;
+            // the default stays at 16 KiB to preserve input latency and fair delivery.
+            const requestedLocalBatchBytes = Number(
+              globalThis.__gaiusChunkPipelineBatching ? 64 * 1024 : 16 * 1024
+            );
+            const maximumLocalBatchBytes = Math.max(
+              16 * 1024,
+              Math.min(64 * 1024, Number.isFinite(requestedLocalBatchBytes)
+                ? Math.floor(requestedLocalBatchBytes) : 16 * 1024)
+            );
+            state.maximumLocalBatchBytes = maximumLocalBatchBytes;
+            state.stats.localBatchBytesLimit = maximumLocalBatchBytes;
             const configuredLocalClaimTimeout = Number(
             globalThis.__gaiusLocalPortClaimTimeoutMs
             );
@@ -3253,7 +3263,12 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             const maximumOutboundControlFrames = 64;
             const maximumOutboundControlBytes = 64 * 1024;
             const webSocketBackpressureRetryMs = 4;
-            const maximumLocalBatchBytes = 16 * 1024;
+            const requestedLocalBatchBytes = Number(state.maximumLocalBatchBytes);
+            const maximumLocalBatchBytes = Math.max(
+              16 * 1024,
+              Math.min(64 * 1024, Number.isFinite(requestedLocalBatchBytes)
+                ? Math.floor(requestedLocalBatchBytes) : 16 * 1024)
+            );
             function now() {
               return typeof performance !== 'undefined' && performance.now
                 ? performance.now()

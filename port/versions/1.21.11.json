@@ -44,10 +44,22 @@
   },
   "patchSet": "legacy-12111",
   "patchkitNotApplicable": {
+    "MinecraftClientPatcher.patchWorldGenRegionBrowserLastChunk": {
+      "targets": ["wasmgc"],
+      "reason": "WorldGenRegion reads the chunk from its GenerationChunkHolder on every call (the table holds holders, not chunks), so the answer for a position can change while the region lives; the last-answer memo is exact only where the constructor resolves the chunks"
+    },
     "MinecraftClientPatcher.prepareAfterOcclusionUpdate": "The renderer has no occlusion-update prepare seam",
     "MinecraftClientPatcher.refreshVisibleSections": "The renderer has no graph-publication refresh seam",
     "MinecraftClientPatcher.sectionVertexHeaps": "The section renderer has no vertex heaps",
     "MinecraftClientPatcher.meshKernelPatches": "Sections retain the vanilla compiler",
+    "MinecraftClientPatcher.patchMipmapGeneratorAtlasPrebake": {
+      "targets": ["wasmgc"],
+      "reason": "generateMipLevels has no transparency argument and no atlas prebake payload is built for the legacy patch set"
+    },
+    "MinecraftClientPatcher.patchStitcherAtlasPrebake": {
+      "targets": ["wasmgc"],
+      "reason": "No atlas prebake payload is built for the legacy patch set"
+    },
     "MinecraftServerWorkerPatcher.lightKernelPatches": {
       "targets": ["js"],
       "reason": "The 1.21.11 patch set does not expose the light-engine hooks used by the WebAssembly GC light kernel"
@@ -102,7 +114,7 @@
     "serverSha1": "64bb6d763bed0a9f1d632ec347938594144943ed",
     "assetIndexId": "29",
     "assetIndexSha1": "e81d9e2536723a11eb68e11c5642708926b8be5f",
-    "assetIndexSha1Alternates": ["4043c34fdd5d06b2ac1f6f46c5b91a4ac16e3452", "a2f0558bd140ae4f8f6a48d0ea6f1dbc16a84baa", "0e43ee533675d60aa9b7e5959742ac9c9cd2eccb"]
+    "assetIndexSha1Alternates": ["4043c34fdd5d06b2ac1f6f46c5b91a4ac16e3452", "a2f0558bd140ae4f8f6a48d0ea6f1dbc16a84baa", "0e43ee533675d60aa9b7e5959742ac9c9cd2eccb", "39cafd4fd3edc4a1e3c2f20bd83ea3382dab43f1"]
   },
   "kernelMirror": {
     "lockSha256": "439cc4f59254588430904f977f1f4c167535f0cd31c16c7816639d781c829cc3",

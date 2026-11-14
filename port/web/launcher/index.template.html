@@ -681,7 +681,86 @@
       pageStart: performance.now()
     };
     const urlParams = new URLSearchParams(location.search);
+    window.__gaiusChunkCausalTelemetryEnabled = /^(1|true|on)$/i.test(
+      urlParams.get("gaiusChunkCausalTelemetry") || "");
+    globalThis.__gaiusSwitches = Object.freeze({
+      gaiusGpuIndirect: urlParams.get("gaiusGpuIndirect") === "1"
+        || urlParams.get("gaiusGpuIndirect") === "true",
+      gaiusGpuIndirectHiZ: urlParams.get("gaiusGpuIndirectHiZ") === "1"
+        || urlParams.get("gaiusGpuIndirectHiZ") === "true",
+      gaiusGpuIndirectParity: urlParams.get("gaiusGpuIndirectParity") === "1"
+        || urlParams.get("gaiusGpuIndirectParity") === "true",
+      gaiusGpuIndirectReadback: urlParams.get("gaiusGpuIndirectReadback") === "1"
+        || urlParams.get("gaiusGpuIndirectReadback") === "true",
+      gaiusRegionArena: urlParams.get("gaiusRegionArena") === "1"
+        || urlParams.get("gaiusRegionArena") === "true",
+      // WebGPU surface gate: frames are retired one by one (rolling) by default; gaiusSurfaceGate=drain
+      // waits for the whole queue at the cap instead; gaiusSurfaceGateCap=N (1..16) changes the
+      // three frames in flight.
+      gaiusSurfaceGate: urlParams.get("gaiusSurfaceGate") === "drain" ? "drain" : "",
+      gaiusSurfaceGateCap: Math.max(0, Math.min(16, Math.floor(Number(urlParams.get("gaiusSurfaceGateCap")) || 0)))
+    });
+    const launcherBoolean = name => /^(1|true|on)$/i.test(urlParams.get(name) || "");
+    // Chunk delivery batching is an opt-in transport experiment. Keep the default
+    // vanilla-compatible path unchanged and pass only a bounded boolean to the
+    // client/server runtimes.
+    const chunkPipelineBatching = urlParams.get("gaiusChunkBatch") === "1";
+    globalThis.__gaiusChunkPipelineBatching = chunkPipelineBatching;
+    // Parse opt-in switches once in the launcher. Runtime Java classes consume this boolean
+    // through the global flag object and never parse the query string on their hot path.
+    globalThis.__gaiusLauncherFlags = Object.freeze({
+      meshSnapshotFast: launcherBoolean("gaiusMeshSnapshot"),
+      chunkPipelineBatching,
+      meshInstallPriority: launcherBoolean("gaiusMeshInstallPriority"),
+      meshAdaptiveBudget: launcherBoolean("gaiusMeshAdaptiveBudget"),
+      meshReadyBudgetMiB: urlParams.get("gaiusMeshReadyBudgetMiB") || "",
+      meshReadyMaxEntries: urlParams.get("gaiusMeshReadyMaxEntries") || ""
+    });
     const vanillaAssetsToken = "dev";
+    const vanillaAssetCacheEnabled = urlParams.get("gaiusAssetCache") === "1"
+      && urlParams.get("fresh") !== "1" && urlParams.get("cache") !== "0"
+      && location.protocol !== "file:";
+    const vanillaAssetCacheName = "gaius-vanilla-assets-v1";
+    function vanillaAssetCacheUrl(source) {
+      if (!vanillaAssetCacheEnabled || !(source instanceof URL)) return null;
+      const key = new URL(source.href);
+      key.search = "";
+      return key.href;
+    }
+    async function readCachedVanillaAssets(source) {
+      const key = vanillaAssetCacheUrl(source);
+      if (!key || !globalThis.caches) return null;
+      try {
+        const cache = await globalThis.caches.open(vanillaAssetCacheName);
+        const hit = await cache.match(key);
+        if (!hit) return null;
+        const bytes = new Uint8Array(await hit.arrayBuffer());
+        if (!hasGaiusVanillaAssetsMagic(bytes)) {
+          await cache.delete(key);
+          return null;
+        }
+        bootTimings.vanillaAssetsCache = "hit";
+        bootTimings.vanillaAssetsCacheBytes = bytes.byteLength;
+        return bytes;
+      } catch (error) {
+        bootTimings.vanillaAssetsCacheError = String(error && error.message || error);
+        return null;
+      }
+    }
+    function storeCachedVanillaAssets(source, bytes) {
+      const key = vanillaAssetCacheUrl(source);
+      if (!key || !globalThis.caches || !(bytes instanceof Uint8Array)) return;
+      // Cache writes are deliberately detached from the first boot. A quota failure must never
+      // delay or fail the vanilla launcher path.
+      void globalThis.caches.open(vanillaAssetCacheName).then(cache =>
+        cache.put(key, new Response(bytes, {headers: {"Content-Type": "application/octet-stream"}}))
+      ).then(() => {
+        bootTimings.vanillaAssetsCache = "stored";
+        bootTimings.vanillaAssetsCacheBytes = bytes.byteLength;
+      }).catch(error => {
+        bootTimings.vanillaAssetsCacheError = String(error && error.message || error);
+      });
+    }
     function hasGaiusVanillaAssetsMagic(bytes) {
       const magic = "GAIUSVP1";
       if (!(bytes instanceof Uint8Array) || bytes.length < 12) return false;
@@ -766,11 +845,15 @@
         ? vanillaAssetsToken + "-fresh-" + Date.now()
         : vanillaAssetsToken;
       source.searchParams.set("v", version);
+      const cached = await readCachedVanillaAssets(source);
+      if (cached) return decodeGaiusVanillaAssets(cached);
       const response = await fetch(source, {cache: "force-cache"});
       if (!response.ok) {
         throw new Error("Could not load the Gaius vanilla asset pack: HTTP " + response.status);
       }
-      return decodeGaiusVanillaAssets(await response.blob());
+      const decoded = await decodeGaiusVanillaAssets(await response.blob());
+      storeCachedVanillaAssets(source, decoded.bytes);
+      return decoded;
     }
 
     window.__gaiusDecodeVanillaAssets = decodeGaiusVanillaAssets;
@@ -1156,6 +1239,9 @@
       highSamples: 0,
       lastSampleAt: performance.now()
     };
+    // Quantile samples are only consumed by the visible HUD or an explicit diagnostics run.
+    // Avoid allocating and sorting a 4096-entry ring every second during normal play.
+    const collectFpsSamples = showPerfHud || urlParams.get("gaiusFpsSamples") === "1";
     function maybeDegradeResolutionForFps() {
       // Window framebuffer size is vanilla's input to auto GUI scale. Keep its DPR fixed
       // between actual browser resize or device-pixel-ratio events.
@@ -1163,18 +1249,18 @@
     if (!unsupportedBrowser) requestAnimationFrame(function gaiusFpsTick(now) {
       const fps = window.__gaiusFps;
       const inWorld = !!window.__gaiusMinecraftState?.level;
-      if (inWorld && !fps.rafMetricsWorldEnteredAt) {
+      if (collectFpsSamples && inWorld && !fps.rafMetricsWorldEnteredAt) {
         fps.rafMetricsWorldEnteredAt = now;
         fps.rafFrameTimes = new Float32Array(4096);
         fps.rafFrameWriteIndex = 0;
         fps.rafFrameCount = 0;
         fps.rafLastFrameAt = 0;
         fps.rafLongestFrameMs = 0;
-      } else if (!inWorld) {
+      } else if (collectFpsSamples && !inWorld) {
         fps.rafMetricsWorldEnteredAt = 0;
       }
       const previousFrameAt = fps.rafLastFrameAt;
-      if (Number.isFinite(previousFrameAt) && previousFrameAt > 0) {
+      if (collectFpsSamples && Number.isFinite(previousFrameAt) && previousFrameAt > 0) {
         const frameMs = now - previousFrameAt;
         if (Number.isFinite(frameMs) && frameMs > 0 && fps.rafMetricsWorldEnteredAt) {
           let samples = fps.rafFrameTimes;
@@ -1196,21 +1282,23 @@
       const elapsed = now - fps.lastSampleAt;
       if (elapsed >= 1000) {
         fps.rafFps = Math.round((fps.frames * 1000 / elapsed) * 10) / 10;
-        const samples = fps.rafFrameTimes;
-        const sampleCount = samples instanceof Float32Array
-          ? Math.min(samples.length, Number(fps.rafFrameCount) || 0)
-          : 0;
-        if (sampleCount > 0) {
-          const ordered = Array.from(samples.subarray(0, sampleCount))
-            .sort((left, right) => left - right);
-          const totalMs = ordered.reduce((sum, value) => sum + value, 0);
-          const slowestCount = Math.max(1, Math.ceil(ordered.length * 0.01));
-          let slowestTotalMs = 0;
-          for (let index = ordered.length - slowestCount; index < ordered.length; index++) {
-            slowestTotalMs += ordered[index];
+        if (collectFpsSamples) {
+          const samples = fps.rafFrameTimes;
+          const sampleCount = samples instanceof Float32Array
+            ? Math.min(samples.length, Number(fps.rafFrameCount) || 0)
+            : 0;
+          if (sampleCount > 0) {
+            const ordered = Array.from(samples.subarray(0, sampleCount))
+              .sort((left, right) => left - right);
+            const totalMs = ordered.reduce((sum, value) => sum + value, 0);
+            const slowestCount = Math.max(1, Math.ceil(ordered.length * 0.01));
+            let slowestTotalMs = 0;
+            for (let index = ordered.length - slowestCount; index < ordered.length; index++) {
+              slowestTotalMs += ordered[index];
+            }
+            fps.rafAverageFps = Math.round((ordered.length * 1000 / totalMs) * 10) / 10;
+            fps.rafOnePercentLow = Math.round((slowestCount * 1000 / slowestTotalMs) * 10) / 10;
           }
-          fps.rafAverageFps = Math.round((ordered.length * 1000 / totalMs) * 10) / 10;
-          fps.rafOnePercentLow = Math.round((slowestCount * 1000 / slowestTotalMs) * 10) / 10;
         }
         fps.fps = fps.rafFps;
         fps.frames = 0;
@@ -1341,11 +1429,27 @@
         pageHost.endsWith(".localhost") || pageHost.startsWith("127.") ||
         isLoopbackRelayHost(pageHost);
       let registryRelay = null;
+      const disabledRelays = new Set();
+      try {
+        if (window.__gaiusRelays && typeof window.__gaiusRelays.list === "function") {
+          const listed = JSON.parse(window.__gaiusRelays.list());
+          if (Array.isArray(listed)) {
+            for (const entry of listed) {
+              if (entry && entry.source === "builtin" && entry.enabled === false && entry.url) {
+                disabledRelays.add(String(entry.url));
+              }
+            }
+          }
+        }
+      } catch (error) {
+        // A broken settings record must not prevent the local development fallback.
+      }
       if (!localDevelopmentHost && Array.isArray(window.__gaiusBridgeUrls)) {
         let bestPriority = -Infinity;
         for (const node of window.__gaiusBridgeUrls) {
           const url = typeof node === "string" ? node : node && node.url;
           if (typeof url !== "string" || !url.trim()) continue;
+          if (disabledRelays.has(url.trim())) continue;
           const rawPriority = node && typeof node === "object" ? Number(node.priority) : 0;
           const priority = Number.isFinite(rawPriority) ? rawPriority : 0;
           if (priority > bestPriority) {
@@ -1552,18 +1656,38 @@
     globalThis.__gaiusConfirmRelay = function (relayUrl) {
       let parsed;
       try { parsed = new URL(String(relayUrl || ""), location.href); } catch (_) { return false; }
+      if (parsed.protocol === "ws:") parsed.protocol = "http:";
+      if (parsed.protocol === "wss:") parsed.protocol = "https:";
+      if (parsed.pathname === "" || parsed.pathname === "/" ||
+          parsed.pathname === "/health" || parsed.pathname === "/relay-node/v1") {
+        parsed.pathname = "/tunnel";
+      }
+      parsed.search = "";
+      parsed.hash = "";
+      const endpoint = parsed.href;
       const origin = parsed.origin;
       const params = new URLSearchParams(location.search || "");
       const explicit = params.getAll("bridge").concat(params.getAll("relay"), params.getAll("relayRegistry"))
         .some(value => String(value || "").trim() && value !== "0");
       if (!explicit || origin === location.origin || isLoopbackRelayHost(parsed.hostname)) return true;
       const accepted = globalThis.__gaiusAcceptedRelays || (globalThis.__gaiusAcceptedRelays = new Set());
-      if (accepted.has(origin)) return true;
+      try {
+        const saved = JSON.parse(localStorage.getItem("gaius.acceptedRelayEndpoints") || "[]");
+        if (Array.isArray(saved)) {
+          for (const value of saved) if (typeof value === "string") accepted.add(value);
+        }
+      } catch (_) {}
+      if (accepted.has(endpoint)) return true;
       const question = "This link routes Gaius through an explicitly supplied relay:\n\n" + origin +
         "\n\nContinue only if you trust it.";
       let ok = false;
       try { ok = typeof window.confirm === "function" && window.confirm(question) === true; } catch (_) {}
-      if (ok) accepted.add(origin);
+      if (ok) {
+        accepted.add(endpoint);
+        try {
+          localStorage.setItem("gaius.acceptedRelayEndpoints", JSON.stringify(Array.from(accepted)));
+        } catch (_) {}
+      }
       if (!ok) {
         for (const key of ["bridge", "relay", "bridgeToken", "relayToken", "relayRegistry"]) params.delete(key);
         try {
@@ -3692,7 +3816,6 @@
         return (absolute ? "/" : "") + kept.join("/");
       }
 
-
       // Screenshots are written by the game and never read back by it. They live in IndexedDB
       // only, as bytes: startup lists their names without reading them, the newest
       // maximumScreenshots within maximumScreenshotTotalBytes are kept, and
@@ -3918,13 +4041,10 @@
 
       async function putIndexedDbFile(path, value) {
         const transaction = db.transaction(storeName, "readwrite");
-        const bytes = copyPersistentBytes(value);
-        const storedValue = bytes === null ? String(value || "") : bytes;
-        transaction.objectStore(storeName).put({
-          path: normalize(path),
-          value: storedValue,
-          updatedAt: Date.now()
-        });
+        const store = transaction.objectStore(storeName);
+        const target = normalize(path);
+        const storedValue = value;
+        store.put({path: target, value: storedValue, updatedAt: Date.now()});
         await transactionDone(transaction);
       }
 
@@ -4283,19 +4403,23 @@
       window.__gaiusFsPut = function(path, value) {
         path = normalize(path);
         value = String(value || "");
-        files[path] = value;
         if (db) {
           persistentWriteGeneration++;
           pending = pending.then(() => putIndexedDbFile(path, value)).catch(error => {
             storageWriteFailure = error;
             report("storage-indexeddb-write-error", path + ": " + (error && error.message ? error.message : String(error)));
             throw error;
+          }).then(() => {
+            // Publish only after the IDB transaction commits. Until then the previous
+            // mirror value remains readable after a Worker/page interruption.
+            files[path] = value;
           });
           return true;
         }
         try {
           if (!window.localStorage) return false;
           window.localStorage.setItem(prefix + path, value);
+          files[path] = value;
           return true;
         } catch (error) {
           report("storage-quota-or-error", path + " chars=" + value.length);
@@ -4307,12 +4431,13 @@
         path = normalize(path);
         const bytes = copyPersistentBytes(value);
         if (bytes === null || !db) return false;
-        files[path] = bytes;
         persistentWriteGeneration++;
         pending = pending.then(() => putIndexedDbFile(path, bytes)).catch(error => {
           storageWriteFailure = error;
           report("storage-indexeddb-write-error", path + ": " + (error && error.message ? error.message : String(error)));
           throw error;
+        }).then(() => {
+          files[path] = bytes;
         });
         return true;
       };
@@ -4369,18 +4494,22 @@
 
       window.__gaiusFsDelete = function(path) {
         path = normalize(path);
-        delete files[path];
         if (db) {
           persistentWriteGeneration++;
           pending = pending.then(() => deleteIndexedDbFile(path)).catch(error => {
             storageWriteFailure = error;
             report("storage-indexeddb-delete-error", path + ": " + (error && error.message ? error.message : String(error)));
             throw error;
+          }).then(() => {
+            delete files[path];
           });
           return true;
         }
         try {
-          if (window.localStorage) window.localStorage.removeItem(prefix + path);
+          const storage = window.localStorage;
+          if (!storage) return false;
+          storage.removeItem(prefix + path);
+          delete files[path];
           return true;
         } catch (error) {
           return false;
@@ -5192,9 +5321,9 @@
       bootTimings.vanillaAssetsReady = performance.now();
       if (typeof main !== "function") {
 
-        setStatus("error", "The WebAssembly GC build did not expose main(args).");
+        setStatus("error", "The selected client build did not expose main(args).");
 	      } else {
-	        setStatus("running", "WebAssembly GC client loaded; calling net.minecraft.client.main.Main.main(args)...\n" + window.__gaiusDisplayArgs.join(" "), 68, "Starting Gaius Client...");
+	        setStatus("running", "Client loaded; starting the game...\n" + window.__gaiusDisplayArgs.join(" "), 68, "Starting Gaius Client...");
 	        // Runtime modules (kernels, quality tiers) and eager sounds, bounded by gaius-boot.js.
 	        if (window.__gaiusBoot) await window.__gaiusBoot.beforeMain();
 	        // The quality tier picks the first-launch option defaults (BrowserFilePersistence) and

@@ -9,14 +9,9 @@ import {dirname, join, resolve, sep} from "node:path";
 import {fileURLToPath} from "node:url";
 import {setTimeout as sleep} from "node:timers/promises";
 import {chromeIsolationArgs} from "./bench/harness-common.mjs";
+import {chromeLaunchArgs, resolveChromeBinary} from "./chrome-binary.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-
-function defaultChromePath() {
-  if (process.platform === "win32") return "C:/Program Files/Google/Chrome/Application/chrome.exe";
-  if (process.platform === "darwin") return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  return "google-chrome";
-}
 
 function option(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -137,9 +132,9 @@ try {
   await new Promise(resolve => portReservation.listen(0, "127.0.0.1", resolve));
   const debuggingPort = portReservation.address().port;
   await new Promise(resolve => portReservation.close(resolve));
-  const chromePath = process.env.GAIUS_CHROME_BIN || process.env.CHROME_BIN || defaultChromePath();
+  const chromePath = resolveChromeBinary({overrides: [process.env.GAIUS_CHROME_BIN, process.env.CHROME_BIN]});
   assert(existsSync(chromePath), `Chrome not found: ${chromePath}`);
-  chrome = spawn(chromePath, ["--headless=new", "--disable-gpu", `--remote-debugging-port=${debuggingPort}`,
+  chrome = spawn(chromePath, [...chromeLaunchArgs(), "--headless=new", "--disable-gpu", `--remote-debugging-port=${debuggingPort}`,
     `--user-data-dir=${join(output, "chrome-profile")}`, ...chromeIsolationArgs({allowNetwork: false}), "about:blank"],
   {stdio: ["ignore", "ignore", "pipe"]});
   chrome.on("error", error => {report.chromeError = String(error);});

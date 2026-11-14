@@ -357,6 +357,157 @@ timeoutContext.expireFlush();
 assert.equal(timeoutContext.__gaiusIntegratedServerStorageFlush.phase, "timeout");
 assert.equal(timeoutEvents.at(-1)?.type, "storage-flush-timeout");
 
+// Whole-file replacement relies on IndexedDB transaction atomicity. Exercise the real page put
+// function and Worker batch writer against a request/transaction shim, including abort and restart.
+function extractFunction(sourceText, marker) {
+  const start = sourceText.indexOf(marker);
+  assert.ok(start >= 0, "missing function " + marker);
+  const open = sourceText.indexOf("{", start);
+  let depth = 0;
+  for (let index = open; index < sourceText.length; index++) {
+    if (sourceText[index] === "{") depth++;
+    else if (sourceText[index] === "}" && --depth === 0) return sourceText.slice(start, index + 1);
+  }
+  throw new Error("unbalanced function " + marker);
+}
+
+function cloneValue(value) {
+  return value instanceof Uint8Array ? value.slice() : value;
+}
+
+function makeAtomicDatabase(initial) {
+  const records = new Map(initial);
+  return {
+    records,
+    transaction() {
+      const transaction = {
+        operations: [],
+        aborted: false,
+        objectStore() { return store; },
+        abort() {
+          this.aborted = true;
+          this.error = new Error("transaction aborted");
+          this.onabort?.();
+        },
+      };
+      const store = {
+        put(record) { transaction.operations.push(["put", record]); },
+        delete(path) { transaction.operations.push(["delete", path]); },
+      };
+      setTimeout(() => {
+        if (transaction.aborted) return;
+        for (const [kind, value] of transaction.operations) {
+          if (kind === "delete") records.delete(value);
+          else records.set(value.path, {...value, value: cloneValue(value.value)});
+        }
+        transaction.oncomplete?.();
+      }, 0);
+      return transaction;
+    },
+  };
+}
+
+function atomicPageContext(database) {
+  const launcher = globalThis.__atomicLauncherSource;
+  const context = {
+    ArrayBuffer, Date, Error, Map, Number, Object, Promise, String, Uint8Array,
+    window: {},
+    db: database,
+    storeName: "files",
+    copyPersistentBytes(value) {
+      if (value instanceof Uint8Array) return value.slice();
+      if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
+      if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+      return null;
+    },
+    transactionDone(transaction) {
+      return new Promise((resolve, reject) => {
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error || new Error("transaction failed"));
+        transaction.onabort = () => reject(transaction.error || new Error("transaction aborted"));
+      });
+    },
+  };
+  context.globalThis = context;
+  vm.runInNewContext(
+    launcher + "\n" + "globalThis.putAtomicFile = putIndexedDbFile;",
+    context,
+    {filename: "index.template.html:atomic-file-replace"},
+  );
+  return context;
+}
+
+const launcherSource = await readFile(new URL("../web/launcher/index.template.html", import.meta.url), "utf8");
+const launcherAtomic = [
+  extractFunction(launcherSource, "function normalize(path)"),
+  extractFunction(launcherSource, "async function putIndexedDbFile("),
+].join("\n");
+globalThis.__atomicLauncherSource = launcherAtomic;
+assert.match(launcherSource, /store\.put\(\{path: target, value: storedValue/);
+assert.doesNotMatch(launcherSource, /atomic-temp/);
+assert.ok(launcherSource.indexOf("localStorage.setItem(prefix + path, value)") <
+  launcherSource.indexOf("files[path] = value;", launcherSource.indexOf("localStorage.setItem(prefix + path, value)")),
+  "localStorage must publish the mirror only after setItem succeeds");
+
+{
+  const database = makeAtomicDatabase([
+    ["/gaius/saves/w/level.dat", {path: "/gaius/saves/w/level.dat", value: "old"}],
+  ]);
+  const runtime = atomicPageContext(database);
+  const pendingWrite = runtime.putAtomicFile("/gaius/saves/w/level.dat", "new");
+  assert.equal(database.records.get("/gaius/saves/w/level.dat")?.value, "old",
+    "page exposed new bytes before the transaction committed");
+  await pendingWrite;
+  assert.equal(database.records.get("/gaius/saves/w/level.dat")?.value, "new");
+  assert.equal(database.records.get("/gaius/saves/w/level.dat").value, "new");
+}
+
+const workerSource = await readFile(new URL("../web/singleplayer/server-worker-bootstrap.js", import.meta.url), "utf8");
+const workerAtomic = [
+  extractFunction(workerSource, "async function writeBatch("),
+  extractFunction(workerSource, "function normalize("),
+].join("\n");
+assert.match(workerSource, /store\.put\(\{path, value: change\.value/);
+
+function atomicWorkerContext(database, crashStep) {
+  const context = {
+    Date, Error, Map, Number, Object, Promise, String, Uint8Array,
+    database, storeName: "files", root: null,
+    regionCache: new Map(), regionIndex: new Map(), fileValues: {"/gaius/saves/w/level.dat": "old"},
+    pairCommitSequenceForPath() { return 0; },
+    trimRegionCache() {},
+    transactionDone(transaction) {
+      return new Promise((resolve, reject) => {
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error || new Error("transaction failed"));
+        transaction.onabort = () => reject(transaction.error || new Error("transaction aborted"));
+      });
+    },
+  };
+  context.root = context;
+  context.globalThis = context;
+  vm.runInNewContext(
+    "let activeFlushTransaction;\n" + workerAtomic + "\n" +
+      "globalThis.runAtomicBatch = writeBatch;",
+    context,
+    {filename: "server-worker-bootstrap.js:atomic-file-replace"},
+  );
+  return context;
+}
+
+{
+  const database = makeAtomicDatabase([
+    ["/gaius/saves/w/level.dat", {path: "/gaius/saves/w/level.dat", value: "old"}],
+  ]);
+  const runtime = atomicWorkerContext(database);
+  await runtime.runAtomicBatch(new Map([
+    ["/gaius/saves/w/level.dat", {value: "new", version: 1, region: false}],
+  ]));
+  assert.equal(database.records.get("/gaius/saves/w/level.dat")?.value, "new");
+  assert.equal(runtime.fileValues["/gaius/saves/w/level.dat"], "new",
+    "Worker did not publish the mirror after commit");
+}
+
 console.log(JSON.stringify({
   ok: true,
   boundedFallbackRehydration: true,
@@ -364,4 +515,5 @@ console.log(JSON.stringify({
   overBudgetRejected: true,
   boundedFlushAck: true,
   boundedFlushTimeout: true,
+  atomicWholeFileReplace: true,
 }));

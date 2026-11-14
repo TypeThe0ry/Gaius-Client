@@ -45,6 +45,7 @@ import {fileURLToPath} from "node:url";
 import {BoundedCdpCapture} from "./bench/bounded-cdp-capture.mjs";
 import {chromeIsolationArgs} from "./bench/harness-common.mjs";
 import {analyzeTerrainPng} from "../../tools/terrain-visual-metrics.mjs";
+import {chromeLaunchArgs, resolveChromeBinary} from "./chrome-binary.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -54,7 +55,8 @@ const dist = resolve(env.DIST), serverJar = env.SERVER_JAR ? resolve(env.SERVER_
 const names = [env.PLAYER_A || "GaiusA", env.PLAYER_B || "GaiusB"];
 const distPort = Number(env.DIST_PORT || 8791), bridgePort = Number(env.BRIDGE_PORT || 8091), serverPort = Number(env.SERVER_PORT || 57791);
 const soakMs = Number(env.SOAK_MS || 60000), bootTimeout = Number(env.BOOT_TIMEOUT_MS || 600000), joinTimeout = Number(env.JOIN_TIMEOUT_MS || 240000);
-const chromeBin = env.GAIUS_CHROME_BIN || "C:/Program Files/Google/Chrome/Application/chrome.exe";
+const chromeBin = resolveChromeBinary();
+const linuxChromeArgs = chromeLaunchArgs();
 const javaBin = env.JAVA || "java";
 const bridgeUrl = env.BRIDGE_URL || `http://127.0.0.1:${bridgePort}`;
 const externalBridge = env.BRIDGE_EXTERNAL === "1";
@@ -176,7 +178,7 @@ class Conn {
 
 const profileDir = await mkdtemp(join(tmpdir(), "gaius-two-"));
 const chromePort = await freePort();
-const chrome = spawn(chromeBin, ["--headless=new", `--remote-debugging-port=${chromePort}`, "--remote-allow-origins=*", `--user-data-dir=${profileDir}`,
+const chrome = spawn(chromeBin, [...linuxChromeArgs, "--headless=new", `--remote-debugging-port=${chromePort}`, "--remote-allow-origins=*", `--user-data-dir=${profileDir}`,
   "--window-size=1280,720", "--ignore-gpu-blocklist", "--enable-unsafe-swiftshader",
   "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows",
   ...chromeIsolationArgs(), "about:blank"], {stdio: "ignore"});

@@ -78,7 +78,8 @@ function schedulerSourceForJvm() {
     "private static void recordHopTelemetry(int kind) { WorldgenDispatcherFixtureRuntime.hop(kind); }",
     "hop telemetry sink");
   replaceOnce(/return System\.nanoTime\(\);/,
-    "return WorldgenDispatcherFixtureRuntime.nanoTime;", "scheduler clock");
+    "WorldgenDispatcherFixtureRuntime.reads++; return WorldgenDispatcherFixtureRuntime.nanoTime;",
+    "scheduler clock");
   return source;
 }
 
@@ -177,6 +178,7 @@ public @interface PlatformMarker { String[] value() default {}; }
     join(sources, "org/teavm/jso/JSObject.java"),
     join(sources, "org/teavm/interop/PlatformMarker.java"),
     hostLoopSource,
+    join(repositoryRoot, "port/overrides/classlib/src/main/java/dev/gaius/browser/ClockStride.java"),
     join(fixtureDir, "PlatformRunnable.java"),
     join(fixtureDir, "Platform.java"),
     join(fixtureDir, "TModernRuntimeSupport.java"),

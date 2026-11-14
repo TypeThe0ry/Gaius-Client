@@ -382,8 +382,10 @@ public final class MeshKernelPatches {
         ClassNode node = read(jar, root, COPY);
         requireUnpatched(node, COPY_ACCESS);
         requireField(node, "section", "L" + PALETTED + ";");
+        requireField(node, "blockEntities", "Ljava/util/Map;");
         requireField(node, "debug", "Z");
         node.methods.add(getter(COPY, "gaius$states", "section", "L" + PALETTED + ";"));
+        node.methods.add(getter(COPY, "gaius$blockEntities", "blockEntities", "Ljava/util/Map;"));
         node.methods.add(getter(COPY, "gaius$debug", "debug", "Z"));
         node.interfaces.add(COPY_ACCESS);
         write(node, root);

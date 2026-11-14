@@ -335,6 +335,31 @@ public final class WorldgenSeedParity {
                         }
                     }
                 }
+                if (status == ChunkStatus.FULL) {
+                    // Features write across chunk borders, so their result depends on the order in which
+                    // chunks are decorated. A FULL request leaves that order to the task scheduler (it
+                    // differs between two runs of the same vanilla jar under load, at the border of the
+                    // square where the unrequested ring is decorated on demand); asking for FEATURES one
+                    // chunk at a time over the square and a ring of two chunks around it first fixes the
+                    // order to raster order, and FULL then only lights.
+                    int minX = Integer.MAX_VALUE;
+                    int minZ = Integer.MAX_VALUE;
+                    int maxX = Integer.MIN_VALUE;
+                    int maxZ = Integer.MIN_VALUE;
+                    for (ChunkPos position : positions) {
+                        minX = Math.min(minX, ParityCompat.x(position));
+                        maxX = Math.max(maxX, ParityCompat.x(position));
+                        minZ = Math.min(minZ, ParityCompat.z(position));
+                        maxZ = Math.max(maxZ, ParityCompat.z(position));
+                    }
+                    for (int z = minZ - 2; z <= maxZ + 2; z++) {
+                        for (int x = minX - 2; x <= maxX + 2; x++) {
+                            long start = System.nanoTime();
+                            chunks.getChunk(x, z, ChunkStatus.FEATURES, true);
+                            generationNanos += System.nanoTime() - start;
+                        }
+                    }
+                }
                 for (ChunkPos position : positions) {
                     int x = ParityCompat.x(position);
                     int z = ParityCompat.z(position);
@@ -358,6 +383,14 @@ public final class WorldgenSeedParity {
                             chunk.getHeightmaps().stream().collect(java.util.stream.Collectors.toMap(
                                     Map.Entry::getKey, entry -> entry.getValue().getRawData())),
                             nbtHash(generatedTag, "block_entities"), nbtHashNested(generatedTag, "structures", "starts"));
+                    // The marks features leave for post-processing (per section, packed positions) and
+                    // the scheduled ticks of the generated chunk: an optimisation of feature placement
+                    // must not move either.
+                    String last = chunkLines.remove(chunkLines.size() - 1);
+                    chunkLines.add(last.substring(0, last.length() - 1)
+                            + ", \"postProcessing\": " + quote(nbtHash(generatedTag, "PostProcessing"))
+                            + ", \"blockTicks\": " + quote(nbtHash(generatedTag, "block_ticks"))
+                            + ", \"fluidTicks\": " + quote(nbtHash(generatedTag, "fluid_ticks")) + "}");
                 }
             }
             String blocks = HexFormat.of().formatHex(blocksAggregate.digest());
@@ -376,6 +409,16 @@ public final class WorldgenSeedParity {
                 throw new IllegalStateException("Browser spawn probe failed", exception.getCause());
             } catch (ReflectiveOperationException exception) {
                 throw new IllegalStateException("Browser spawn probe failed", exception);
+            }
+            String rng = "null";
+            try {
+                Class<?> random = Class.forName("net.minecraft.world.level.levelgen.WorldgenRandom");
+                rng = String.format(Locale.ROOT, "{\"count\": %d, \"hash\": \"%016x\"}",
+                        random.getField("gaius$tapCount").getLong(null), random.getField("gaius$tapHash").getLong(null));
+            } catch (NoSuchFieldException expected) {
+                // No RngTap copy of WorldgenRandom on the class path.
+            } catch (ReflectiveOperationException exception) {
+                throw new IllegalStateException("RNG tap report failed", exception);
             }
             String pulses = "";
             try {
@@ -405,6 +448,7 @@ public final class WorldgenSeedParity {
             json.append("  \"aggregate\": {\"blocks\": \"").append(blocks).append("\", \"biomes\": \"")
                     .append(biomes).append("\"},\n");
             json.append("  \"generationMillis\": ").append(TimeUnit.NANOSECONDS.toMillis(generationNanos)).append(",\n");
+            json.append("  \"rng\": ").append(rng).append(",\n");
             json.append("  \"pulses\": ").append(pulses.isEmpty() ? "null" : pulses).append(",\n");
             json.append("  \"chunks\": [\n");
             json.append(String.join(",\n", chunkLines));

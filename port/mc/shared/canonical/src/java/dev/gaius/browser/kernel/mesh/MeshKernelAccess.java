@@ -11,6 +11,9 @@ import net.minecraft.util.BitStorage;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.Palette;
 import net.minecraft.world.level.chunk.PalettedContainer;
+import java.util.Map;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.entity.BlockEntity;
 
 /**
  * Accessors that {@code dev.gaius.tools.patches.mesh.MeshKernelPatches} adds to vanilla
@@ -73,6 +76,9 @@ public final class MeshKernelAccess {
     public interface Copy {
         /** The copied block states, null for an empty or missing section. */
         PalettedContainer<BlockState> gaius$states();
+
+        /** Immutable block-entity snapshot copied with the section. */
+        Map<BlockPos, BlockEntity> gaius$blockEntities();
 
         boolean gaius$debug();
     }

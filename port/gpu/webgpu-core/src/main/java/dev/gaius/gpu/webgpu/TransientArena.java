@@ -8,16 +8,20 @@ import java.util.List;
 /**
  * Per-submit transient memory (vanilla's {@code TransientMemory}, in core types).
  *
- * <p>Every block is a GPU buffer with a CPU copy. Allocations hand out windows of the CPU copy;
- * {@link #flush()} uploads the written range of each block once, right before the command buffer
- * is submitted (ahead of the frame's commands), so a frame's uniform, vertex and staging data cost
- * one upload per 512 KiB instead of one per allocation. WebGPU orders queue work before later
- * submissions, so a block can be reused as soon as the submission that read it is queued;
+ * <p>Blocks allocate a CPU copy only when an upload needs one. Allocations hand out windows of
+ * that copy; {@link #flush()} uploads the written range once, then releases the copy before the
+ * command buffer is submitted (ahead of the frame's commands), so a frame's uniform, vertex and
+ * staging data cost one upload per 512 KiB instead of one per allocation. WebGPU orders queue
+ * work before later submissions, so a block can be reused as soon as the submission that read it is queued;
  * {@link #rotate()} therefore recycles every block after each submit. Allocations larger than a
  * block get a dedicated block from a small pool.</p>
  */
 public final class TransientArena {
     static final int BLOCK_SIZE = 512 * 1024;
+    /** Keep transient GPU/CPU scratch reuse bounded after a burst such as terrain loading. */
+    private static final int MAX_FREE_BLOCKS = 16;
+    private static final int MAX_FREE_UPLOAD_CPU_BLOCKS = 16;
+    private static final int MAX_CPU_BLOCKS = 8;
     private static final int MAX_FREE_OVERSIZED_BLOCKS = 4;
     private static final int BLOCK_USAGE = CoreUsage.BUFFER_COPY_SRC | CoreUsage.BUFFER_COPY_DST
             | CoreUsage.BUFFER_VERTEX | CoreUsage.BUFFER_INDEX | CoreUsage.BUFFER_UNIFORM | CoreUsage.BUFFER_TEXEL
@@ -31,6 +35,8 @@ public final class TransientArena {
     private Block current;
     private int currentOffset;
     private final ArrayList<ByteBuffer> cpuBlocks = new ArrayList<>();
+    private final ArrayList<ByteBuffer> temporaryCpuBlocks = new ArrayList<>();
+    private final ArrayList<ByteBuffer> freeUploadCpuBlocks = new ArrayList<>();
     private int cpuBlockIndex;
     private int cpuOffset;
     long uploadedBytes;
@@ -40,19 +46,36 @@ public final class TransientArena {
         this.device = device;
     }
 
-    /** One GPU block, its CPU copy and the range written since the last flush. */
+    /** One GPU block and a lazily allocated CPU copy for the range written since the last flush. */
     static final class Block {
         final int size;
         final CoreBuffer buffer;
-        final ByteBuffer cpu;
+        final TransientArena arena;
+        ByteBuffer cpu;
         int dirtyStart = Integer.MAX_VALUE;
         int dirtyEnd;
 
-        Block(CoreDevice device, int size) {
+        Block(TransientArena arena, CoreDevice device, int size) {
+            this.arena = arena;
             this.size = size;
-            int handle = WebGpuGlue.createBuffer(size, CoreUsage.webBufferUsage(BLOCK_USAGE), "gaius transient");
+            // JVM retention tests use a null device and exercise CPU ownership only.
+            int handle = device == null ? 0
+                    : WebGpuGlue.createBuffer(size, CoreUsage.webBufferUsage(BLOCK_USAGE), "gaius transient");
             this.buffer = new CoreBuffer(device, BLOCK_USAGE, size, handle, true);
-            this.cpu = ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder());
+        }
+
+        ByteBuffer cpu() {
+            if (this.cpu == null) {
+                this.cpu = this.arena.acquireUploadCpu(this.size);
+            }
+            return this.cpu;
+        }
+
+        void releaseCpu() {
+            if (this.cpu != null) {
+                this.arena.recycleUploadCpu(this.cpu, this.size);
+                this.cpu = null;
+            }
         }
 
         void markDirty(int start, int end) {
@@ -95,7 +118,7 @@ public final class TransientArena {
                 }
             }
         }
-        this.current = this.freeBlocks.isEmpty() ? new Block(this.device, BLOCK_SIZE)
+        this.current = this.freeBlocks.isEmpty() ? new Block(this, this.device, BLOCK_SIZE)
                 : this.freeBlocks.remove(this.freeBlocks.size() - 1);
         this.usedBlocks.add(this.current);
         this.currentOffset = (int) size;
@@ -111,11 +134,24 @@ public final class TransientArena {
                 return block;
             }
         }
-        return new Block(this.device, size);
+        return new Block(this, this.device, size);
+    }
+
+    private ByteBuffer acquireUploadCpu(int size) {
+        if (size == BLOCK_SIZE && !this.freeUploadCpuBlocks.isEmpty()) {
+            return this.freeUploadCpuBlocks.remove(this.freeUploadCpuBlocks.size() - 1);
+        }
+        return ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder());
+    }
+
+    private void recycleUploadCpu(ByteBuffer block, int size) {
+        if (size == BLOCK_SIZE && this.freeUploadCpuBlocks.size() < MAX_FREE_UPLOAD_CPU_BLOCKS) {
+            this.freeUploadCpuBlocks.add(block);
+        }
     }
 
     private static ByteBuffer window(Block block, int offset, int size) {
-        ByteBuffer view = block.cpu.duplicate();
+        ByteBuffer view = block.cpu().duplicate();
         view.limit(offset + size).position(offset);
         return view.slice().order(ByteOrder.nativeOrder());
     }
@@ -124,9 +160,19 @@ public final class TransientArena {
     public CoreSlice stage(ByteBuffer data, long alignment) {
         int length = data.remaining();
         Allocation allocation = this.allocate(align(length, 4L), alignment, align(length, 4L), 1L);
-        WebGpuGlue.copyBytes(allocation.block.cpu, allocation.offset, data);
+        this.copyBytes(allocation.block.cpu(), allocation.offset, data);
         allocation.block.markDirty(allocation.offset, allocation.offset + allocation.size);
         return new CoreSlice(allocation.block.buffer, allocation.offset, allocation.size);
+    }
+
+    private void copyBytes(ByteBuffer target, int offset, ByteBuffer source) {
+        if (this.device != null) {
+            WebGpuGlue.copyBytes(target, offset, source);
+            return;
+        }
+        ByteBuffer destination = target.duplicate();
+        destination.position(offset);
+        destination.put(source.duplicate());
     }
 
     /**
@@ -146,11 +192,30 @@ public final class TransientArena {
         return new CoreSlice(allocation.block.buffer, allocation.offset, allocation.size);
     }
 
+    /** An isolated per-submit GPU block, used when a compute stage needs distinct bindings. */
+    CoreSlice uploadIsolated(ByteBuffer data) {
+        int size = align(data.remaining(), 4L);
+        Block block = new Block(this, this.device, size);
+        this.usedBlocks.add(block);
+        this.copyBytes(block.cpu(), 0, data);
+        block.markDirty(0, size);
+        return new CoreSlice(block.buffer, 0, size);
+    }
+
+    CoreSlice allocateIsolatedGpu(long size) {
+        int allocated = align(size, 4L);
+        Block block = new Block(this, this.device, allocated);
+        this.usedBlocks.add(block);
+        return new CoreSlice(block.buffer, 0, allocated);
+    }
+
     /** CPU scratch memory valid until the next submit. */
     public ByteBuffer allocateCpu(long size, long alignment, long minimumAllocation, long elementSize) {
         int length = (int) size;
         if (length > BLOCK_SIZE) {
-            return ByteBuffer.allocateDirect(length).order(ByteOrder.nativeOrder());
+            ByteBuffer block = ByteBuffer.allocateDirect(length).order(ByteOrder.nativeOrder());
+            this.temporaryCpuBlocks.add(block);
+            return block;
         }
         int offset = align(this.cpuOffset, alignment);
         if (this.cpuBlockIndex >= this.cpuBlocks.size() || offset + length > BLOCK_SIZE) {
@@ -184,7 +249,7 @@ public final class TransientArena {
                 part = source.duplicate();
                 part.limit(part.position() + length);
             }
-            WebGpuGlue.copyBytes(allocation.block.cpu, allocation.offset + offset, part);
+            this.copyBytes(allocation.block.cpu(), allocation.offset + offset, part);
             offset = align(offset + length, alignment);
         }
         allocation.block.markDirty(allocation.offset, allocation.offset + allocation.size);
@@ -214,10 +279,13 @@ public final class TransientArena {
         if (block.dirtyEnd > block.dirtyStart) {
             int start = block.dirtyStart & ~3;
             int end = Math.min(block.size, (block.dirtyEnd + 3) & ~3);
-            WebGpuGlue.upload(block.buffer.handle, start, window(block, start, end - start));
+            if (this.device != null) {
+                WebGpuGlue.upload(block.buffer.handle, start, window(block, start, end - start));
+            }
             this.uploadedBytes += end - start;
             this.uploadCalls++;
         }
+        block.releaseCpu();
         block.dirtyStart = Integer.MAX_VALUE;
         block.dirtyEnd = 0;
     }
@@ -226,13 +294,32 @@ public final class TransientArena {
     void rotate() {
         this.freeBlocks.addAll(this.usedBlocks);
         this.usedBlocks.clear();
+        // A large upload burst must not turn into a permanent high-water cache. The queue has
+        // already accepted this submit, and oversized blocks use the same post-submit destroy
+        // rule below, so dropping older regular blocks is safe and keeps both GPU and CPU copies
+        // bounded.
+        while (this.freeBlocks.size() > MAX_FREE_BLOCKS) {
+            Block block = this.freeBlocks.remove(0);
+            if (this.device != null) {
+                WebGpuGlue.destroyBuffer(block.buffer.handle);
+            }
+        }
         this.freeOversizedBlocks.addAll(this.oversizedBlocks);
         this.oversizedBlocks.clear();
         while (this.freeOversizedBlocks.size() > MAX_FREE_OVERSIZED_BLOCKS) {
-            WebGpuGlue.destroyBuffer(this.freeOversizedBlocks.remove(0).buffer.handle);
+            Block block = this.freeOversizedBlocks.remove(0);
+            if (this.device != null) {
+                WebGpuGlue.destroyBuffer(block.buffer.handle);
+            }
+        }
+        while (!this.temporaryCpuBlocks.isEmpty()) {
+            this.temporaryCpuBlocks.remove(this.temporaryCpuBlocks.size() - 1);
         }
         this.current = null;
         this.currentOffset = 0;
+        while (this.cpuBlocks.size() > MAX_CPU_BLOCKS) {
+            this.cpuBlocks.remove(this.cpuBlocks.size() - 1);
+        }
         this.cpuBlockIndex = 0;
         this.cpuOffset = 0;
     }

@@ -34,17 +34,10 @@ public final class BrowserFilePersistence {
     // 4671 is retained solely to recognize the legacy options payload. It is
     // never used to select, read, or delete browser storage for a runtime.
     private static final int LEGACY_DATA_VERSION = 4671;
-    /**
-     * Options seeded into a new browser profile before the first start. The graphics part
-     * depends on the GPU tier the page's capability layer measured
-     * ({@code port/web/runtime/quality/gpu-caps.js}, {@link #runtimeGraphicsTier}): the Fast
-     * preset on low-tier and mobile GPUs, Fancy from the mid tier up, a render distance that
-     * grows with the tier and the vanilla 0.75 s chunk fade-in from the mid tier up. These values
-     * are live: {@code GraphicsPresetStartupPatcher} stops {@code Minecraft.<init>} from
-     * re-applying the named preset over them on every start. Existing profiles keep their saved
-     * options; only files still equal to an earlier seed are rewritten, and a profile whose
-     * seeded video options the player never changed follows a new tier
-     * ({@link #reconcileAutomaticPreset}).
+    /** Options seeded into a new browser profile before the first start. The video block is
+     * vanilla's FAST preset values for every profile; the browser must not select a GPU-tier
+     * distance or transparency override before the player changes Video Settings. Existing
+     * profiles keep their saved options; only files still equal to an earlier seed are rewritten.
      */
     private static final String BROWSER_OPTION_COMMON_DEFAULTS = String.join("\n",
             "autoJump:false",
@@ -68,91 +61,26 @@ public final class BrowserFilePersistence {
             "showAutosaveIndicator:false",
             "skipMultiplayerWarning:true",
             "onboardAccessibility:false") + "\n";
-    /** Low tier and mobile: the vanilla Fast preset, minus the menu blur, at 6/4 distance. */
-    private static final String LOW_TIER_GRAPHICS_DEFAULTS = String.join("\n",
+    /** Vanilla FAST values written by GraphicsPreset.apply for a fresh profile. */
+    private static final String VANILLA_FAST_GRAPHICS_DEFAULTS = String.join("\n",
             "graphicsPreset:\"fast\"",
-            "renderDistance:6",
-            "simulationDistance:4",
-            "entityDistanceScaling:0.5",
+            "renderDistance:8",
+            "simulationDistance:6",
+            "entityDistanceScaling:0.75",
             "renderClouds:\"fast\"",
             "cloudRange:32",
             "ao:false",
             "cutoutLeaves:false",
             "improvedTransparency:false",
-            "weatherRadius:3",
+            "weatherRadius:5",
             "chunkSectionFadeInTime:0.0",
             "mipmapLevels:2",
             "maxAnisotropyBit:1",
             "textureFiltering:0",
-            "biomeBlendRadius:0",
+            "biomeBlendRadius:1",
             "particles:1",
             "entityShadows:false",
-            "menuBackgroundBlurriness:0") + "\n";
-    /** Mid tier (integrated desktop GPUs): Fancy at the browser 8/6 distance contract. */
-    private static final String MID_TIER_GRAPHICS_DEFAULTS = String.join("\n",
-            "graphicsPreset:\"fancy\"",
-            "renderDistance:8",
-            "simulationDistance:6",
-            "entityDistanceScaling:0.75",
-            "renderClouds:\"true\"",
-            "cloudRange:64",
-            "ao:true",
-            "cutoutLeaves:true",
-            "improvedTransparency:false",
-            "weatherRadius:5",
-            "chunkSectionFadeInTime:0.75",
-            "mipmapLevels:4",
-            "maxAnisotropyBit:1",
-            "textureFiltering:0",
-            "biomeBlendRadius:1",
-            "particles:0",
-            "entityShadows:true",
             "menuBackgroundBlurriness:2") + "\n";
-    /**
-     * High tier (discrete GPUs): Fancy with full biome blend and weather; improved transparency
-     * is requested but only runs where the context renders and blends float targets
-     * ({@code BrowserQualityCaps}). 26.3 only: the other profiles seed it off and cap the
-     * render distance at 8 ({@link #defaultBrowserOptions}).
-     */
-    private static final String HIGH_TIER_GRAPHICS_DEFAULTS = String.join("\n",
-            "graphicsPreset:\"fancy\"",
-            "renderDistance:10",
-            "simulationDistance:6",
-            "entityDistanceScaling:1.0",
-            "renderClouds:\"true\"",
-            "cloudRange:64",
-            "ao:true",
-            "cutoutLeaves:true",
-            "improvedTransparency:true",
-            "weatherRadius:10",
-            "chunkSectionFadeInTime:0.75",
-            "mipmapLevels:4",
-            "maxAnisotropyBit:1",
-            "textureFiltering:0",
-            "biomeBlendRadius:2",
-            "particles:0",
-            "entityShadows:true",
-            "menuBackgroundBlurriness:3") + "\n";
-    /** Ultra tier (fast discrete GPUs): High plus a longer render and cloud distance. */
-    private static final String ULTRA_TIER_GRAPHICS_DEFAULTS = String.join("\n",
-            "graphicsPreset:\"fancy\"",
-            "renderDistance:12",
-            "simulationDistance:6",
-            "entityDistanceScaling:1.0",
-            "renderClouds:\"true\"",
-            "cloudRange:96",
-            "ao:true",
-            "cutoutLeaves:true",
-            "improvedTransparency:true",
-            "weatherRadius:10",
-            "chunkSectionFadeInTime:0.75",
-            "mipmapLevels:4",
-            "maxAnisotropyBit:1",
-            "textureFiltering:0",
-            "biomeBlendRadius:2",
-            "particles:0",
-            "entityShadows:true",
-            "menuBackgroundBlurriness:5") + "\n";
     /**
      * The single seed of v0.2.2 to v0.3.x. Kept only to recognise options files the game never
      * rewrote (and, through {@link #LEGACY_BROWSER_OPTION_DEFAULTS}, the older one); most of its
@@ -201,6 +129,7 @@ public final class BrowserFilePersistence {
     private static final Map<String, Integer> OPEN_MATERIALIZED_CHUNK_FILES = new HashMap<>();
     private static final Set<String> INTERNAL_VIRTUAL_FILE_PATHS = new HashSet<>();
     private static final Set<String> LAZY_CHUNK_FILE_PLACEHOLDERS = new HashSet<>();
+    private static int virtualWriteSequence;
     private static boolean mounted;
     private static String mountedStorageSignature;
     private static String mountedStoragePrefix;
@@ -724,7 +653,8 @@ public final class BrowserFilePersistence {
     private static boolean shouldRestoreAtStartup(String path) {
         String normalized = normalize(path);
         if (normalized.contains("/.gaius-backups/") ||
-                normalized.contains("/gaius/storage/recovery-journal/")) {
+                normalized.contains("/gaius/storage/recovery-journal/") ||
+                normalized.contains("/gaius/storage/atomic-temp/")) {
             return false;
         }
         if (isScreenshotPath(normalized)) {
@@ -812,6 +742,7 @@ public final class BrowserFilePersistence {
             VirtualFileSystem fileSystem = VirtualFileSystemProvider.getInstance();
             VirtualFile existing = fileSystem.getFile(OPTIONS_PATH);
             if (existing != null && existing.isFile()) {
+                addMissingOptionsVersion(existing);
                 if (!migrateLegacyDefaultOptions(existing)) {
                     reconcileAutomaticPreset(existing);
                 }
@@ -823,13 +754,32 @@ public final class BrowserFilePersistence {
         }
     }
 
+    /**
+     * An options file without a {@code version:} line is read by vanilla as data version 0 and
+     * upgraded through every data fixer since the first one (about 1.2 s on a fast desktop, 4 s
+     * on a loaded one, on every start until the game saves). Files this client wrote always carry
+     * the line; a hand-written or copied file may not. Stamp it with the current version so the
+     * upgrade is a no-op. Options of a much older vanilla install are not migrated by this client
+     * anyway (its keys are the ones of the running version).
+     */
+    private static void addMissingOptionsVersion(VirtualFile existing) throws IOException {
+        String stored = new String(readVirtualFile(existing), StandardCharsets.UTF_8);
+        if (stored.startsWith("version:") || stored.contains("\nversion:")) {
+            return;
+        }
+        byte[] bytes = ("version:" + currentDataVersion() + "\n" + stored).getBytes(StandardCharsets.UTF_8);
+        writeVirtualFile(OPTIONS_PATH, bytes);
+        persist(OPTIONS_PATH, bytes);
+        report("storage-default-options", "stamped missing options version " + currentDataVersion());
+    }
+
     /** True when an untouched earlier seed was replaced with the tiered defaults. */
     private static boolean migrateLegacyDefaultOptions(VirtualFile existing) throws IOException {
         byte[] bytes = readVirtualFile(existing);
         String stored = new String(bytes, StandardCharsets.UTF_8);
-        // The v0.3 seed, never rewritten by the game: replace it with the tiered defaults.
+        // The v0.3 seed, never rewritten by the game: replace it with vanilla FAST defaults.
         if (withoutVersionLine(stored).equals(PREVIOUS_BROWSER_OPTION_DEFAULTS)) {
-            writeDefaultOptions("browser defaults graphics tiers", true);
+            writeDefaultOptions("browser defaults vanilla FAST", true);
             return true;
         }
         // The launcher moves the old Fancy default to Fast once before this runs;
@@ -842,16 +792,16 @@ public final class BrowserFilePersistence {
                 && !options.equals(legacyVersionedOptions)) {
             return false;
         }
-        writeDefaultOptions("browser defaults data version", true);
+        writeDefaultOptions("browser defaults vanilla FAST", true);
         return true;
     }
 
     /**
      * The automatic video preset of a profile that already has options: while the player has not
-     * changed any of the video options the tier seeded, a different tier (a new classification
-     * of the machine, a {@code ?gaiusTier} override) re-applies that tier's values; once the
-     * player changed one, the options are never adjusted again. The bookkeeping lives in the
-     * page's quality layer ({@code GaiusQuality.autoPreset}); without it nothing changes.
+     * changed any of the vanilla FAST video options that were seeded, the page records the
+     * profile as automatic. GPU-tier changes never rewrite those options; once the player changes
+     * one, the options are never adjusted again. The bookkeeping lives in the page's quality
+     * layer ({@code GaiusQuality.autoPreset}); without it nothing changes.
      */
     private static void reconcileAutomaticPreset(VirtualFile existing) throws IOException {
         String stored = new String(readVirtualFile(existing), StandardCharsets.UTF_8);
@@ -916,41 +866,10 @@ public final class BrowserFilePersistence {
         syncAutomaticPreset(storageConfigurationSignature(), "", options, tier, true);
     }
 
-    private static String defaultBrowserOptions(String tier) {
-        String graphics = tierGraphicsDefaults(tier);
-        // Hardware anisotropic filtering instead of the 8-tap RGSS shader path, where the
-        // context exposes EXT_texture_filter_anisotropic: 4x on high, 8x on ultra.
-        if (("high".equals(tier) || "ultra".equals(tier)) && runtimeAnisotropicFiltering()) {
-            graphics = graphics
-                    .replace("maxAnisotropyBit:1\n",
-                            "ultra".equals(tier) ? "maxAnisotropyBit:3\n" : "maxAnisotropyBit:2\n")
-                    .replace("textureFiltering:0\n", "textureFiltering:2\n");
-        }
-        // Improved transparency is capability-gated only on 26.3 (BrowserQualityCaps); the
-        // 26.2 and 1.21.11 transparency post chain has no gate, so their seeds keep it off.
-        // Their Worker world generation also stays at the 8/6 distance their graphics presets
-        // are pinned to.
-        if (!storageConfigurationSignature().startsWith("26.3|")) {
-            graphics = graphics
-                    .replace("improvedTransparency:true\n", "improvedTransparency:false\n")
-                    .replace("renderDistance:10\n", "renderDistance:8\n")
-                    .replace("renderDistance:12\n", "renderDistance:8\n");
-        }
+    private static String defaultBrowserOptions(String ignoredTier) {
+        String graphics = VANILLA_FAST_GRAPHICS_DEFAULTS;
         return "version:" + currentDataVersion() + "\n" + BROWSER_OPTION_COMMON_DEFAULTS
                 + graphics;
-    }
-
-    private static String tierGraphicsDefaults(String tier) {
-        switch (tier) {
-            case "low":
-                return LOW_TIER_GRAPHICS_DEFAULTS;
-            case "high":
-                return HIGH_TIER_GRAPHICS_DEFAULTS;
-            case "ultra":
-                return ULTRA_TIER_GRAPHICS_DEFAULTS;
-            default:
-                return MID_TIER_GRAPHICS_DEFAULTS;
-        }
     }
 
     /** low, mid, high or ultra; mid when the page has no capability layer (or in a Worker). */
@@ -1029,25 +948,53 @@ public final class BrowserFilePersistence {
         if (parent == null || !parent.isDirectory()) {
             throw new IOException("Could not open parent directory " + parentPath);
         }
-        VirtualFile file = fileSystem.getFile(path);
-        if ((file == null || !file.isFile()) && !parent.createFile(name)) {
-            file = fileSystem.getFile(path);
-            if (file == null || !file.isFile()) {
-                throw new IOException("Could not create " + path);
+        VirtualFile existing = fileSystem.getFile(path);
+        // TeaVM's in-memory filesystem returns a view object for a missing path.
+        // Check exists() before rejecting non-file targets so first-run files can
+        // still be created while real directories remain protected.
+        if (existing != null && existing.exists() && !existing.isFile()) {
+            throw new IOException("Could not replace non-file target " + path);
+        }
+        String temporaryName = ".gaius-write-" + (++virtualWriteSequence) + "-" + name;
+        if (!parent.createFile(temporaryName)) {
+            throw new IOException("Could not create temporary file for " + path);
+        }
+        String temporaryPath = parentPath.equals("/")
+                ? "/" + temporaryName : parentPath + "/" + temporaryName;
+        VirtualFile temporary = fileSystem.getFile(temporaryPath);
+        if (temporary == null || !temporary.isFile()) {
+            throw new IOException("Could not open temporary file for " + path);
+        }
+        VirtualFileAccessor accessor = temporary.createAccessor(false, true, false);
+        if (accessor == null) {
+            temporary.delete();
+            throw new IOException("Could not open temporary file for " + path);
+        }
+        boolean written = false;
+        try {
+            accessor.resize(0);
+            accessor.write(bytes, 0, bytes.length);
+            accessor.flush();
+            written = true;
+        } catch (IOException | RuntimeException | Error failure) {
+            temporary.delete();
+            throw failure;
+        } finally {
+            try {
+                accessor.close();
+            } catch (IOException | RuntimeException | Error failure) {
+                temporary.delete();
+                throw failure;
             }
         }
-        file = fileSystem.getFile(path);
-        if (file == null || !file.isFile()) {
-            throw new IOException("Could not open " + path);
+        if (!written) {
+            temporary.delete();
+            throw new IOException("Could not write temporary file for " + path);
         }
-        VirtualFileAccessor accessor = file.createAccessor(false, true, false);
-        if (accessor == null) {
-            throw new IOException("Could not open " + path);
+        if (!parent.adopt(temporary, name)) {
+            temporary.delete();
+            throw new IOException("Could not atomically replace " + path);
         }
-        accessor.resize(0);
-        accessor.write(bytes, 0, bytes.length);
-        accessor.flush();
-        accessor.close();
     }
 
     private static void ensureParentDirectories(VirtualFileSystem fileSystem, String path) {
@@ -1431,16 +1378,6 @@ public final class BrowserFilePersistence {
     private static native String syncAutomaticPreset(String profile, String current, String seed,
             String tier, boolean seeded);
 
-    /** Whether the capability layer saw EXT_texture_filter_anisotropic (false when unknown). */
-    @JSBody(script = """
-            try {
-              var caps = globalThis.__gaiusGpuCaps;
-              return !!(caps && caps.extensions && caps.extensions.anisotropic);
-            } catch (e) {
-              return false;
-            }
-            """)
-    private static native boolean runtimeAnisotropicFiltering();
 
     @JSBody(script = """
             try {

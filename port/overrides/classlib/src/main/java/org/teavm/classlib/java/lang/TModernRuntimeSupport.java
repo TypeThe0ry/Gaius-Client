@@ -9,6 +9,8 @@ import org.teavm.classlib.java.util.TMap;
 import org.teavm.classlib.java.lang.reflect.TType;
 import org.teavm.interop.Async;
 import org.teavm.interop.AsyncCallback;
+import org.teavm.jso.JSFunctor;
+import org.teavm.jso.JSObject;
 
 public final class TModernRuntimeSupport {
     private TModernRuntimeSupport() {
@@ -155,6 +157,13 @@ public final class TModernRuntimeSupport {
         } else {
             HostLoop.postMacrotask(resume);
         }
+    }
+
+    // Retain the private TeaVM callback type for overlay compatibility. The active bridge uses
+    // HostLoop directly; this interface is not instantiated.
+    @JSFunctor
+    private interface ResumeCallback extends JSObject {
+        void run();
     }
 
     public static void postRunnableMacrotask(Runnable callback) {

@@ -12,6 +12,7 @@ import {spawn} from "node:child_process";
 import {copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} from "node:fs";
 import {join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
+import {chromeLaunchArgs, resolveChromeBinary} from "../../../scripts/chrome-binary.mjs";
 
 if (!process.env.OUT) {
   console.error("OUT must name a scratch directory");
@@ -75,10 +76,10 @@ const CASES = [
   Object.assign({}, base, {fxaa: true, tonemap: false, ssao: false, bloom: true, ssr: false, bloomThreshold: 0.5}),
 ];
 
-const chromeBin = process.env.GAIUS_CHROME_BIN || "C:/Program Files/Google/Chrome/Application/chrome.exe";
+const chromeBin = resolveChromeBinary();
 const port = 9800 + Math.floor(Math.random() * 150);
 const profile = mkdtempSync(join(dir, "profile-"));
-const chrome = spawn(chromeBin, ["--headless=new", `--remote-debugging-port=${port}`, "--remote-allow-origins=*",
+const chrome = spawn(chromeBin, [...chromeLaunchArgs(), "--headless=new", `--remote-debugging-port=${port}`, "--remote-allow-origins=*",
   `--user-data-dir=${profile}`, "--ignore-gpu-blocklist", "--allow-file-access-from-files", "about:blank"], {stdio: "ignore"});
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 let failures = 0;

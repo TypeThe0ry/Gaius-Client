@@ -16,7 +16,7 @@ class StartupTimelineSourceTest(unittest.TestCase):
     def test_idle_prefetch_change_is_dropped_without_measurement(self):
         source = (ROOT / "port/web/boot/gaius-boot.js").read_text(encoding="utf-8")
         self.assertNotIn('Promise.all(pending.map((target) => prefetch(target)))', source)
-        self.assertIn('Date.now() - titleSince < 2500', source)
+        self.assertIn('Date.now() - titleSince < titleIdleGraceMs()', source)
 
 
 if __name__ == "__main__":

@@ -40,14 +40,14 @@ export const RELEASE_SETTINGS = Object.freeze({terrainVisible: true, settleSecon
 const HARNESS_ENV = ["ACCEPT_EXTENDED", "ACCEPT_INJECT", "ARTIFACT", "BYPASS_SW", "GAIUS_GPU_EXPECT",
   "ACCEPT_TERRAIN_VISIBLE", "BOOT_TIMEOUT_MS", "CAPTURE_CAMERAS", "CAPTURE_MODE",
   "CAPTURE_STAGE_JS", "CDP_TIMEOUT_MS", "CLEAN_ONLY", "CLEAN_THROUGHPUT",
-  "CLEAN_WINDOW_S", "DIST", "GAIUS_CHROME_BIN", "GAIUS_RUNTIME", "MAIN_THREAD_PROFILE", "OUT", "PAGE_URL",
+  "CLEAN_WINDOW_S", "DIST", "GAIUS_CHROME_BIN", "GAIUS_CHROME_GPU_FLAGS_JSON", "GAIUS_RUNTIME", "MAIN_THREAD_PROFILE", "OUT", "PAGE_URL",
   "PERF_CAPTURE", "PERF_DURATION_MS", "PLAYER_NAME", "PROFILE", "PROFILE_60HZ",
   "PROFILE_60HZ_S", "QUERY", "REENTER", "REENTER_PAGE_URL", "RUNTIME", "SEED", "SETTLE_S",
   "SLOT_TIMEOUT_S", "WORKER_EXC_DEBUG", "WORLD_TIMEOUT_MS", "WORLDGEN_BENCH",
   "WORLDGEN_ENTRY_PROFILE", "WORLDGEN_KERNEL_OFF", "RELOAD_SOAK", "RELOAD_MEMORY_BUDGET_BYTES", "RELOAD_MEMORY_BUDGET_GIB",
     "ACCEPT_PAUSE_ON_LOST_FOCUS", "QUIT_GAME_ACCEPTANCE",
   "STATIC_HOST_HEADERS", "UNSUPPORTED_BROWSER_ACCEPTANCE", "UNSUPPORTED_FORM", "UNSUPPORTED_INJECT",
-  "UNSUPPORTED_LOCALE", "CHROME_EXTRA_ARGS_JSON"];
+  "UNSUPPORTED_LOCALE", "CHROME_EXTRA_ARGS_JSON", "GAIUS_DIAGNOSTIC_CHROME"];
 
 function inside(parent, path) {
   const rel = relative(parent, path);
@@ -119,8 +119,11 @@ export function planCases({staged, profiles, onlyCases, manifests}) {
       if (config.dist && !existsSync(join(config.dist, "index.html"))) preflight.push(`missing ${config.form} index.html`);
       if (config.artifact && !existsSync(config.artifact)) preflight.push("missing portable HTML");
       if (id === "unsupported-browser") {
-        if (manifest?.runtimePolicy !== "wasm-only") preflight.push("site does not declare WasmGC-only runtime policy");
-        if (manifest?.assets?.["classes.js"] || manifest?.assets?.["singleplayer-server.js"]) {
+        config.frozenFallback = manifest?.runtimePolicy === "auto" &&
+          !!(manifest?.assets?.["classes.js"] || manifest?.assets?.["classes.js.gz"]) &&
+          !!(manifest?.assets?.["singleplayer-server.js"] || manifest?.assets?.["singleplayer-server.js.gz"]);
+        if (!config.frozenFallback && manifest?.runtimePolicy !== "wasm-only") preflight.push("site does not declare WasmGC-only runtime policy");
+        if (!config.frozenFallback && (manifest?.assets?.["classes.js"] || manifest?.assets?.["singleplayer-server.js"])) {
           preflight.push("site still maps a JavaScript client or server asset");
         }
         for (const variant of config.unsupportedVariants) {
@@ -155,6 +158,14 @@ export function planCases({staged, profiles, onlyCases, manifests}) {
 export function buildHarnessEnv(spec, options, base = process.env) {
   const env = {...base};
   for (const name of HARNESS_ENV) delete env[name];
+  // Browser selection and Linux GPU startup policy are explicit release-runner inputs.
+  for (const name of ["GAIUS_CHROME_BIN", "GAIUS_CHROME_GPU_FLAGS_JSON"]) {
+    if (base[name] != null) env[name] = base[name];
+  }
+  for (const name of ["CHROME_EXTRA_ARGS_JSON", "GAIUS_DIAGNOSTIC_CHROME"]) {
+    if (base[name] != null) env[name] = base[name];
+  }
+  if (base.CDP_TIMEOUT_MS != null) env.CDP_TIMEOUT_MS = base.CDP_TIMEOUT_MS;
   Object.assign(env, {OUT: join(options.out, "cases", spec.profile, spec.id), PROFILE: spec.profile,
     SEED: options.seed, ACCEPT_TERRAIN_VISIBLE: "1", ACCEPT_PAUSE_ON_LOST_FOCUS: "0",
     SLOT_TIMEOUT_S: String(RELEASE_SETTINGS.slotTimeoutSeconds), SETTLE_S: String(RELEASE_SETTINGS.settleSeconds),
@@ -162,6 +173,7 @@ export function buildHarnessEnv(spec, options, base = process.env) {
   if (spec.dist) env.DIST = spec.dist;
   if (spec.artifact) env.ARTIFACT = spec.artifact;
   if (spec.query) env.QUERY = spec.query;
+  if (base.GAIUS_EXTRA_QUERY) env.QUERY = (env.QUERY ? env.QUERY + "&" : "runtime=wasm&") + base.GAIUS_EXTRA_QUERY;
   if (spec.reenter) env.REENTER = spec.reenter;
   if (spec.inject) env.ACCEPT_INJECT = spec.inject;
   if (spec.unsupportedVariant) {
@@ -175,8 +187,8 @@ export function buildHarnessEnv(spec, options, base = process.env) {
     env.RELOAD_SOAK = "1";
     env.RELOAD_MEMORY_BUDGET_BYTES = String(RELEASE_SETTINGS.reloadMemoryBudgetBytes);
   }
-  // A masked GPU capability selects WebGL2; missing WasmGC/JSPI is handled as unsupported.
-  if (spec.fallback === "gpu") env.GAIUS_GPU_EXPECT = spec.gpu;
+  // A masked GPU retains Wasm; a missing Wasm feature exercises the frozen JS pair.
+  if (spec.fallback === "gpu" || spec.fallback === "runtime") env.GAIUS_GPU_EXPECT = spec.gpu;
   if (spec.quitGame) env.QUIT_GAME_ACCEPTANCE = "1";
   return env;
 }
@@ -232,6 +244,13 @@ export function assessCase(spec, report, exitCode) {
   if (String(report.seedConfiguration?.effectiveSeed) !== String(report.seed)
       || report.seedConfiguration?.acceptance !== "verified") reasons.push("/seed did not verify the configured seed");
   const selection = report.selection || {};
+  if (spec.fallback === "runtime") {
+    const feature = spec.inject === "no-wasmgc" ? "gc" : "jspi";
+    if (selection.runtime?.features?.[feature] !== false || selection.runtime?.fallback !== true) {
+      reasons.push("missing injected runtime capability or automatic JavaScript fallback evidence");
+    }
+    if (report.runtimes?.world?.server?.runtime !== "js") reasons.push("frozen JavaScript server did not run");
+  }
   if (selection.runtime?.selected !== spec.runtime) {
     reasons.push(`runtime selected ${selection.runtime?.selected || "missing"}; expected ${spec.runtime}${selection.runtime?.reason ? ` (${selection.runtime.reason})` : ""}`);
   }
@@ -337,7 +356,9 @@ async function runBrowserCase(spec, options) {
     for (const variant of spec.unsupportedVariants || []) {
       const variantSpec = {...spec, ...variant,
         id: `unsupported-browser-${variant.form}-${variant.inject}`,
-        unsupportedVariant: true, preflight: []};
+        unsupportedVariant: !spec.frozenFallback,
+        ...(spec.frozenFallback ? {runtime: "js", gpu: "webgl2", fallback: "runtime",
+          query: "gpu=webgl2", reenter: "reload"} : {}), preflight: []};
       variants.push(await runBrowserCase(variantSpec, options));
     }
     const reasons = variants.flatMap(row => row.reasons || []);

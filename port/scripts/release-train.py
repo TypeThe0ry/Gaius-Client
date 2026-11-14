@@ -13,6 +13,7 @@ import re
 from datetime import datetime, timezone
 
 import gaius_build_identity as identity
+from relay_artifact_gate import assert_artifact
 
 ROOT = Path(__file__).resolve().parents[2]
 MIN_FREE = 10 * 1024**3
@@ -61,8 +62,26 @@ def clean(expected: str | None = None) -> str:
     if git("status", "--porcelain", "--untracked-files=all"):
         raise RuntimeError("Source checkout must be clean, including untracked files")
     if expected is not None and commit != expected:
+        # Acceptance and manifest may run from a descendant that only changed test/acceptance tooling
+        # (GAIUS_RELEASE_TOOLING_DESCENDANT=1): the artifacts' build identity still binds the source.
+        if os.environ.get("GAIUS_RELEASE_TOOLING_DESCENDANT") == "1" and tooling_only_descendant(expected, commit):
+            return commit
         raise RuntimeError("Source commit changed during release train")
     return commit
+
+
+# Packaging scripts are outside the build fingerprint (gaius_build_identity.py): a descendant that only
+# changes how staged outputs are packaged leaves the compiled artifacts' identity untouched.
+TOOLING_PATHS = ("port/scripts/minecraft-263-singleplayer-cdp.mjs", "port/scripts/release-acceptance",
+                 "port/scripts/release-train", "port/scripts/test-", "tools/",
+                 "port/scripts/build-portable-html.py", "port/scripts/build-pages-site.py")
+
+
+def tooling_only_descendant(expected: str, commit: str) -> bool:
+    if subprocess.run(["git", "merge-base", "--is-ancestor", expected, commit], cwd=ROOT).returncode != 0:
+        return False
+    changed = git("diff", "--name-only", f"{expected}..{commit}").splitlines()
+    return all(name.startswith(TOOLING_PATHS) or name.endswith(".test.mjs") for name in changed)
 
 
 def resource_map(path: Path) -> dict:
@@ -229,6 +248,37 @@ def manifest(out: Path) -> None:
             or {(r["profile"], r["id"]) for r in rows} != expected
             or any(r["verdict"] != "PASS" for r in rows)):
         raise RuntimeError(f"Release acceptance must pass all {len(expected)} distinct cases")
+    stage_receipt = json.loads((out / "staged/STAGED.txt").read_text(encoding="utf-8"))
+    staged_profiles = {entry["profile"]: entry for entry in stage_receipt.get("profiles", [])}
+    # A Wasm-only train (release-train.sh --wasm-only) stages every profile with no JavaScript
+    # role: nothing frozen exists to check, and nothing may claim a fallback either.
+    wasm_only = all(staged_profiles.get(profile, {}).get("jsRole") == "missing" for profile in profiles())
+    frozen_path = out / "FROZEN-JS.json"
+    frozen: dict = {}
+    if wasm_only:
+        for profile in profiles():
+            if staged_profiles[profile].get("jsFallbackIncluded") is not False:
+                raise RuntimeError(f"Wasm-only release stages a JavaScript fallback: {profile}")
+        if frozen_path.exists():
+            raise RuntimeError("Wasm-only release has frozen JavaScript receipts")
+    else:
+        frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
+        if set(frozen) != set(profiles()):
+            raise RuntimeError("Release requires frozen JavaScript fallback for every profile")
+        for profile in profiles():
+            entry = staged_profiles.get(profile, {})
+            if entry.get("jsFallbackIncluded") is not True or entry.get("jsRole") != "frozen":
+                raise RuntimeError(f"Release JavaScript fallback is missing: {profile}")
+            if entry.get("frozenJsArtifacts") != frozen[profile]:
+                raise RuntimeError(f"Frozen JavaScript stage receipt changed: {profile}")
+            directory = Path(frozen[profile]["directory"])
+            for artifact in frozen[profile]["artifacts"]:
+                if sha(directory / artifact["name"]) != artifact["sha256"]:
+                    raise RuntimeError(f"Frozen JavaScript changed after staging: {profile}/{artifact['name']}")
+    staged = out / "staged"
+    for profile in profiles():
+        assert_artifact(staged / f"site-{profile}" / "index.html", ROOT)
+        assert_artifact(staged / f"portable-{profile}" / f"Gaius-{profile}.html", ROOT)
     # Recheck recorded artifacts after acceptance, then hash the complete staged payload.
     artifacts = json.loads((out / "artifacts.json").read_text())
     for item in artifacts:
@@ -238,6 +288,8 @@ def manifest(out: Path) -> None:
     write(out / "release-manifest.json", {"schema": 1, "version": normalized_release_version(),
           "finishedAt": datetime.now(timezone.utc).isoformat(), "source": source,
           "profiles": profiles(),
+          "frozenJavaScript": ({"receipt": receipt(frozen_path), "profiles": frozen} if not wasm_only else None),
+          "wasmOnly": wasm_only,
           "artifacts": artifacts, "staged": staged,
           "acceptance": {"verdict": "PASS", "passed": len(rows), "matrix": receipt(out / "accept/matrix.json")}})
     print("Release train PASS: release-manifest.json", flush=True)

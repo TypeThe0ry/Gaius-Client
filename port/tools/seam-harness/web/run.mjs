@@ -15,6 +15,7 @@ import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {chromeLaunchArgs, resolveChromeBinary} from "../../../scripts/chrome-binary.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => {
@@ -52,10 +53,10 @@ const httpPort = server.address().port;
 
 const debugPort = 9300 + Math.floor(Math.random() * 600);
 const profile = mkdtempSync(join(tmpdir(), "seam-harness-"));
-const chromeArgs = ["--headless=new", `--remote-debugging-port=${debugPort}`, "--remote-allow-origins=*",
+const chromeArgs = [...chromeLaunchArgs(), "--headless=new", `--remote-debugging-port=${debugPort}`, "--remote-allow-origins=*",
   `--user-data-dir=${profile}`, "--no-first-run", "--window-size=1280,720",
   "--proxy-server=http://127.0.0.1:9", "--proxy-bypass-list=127.0.0.1;localhost", ...extraFlags, "about:blank"];
-const chromeBin = process.env.GAIUS_CHROME_BIN || "C:/Program Files/Google/Chrome/Application/chrome.exe";
+const chromeBin = resolveChromeBinary();
 const chrome = spawn(chromeBin, chromeArgs, { stdio: "ignore" });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let ws;

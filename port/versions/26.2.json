@@ -53,6 +53,12 @@
     }
   },
   "patchSet": "modern",
+  "patchkitNotApplicable": {
+    "MinecraftClientPatcher.patchWorldGenRegionBrowserLastChunk": {
+      "targets": ["wasmgc"],
+      "reason": "WorldGenRegion reads the chunk from its GenerationChunkHolder on every call (the table holds holders, not chunks), so the answer for a position can change while the region lives; the last-answer memo is exact only where the constructor resolves the chunks"
+    }
+  },
   "extraPatchers": [],
   "renderSeam": "blaze3d-backend-1",
   "terrainSectionUniformBlock": true,
@@ -77,7 +83,7 @@
       "frontend": true
     }
   },
-  "worldgenKernelDefault": false,
+  "worldgenKernelDefault": true,
   "kernelSemantics": {
     "code": 1,
     "meshVertexStride": 28,
@@ -99,7 +105,7 @@
     "serverSha1": "823e2250d24b3ddac457a60c92a6a941943fcd6a",
     "assetIndexId": "32",
     "assetIndexSha1": "edb1c85bb6a1227c35194c715f1687d6e52d125d",
-    "assetIndexSha1Alternates": ["9a622c23d8ff76c4c44787c2e171c56feed1f786", "d7b16b1133c9b47a173f3a780cafda615b80d059", "a35ecceffb8b3443b5d2fb88ca6f93f9b1fbcbf9"]
+    "assetIndexSha1Alternates": ["9a622c23d8ff76c4c44787c2e171c56feed1f786", "d7b16b1133c9b47a173f3a780cafda615b80d059", "a35ecceffb8b3443b5d2fb88ca6f93f9b1fbcbf9", "941b1ea6afb4a472d164c0d12e3e3272bf3435f8"]
   },
   "kernelMirror": {
     "lockSha256": "5ee10d65233bae54ea91f9670b80e078b608a2ef020c0c3fafb5c212a0209f87",

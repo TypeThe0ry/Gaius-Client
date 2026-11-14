@@ -65,6 +65,56 @@ for (const filename of (await readdir(join(repository, "port/versions"))).filter
   assert.match(spawn, /SPAWN_FIXUP_ONLY_FOR_SEARCHED_SPAWN/);
   const task = run("javap", ["-J-Xmx3g", "-classpath", [patched, original].join(delimiter), "-p", "-c", "net.minecraft.server.network.config.PrepareSpawnTask"]);
   assert.match(task, /SavedPosition.position:[\s\S]*?Optional.isPresent:[\s\S]*?iconst_1[\s\S]*?ixor[\s\S]*?gaius\$spawnSearched:Z/);
+  // Respawn search (patchPlayerSpawnFinderBrowser): a respawn runs vanilla's spawn search, a
+  // joining player keeps the deferred path. The fixture subclasses ServerLevel, so it is
+  // compiled per profile with that profile's super constructor arity.
+  assert.match(task, /iconst_1\s+\d+: putstatic[^\n]*PlayerSpawnFinder\.gaius\$deferSpawnSearch:Z\s+\d+: invokevirtual[^\n]*Optional\.orElseGet:[^\n]*\s+\d+: iconst_0\s+\d+: putstatic[^\n]*PlayerSpawnFinder\.gaius\$deferSpawnSearch:Z\s+\d+: checkcast[^\n]*CompletableFuture/,
+    `${profile} PrepareSpawnTask.start must defer exactly its findSpawn orElseGet`);
+  const levelConstructor = run("javap", ["-J-Xmx3g", "-classpath", original, "net.minecraft.server.level.ServerLevel"])
+    .match(/public net\.minecraft\.server\.level\.ServerLevel\(([^)]*)\);/)?.[1];
+  assert.ok(levelConstructor !== undefined, `${profile} public ServerLevel constructor is required`);
+  const parameterTypes = [];
+  for (let depth = 0, start = 0, index = 0; index <= levelConstructor.length; index++) {
+    const character = levelConstructor[index];
+    if (character === "<") depth++;
+    if (character === ">") depth--;
+    if ((character === "," && depth === 0) || index === levelConstructor.length) {
+      if (levelConstructor.slice(start, index).trim()) parameterTypes.push(levelConstructor.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  const superArguments = parameterTypes.map(type => ({boolean: "false", long: "0L", int: "0"})[type] ?? "null").join(", ");
+  const respawnRoot = join(output, `respawn-search-${profile}`);
+  const respawnSource = join(respawnRoot, "src", "GaiusRespawnSearchFixture.java");
+  await mkdir(dirname(respawnSource), {recursive: true});
+  await writeFile(respawnSource, (await readFile(join(repository, "port/scripts/fixtures/GaiusRespawnSearchFixture.java"), "utf8"))
+    .replace("/*SERVER_LEVEL_SUPER_ARGUMENTS*/", superArguments));
+  const respawnClasses = join(respawnRoot, "classes");
+  const respawnCompile = join(respawnRoot, "javac.args");
+  await writeFile(respawnCompile, ["-proc:none", "-nowarn", "-cp", '"' + [original, ...libraries].join(delimiter).replaceAll("\\", "/") + '"',
+    "-d", '"' + respawnClasses.replaceAll("\\", "/") + '"', '"' + respawnSource.replaceAll("\\", "/") + '"'].join("\n") + "\n");
+  run("javac", ["-J-Xmx3g", "@" + respawnCompile], {stdio: ["ignore", "pipe", "pipe"]});
+  const respawn = {};
+  for (const target of ["js", "wasmgc"]) {
+    const targetOut = join(patchedRoot, `${profile}-${target}/out`);
+    if (target !== "js" && !existsSync(targetOut)) continue;
+    const respawnOverlay = join(respawnRoot, `overlay-${target}`);
+    for (const name of ["net/minecraft/server/level/PlayerSpawnFinder.class",
+      "net/minecraft/server/network/config/PrepareSpawnTask.class"]) {
+      await mkdir(dirname(join(respawnOverlay, name)), {recursive: true}); await copyFile(join(targetOut, name), join(respawnOverlay, name));
+    }
+    const respawnClasspath = join(respawnRoot, `classpath-${target}.txt`);
+    await writeFile(respawnClasspath, ["-Xmx3g", "-Xverify:all", "-cp", '"' + [respawnClasses, respawnOverlay, original, ...libraries].join(delimiter).replaceAll("\\", "/") + '"',
+      "GaiusRespawnSearchFixture"].join("\n") + "\n");
+    const result = run("java", ["@" + respawnClasspath], {cwd: output});
+    for (const marker of ["RESPAWN_SEARCH_ON_GROUND", "RESPAWN_SEARCH_RADIUS_ZERO", "RESPAWN_SEARCH_FALLBACK",
+      "JOIN_SPAWN_SEARCH_DEFERRED", "PREPARE_SPAWN_TASK_DEFER_VERIFIED"]) {
+      assert.ok(result.includes(marker), `${profile} ${target} respawn search fixture missed ${marker}:\n${result}`);
+    }
+    respawn[target] = result.split("\n").filter(line => /RESPAWN_SEARCH|JOIN_SPAWN|PREPARE_SPAWN_TASK_DEFER/.test(line))
+      .map(line => line.replace(/^.*\]: /, "").trim());
+    console.log(`${profile} ${target} RESPAWN_SEARCH_OK`);
+  }
   const screen = run("javap", ["-J-Xmx3g", "-classpath", original, "-p", "-c", "net.minecraft.client.gui.screens.worldselection.CreateWorldScreen"]);
   const worldTab = run("javap", ["-J-Xmx3g", "-classpath", original, "-p", "-c", "net.minecraft.client.gui.screens.worldselection.CreateWorldScreen$WorldTab"]);
   assert.match(worldTab, /CreateWorldScreen\$WorldTab\$1[\s\S]*?putfield[^\n]*seedEdit/);
@@ -75,7 +125,7 @@ for (const filename of (await readdir(join(repository, "port/versions"))).filter
   if (shortcutOwner !== navigationOwner) navigation = run("javap", ["-J-Xmx3g", "-classpath", original, "-p", "-c", shortcutOwner]);
   assert.match(navigation, /KeyEvent.hasControlDownWithQuirk/);
   assert.match(navigation, /(?:KeyEvent.getDigit:|InputConstants\$Key.getNumericKeyValue:)[\s\S]*?iconst_1[\s\S]*?isub/);
-  reports.push({profile, animation: animation.trim(), spawn: spawn.trim(), optionsApi: true,
+  reports.push({profile, animation: animation.trim(), spawn: spawn.trim(), respawn, optionsApi: true,
     seedStructure: {seedEditClass: "CreateWorldScreen$WorldTab$1", navigationOwner, shortcutOwner}});
   console.log(animation.trim()); console.log(`${profile} SPAWN_FIXUP_ONLY_FOR_SEARCHED_SPAWN`);
   console.log(`${profile} CAPTURE_OPTIONS_API_OK`);

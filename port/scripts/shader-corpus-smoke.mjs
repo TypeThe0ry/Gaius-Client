@@ -47,6 +47,7 @@ import {dirname, isAbsolute, join, relative, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {gzipSync} from "node:zlib";
 import crypto from "node:crypto";
+import {chromeLaunchArgs, resolveChromeBinary} from "./chrome-binary.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const require = createRequire(import.meta.url);
@@ -711,9 +712,7 @@ async function checkInstantiationFailures(job) {
 // ---------------------------------------------------------------------------------------------
 // 5. WebGL2 in headless Chrome
 function chromePath() {
-  const candidates = [options.chrome, process.env.GAIUS_CHROME,
-    "C:/Program Files/Google/Chrome/Application/chrome.exe", "/usr/bin/google-chrome", "/usr/bin/chromium"];
-  return candidates.find((candidate) => candidate && existsSync(candidate));
+  return resolveChromeBinary({overrides: [options.chrome, process.env.GAIUS_CHROME]});
 }
 
 function webglPage(data) {
@@ -770,7 +769,7 @@ async function withChrome(label, body) {
   const args = ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profileDir}`, "--no-first-run",
     "--no-default-browser-check", "--disable-extensions", "--mute-audio", "about:blank"];
   if (options.swiftshader) args.splice(1, 0, "--use-angle=swiftshader", "--enable-unsafe-swiftshader");
-  const browser = spawn(chromePath(), args, {stdio: ["ignore", "ignore", "pipe"]});
+  const browser = spawn(chromePath(), [...chromeLaunchArgs(), ...args], {stdio: ["ignore", "ignore", "pipe"]});
   let stderr = "";
   browser.stderr.on("data", (chunk) => { stderr += chunk; });
   try {

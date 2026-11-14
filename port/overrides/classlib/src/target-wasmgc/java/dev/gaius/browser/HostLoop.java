@@ -1,5 +1,6 @@
 package dev.gaius.browser;
 
+import java.util.concurrent.locks.LockSupport;
 import org.teavm.interop.AsyncCallback;
 import org.teavm.interop.Import;
 import org.teavm.interop.PlatformMarker;
@@ -27,6 +28,12 @@ import org.teavm.runtime.EventQueue;
 public final class HostLoop {
     /** Swap interval of the last present: 0 uncapped, otherwise synchronized to the display. */
     private static int presentInterval = 1;
+    /** A busy managed-block loop gives the event loop a turn after this much work. */
+    private static final long MANAGED_BLOCK_SLICE_NANOS = 2_000_000L;
+    private static final ClockStride MANAGED_BLOCK_STRIDE = new ClockStride();
+    /** The {@code lastYieldNanos} of the loop that {@link #managedBlockCallsUntilClockCheck} counts for. */
+    private static long managedBlockStrideLoop = Long.MIN_VALUE;
+    private static int managedBlockCallsUntilClockCheck = 1;
 
     private HostLoop() {
     }
@@ -116,14 +123,37 @@ public final class HostLoop {
         });
     }
 
-    /** Yields only after a busy managed-block loop has consumed a two millisecond slice. */
+    /**
+     * Yields only after a busy managed-block loop has consumed a two millisecond slice. The
+     * loop runs one queued task per call, microseconds each, so the clock is read on the calls
+     * ClockStride picks (every call as the slice nears its end, one in up to eight while it is
+     * far away) rather than on every one. The countdown belongs to the loop whose
+     * {@code lastYieldNanos} it was computed for: another loop (a nested managedBlock, a loop of
+     * another thread) reads the clock on its first call.
+     */
     public static long managedBlockYield(boolean predicate, long lastYieldNanos) {
+        if (idleWaiter != null && idleWaiter == Thread.currentThread()) {
+            idleWaiter = null;
+        }
         if (!predicate) {
+            if (lastYieldNanos == managedBlockStrideLoop && --managedBlockCallsUntilClockCheck > 0) {
+                return lastYieldNanos;
+            }
             long now = System.nanoTime();
-            if (now - lastYieldNanos >= 2_000_000L) {
+            long elapsed = now - lastYieldNanos;
+            if (elapsed >= MANAGED_BLOCK_SLICE_NANOS) {
+                managedBlockStrideLoop = now;
+                managedBlockCallsUntilClockCheck = 1;
+                MANAGED_BLOCK_STRIDE.reset();
                 yieldToEventLoop(0);
                 return now;
             }
+            if (lastYieldNanos != managedBlockStrideLoop) {
+                MANAGED_BLOCK_STRIDE.reset();
+                managedBlockStrideLoop = lastYieldNanos;
+            }
+            managedBlockCallsUntilClockCheck = MANAGED_BLOCK_STRIDE.observe(
+                    (double) now, (double) (MANAGED_BLOCK_SLICE_NANOS - elapsed));
         }
         return lastYieldNanos;
     }
@@ -131,7 +161,31 @@ public final class HostLoop {
     /** A false pollTask result means the queue is empty; let worker replies and timers run. */
     public static long managedBlockIdle(long lastYieldNanos) {
         yieldToEventLoop(0);
+        // The thread parks in waitForTasks right after this call; an unparkIfIdle from now on ends that park.
+        idleWaiter = Thread.currentThread();
         return System.nanoTime();
+    }
+
+    /**
+     * The thread that is about to park (or parks) in the idle wait of a managed-block loop: set by
+     * {@link #managedBlockIdle}, cleared when that thread's loop runs again ({@link #managedBlockYield}) or when
+     * {@link #unparkIfIdle} woke it. One slot: a later idle thread replaces an earlier one (its wake-up is then
+     * simply skipped, which only costs the optional early wake).
+     */
+    private static Thread idleWaiter;
+
+    /**
+     * Wakes {@code thread} if it waits idle in a managed-block loop and was not woken yet; false (and no permit
+     * left behind) otherwise. For optional wake-ups whose absence only delays work: safe from any thread of the
+     * Worker, nothing happens while the thread runs.
+     */
+    public static boolean unparkIfIdle(Thread thread) {
+        if (thread == null || idleWaiter != thread) {
+            return false;
+        }
+        idleWaiter = null;
+        LockSupport.unpark(thread);
+        return true;
     }
 
     /**

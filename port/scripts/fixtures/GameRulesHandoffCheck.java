@@ -92,6 +92,26 @@ public final class GameRulesHandoffCheck {
         require(server.get(GameRules.KEEP_INVENTORY), "keep_inventory not applied");
         require(server.get(GameRules.PLAYERS_SLEEPING_PERCENTAGE) == 50, "sleeping percentage not applied");
 
+        // PrimaryLevelData writes allowCommands directly in Data, beside GameType.
+        // The vanilla reader must retain an explicit choice in either game mode.
+        int commandSettings = 0;
+        for (int gameType : new int[] {0, 1}) {
+            for (boolean allowed : new boolean[] {false, true}) {
+                CompoundTag data = new CompoundTag();
+                data.putString("LevelName", "commands");
+                data.putInt("GameType", gameType);
+                data.putBoolean("hardcore", false);
+                data.putInt("Difficulty", 2);
+                data.putBoolean("allowCommands", allowed);
+                LevelSettings settings = LevelSettings.parse(
+                        new Dynamic<>(NbtOps.INSTANCE, data), WorldDataConfiguration.DEFAULT);
+                require(settings.allowCommands() == allowed,
+                        "vanilla level.dat reader changed allowCommands for GameType=" + gameType);
+                commandSettings++;
+            }
+        }
+        report("commandSettingsCompared", commandSettings);
+
         // No rules sent (loading an existing world, or a start without the field): nothing to apply.
         require(BrowserGameRulesHandoff.decode("", features).isEmpty(), "empty text must decode to empty");
         require(BrowserGameRulesHandoff.decode(null, features).isEmpty(), "null text must decode to empty");

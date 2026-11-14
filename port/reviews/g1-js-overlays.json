@@ -38,8 +38,8 @@
         {
           "key": "libraries/io/netty/netty-transport/4.2.7.Final/netty-transport-4.2.7.Final.jar!io/netty/channel/browser/BrowserWebSocketChannel.class",
           "beforeSha256": "c4ca0cede99a67b910b00bc4fb126a0eece3f7b399667b565948df4d13790686",
-          "afterSha256": "7f948d63e32185dc0f03461e50c8045a8ff39f23ef81855fd3da88cc1b384ffd",
-          "reason": "Owner-approved backward-compatible relay handshake declaration; legacy sessions remain supported."
+          "afterSha256": "1e049b8a31a02671b72835c542c33b67faec90caa803a05fd85d3425541ff7bd",
+          "reason": "Review of BrowserWebSocketChannel changes since d3704886: relay host patterns use Java-safe character classes; accepted link credentials stay pinned to their selected socket and fail over only after that relay fails; inbound readiness uses a maintained ready-channel count with queue-scan fallback; and the unavailable hard-coded default registry is removed while same-origin snapshots and user registries remain. The 1.21.11 JS overlay class from the current overlay product has SHA-256 1e049b8a31a02671b72835c542c33b67faec90caa803a05fd85d3425541ff7bd (178822 bytes)."
         },
         {
           "key": "libraries/org/lwjgl/lwjgl-opengl/3.3.3/lwjgl-opengl-3.3.3.jar!org/lwjgl/opengl/BrowserOpenGL$MappedBuffer.class",
@@ -163,31 +163,31 @@
         {
           "key": "libraries/io/netty/netty-transport/4.2.15.Final/netty-transport-4.2.15.Final.jar!io/netty/channel/browser/BrowserWebSocketChannel.class",
           "beforeSha256": "c4ca0cede99a67b910b00bc4fb126a0eece3f7b399667b565948df4d13790686",
-          "afterSha256": "7f948d63e32185dc0f03461e50c8045a8ff39f23ef81855fd3da88cc1b384ffd",
-          "reason": "Owner-approved backward-compatible relay handshake declaration; legacy sessions remain supported."
+          "afterSha256": "1e049b8a31a02671b72835c542c33b67faec90caa803a05fd85d3425541ff7bd",
+          "reason": "Review of BrowserWebSocketChannel changes since d3704886: relay host patterns use Java-safe character classes; accepted link credentials stay pinned to their selected socket and fail over only after that relay fails; inbound readiness uses a maintained ready-channel count with queue-scan fallback; and the unavailable hard-coded default registry is removed while same-origin snapshots and user registries remain. The 26.2 JS overlay class from the current overlay product has SHA-256 1e049b8a31a02671b72835c542c33b67faec90caa803a05fd85d3425541ff7bd (178822 bytes)."
         },
         {
           "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGL$MappedBuffer.class",
           "beforeSha256": "9d0f0e3262d2cd4a0bb06f19952b9d95d3b1587e9e0130a844247fef77e18043",
-          "afterSha256": "fdacdc5fc780517d081053a08169db6b38b1d53e63c4458ecd11afd192ad987e",
+          "afterSha256": "64d0b815973d8687ed84bdae691474a1469c05d65ecc7279aac5d11517b1d932",
           "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
         },
         {
           "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGL$MinecraftStateDetails.class",
           "beforeSha256": "e0cf30a77f339d678e634fe1b601cc6b832fa54b6786188dc91a4e0ae5ac1338",
-          "afterSha256": "68b0d0d7ae3c8b0de99a9a7fae2b2ac59e869e393e5deca495fddf367fd6af68",
+          "afterSha256": "9915827a2de0cd6911ffd54fb2f74a71656c062b78dbeeb6a76a37968fd51014",
           "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
         },
         {
           "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGL$UniformScratch.class",
           "beforeSha256": "1e5872355b0cd8e4f44ec88cb1920e498087a34f081bd70d509f294879638979",
-          "afterSha256": "d6ee04e57b50cd28b9ce1c4a68e224db0215b00d5aff60fe76b652e071ed898c",
+          "afterSha256": "69e7b4e6c5e8ecf7f0e9dd13498731d43436df386bb24f47a5908ef95336632e",
           "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. Line-number tables only: javap of the previous reviewed and the new class differ in nothing else; the outer class gained the BrowserOpenGLPerf hooks."
         },
         {
           "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGL.class",
           "beforeSha256": "a20b53fd11d0d5be09b9487605c6a698ee31cc9799c3ba1a634c8760180eab54",
-          "afterSha256": "b88c8c8eab85caa7491c20af64c45985b4e391c6cc54882e967ef712f3698699",
+          "afterSha256": "ecd01bdb4705873b84af4ff1f28074a5dbf32e5be79208d0e49dd26a7a180834",
           "reason": "Memory integration bounds Wasm mapped/shadow staging; non-Wasm mapped budget retains 32 MiB. Ownership telemetry and nested class/debug changes are explicitly accepted. WebGL2 emulation experiments (opt-in, default off) route texture, program, VAO, uniform-location and upload calls through BrowserOpenGLPerf hooks, which are no-ops unless an experiment is enabled."
         },
         {
@@ -199,7 +199,7 @@
         {
           "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.1/lwjgl-opengl-3.4.1.jar!org/lwjgl/opengl/BrowserOpenGLPerf.class",
           "beforeSha256": null,
-          "afterSha256": "c26616cc4e687ac770ba4ccb86559053dbe461430d580fcf24935ff558a5dea6",
+          "afterSha256": "026540fe0695bba259cfcc43195f2eb0e772e6bec4d688bee220bdc74c2e1e79",
           "reason": "Opt-in WebGL2 emulation experiments (default off): helper class of the BrowserOpenGLPerf adapter reached only through its hooks in BrowserOpenGL."
         },
         {
@@ -217,19 +217,19 @@
         {
           "key": "libraries/org/lwjgl/lwjgl-stb/3.4.1/lwjgl-stb-3.4.1.jar!org/lwjgl/stb/STBImage$BitReader.class",
           "beforeSha256": "28851f53e54195a5408fedcd32416106b3df4f7594bc8f912a69566f7bc20895",
-          "afterSha256": "3a17b2bed5fd1b61b926dee70a1fdca1f7ef93cbbb00d968266882ca6f45226f",
+          "afterSha256": "483e7886020c8c8f9d91f3aa91328fd6aadd185c70963fa442a81e589fc0bfe4",
           "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
         },
         {
           "key": "libraries/org/lwjgl/lwjgl-stb/3.4.1/lwjgl-stb-3.4.1.jar!org/lwjgl/stb/STBImage$DecodedPng.class",
           "beforeSha256": "3436ff35e348d24ec4c7c0ad6067d12da082157823b0ce8fa744431aa0af7660",
-          "afterSha256": "e1ba389459f1ee734bcb64e58da7e0f182658f9475d2ce9d5a1c46ad77070bc7",
+          "afterSha256": "706b894041e2380b4789c677782b8c06a08e525a578e4f50de155ede194566fc",
           "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
         },
         {
           "key": "libraries/org/lwjgl/lwjgl-stb/3.4.1/lwjgl-stb-3.4.1.jar!org/lwjgl/stb/STBImage.class",
           "beforeSha256": "006544b598a2f50a9ff61c7ad31f454b874595c2db759130d8284d69c24169c2",
-          "afterSha256": "35b6b62130ccca2fb4847299d373238c53f69d9bdb96fb4d904ae501d0d58de8",
+          "afterSha256": "addcf214285316fe245159b546831eff7f66e3df9106723ed8e7d6a2a0010bab",
           "reason": "Owner-approved PNG gate plus memory owner annotation. JS first invokes the original decodePng with zero PNG availability calls or copies; JS claimOwner is a no-op. Nested changes include source/debug offsets."
         },
         {
@@ -259,7 +259,7 @@
         {
           "key": "teavm-classlib-0.15.0-gaius.jar!dev/gaius/browser/BrowserFilePersistence.class",
           "beforeSha256": "eef9a45da53a95646c69ec288cd53027acd02c6c8665a5598979035e84c4fad2",
-          "afterSha256": "3776c31f564a7a08a724d8cf763784bcd46fe402a32587d27f1e8acf17da785a",
+          "afterSha256": "bfb646612a35f1b977f91c2772df542a28efde2fa6ab8ff212d9af415af5f0f7",
           "reason": "Memory integration uses the Wasm-only quality memory tier for initial defaults; persisted options and file/screenshot persistence remain intact. Nested debug changes are accepted."
         },
         {
@@ -277,7 +277,7 @@
         {
           "key": "client-named-26.2-gaius.jar!net/minecraft/server/Main.class",
           "beforeSha256": "98ea16496a2d1c98375db8e4b6627d1df41c28db904d42fdb58f3d335bb45de8",
-          "afterSha256": "4605b3d0df3d6aa1f0c8d636d519ba4b5467884ac4c821e6ab177dd6cd9827b7",
+          "afterSha256": "6d64e65f1ea84eba3b3772482c28635f93de972237ab05076a476c884b0ed0f2",
           "reason": "Game rules of a new world: the dedicated-server factory passes BrowserIntegratedServerMain.initialGameRules(world features) to DedicatedServer where it passed Optional.empty(), the argument in which vanilla's integrated server receives the Create World rules. javap of the previous and the new class differ only by that replaced call."
         },
         {
@@ -306,8 +306,8 @@
         {
           "key": "libraries/io/netty/netty-transport/4.2.16.Final/netty-transport-4.2.16.Final.jar!io/netty/channel/browser/BrowserWebSocketChannel.class",
           "beforeSha256": "c4ca0cede99a67b910b00bc4fb126a0eece3f7b399667b565948df4d13790686",
-          "afterSha256": "7f948d63e32185dc0f03461e50c8045a8ff39f23ef81855fd3da88cc1b384ffd",
-          "reason": "Owner-approved backward-compatible relay handshake declaration; legacy sessions remain supported."
+          "afterSha256": "1e049b8a31a02671b72835c542c33b67faec90caa803a05fd85d3425541ff7bd",
+          "reason": "Review of BrowserWebSocketChannel changes since d3704886: relay host patterns use Java-safe character classes; accepted link credentials stay pinned to their selected socket and fail over only after that relay fails; inbound readiness uses a maintained ready-channel count with queue-scan fallback; and the unavailable hard-coded default registry is removed while same-origin snapshots and user registries remain. The 26.3 JS overlay class from the current overlay product has SHA-256 1e049b8a31a02671b72835c542c33b67faec90caa803a05fd85d3425541ff7bd (178822 bytes)."
         },
         {
           "key": "libraries/org/lwjgl/lwjgl-opengl/3.4.3/lwjgl-opengl-3.4.3.jar!org/lwjgl/opengl/BrowserOpenGL$MappedBuffer.class",

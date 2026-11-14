@@ -2,13 +2,15 @@ import {spawn} from "node:child_process";
 import {mkdir,writeFile,mkdtemp} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {resolve} from "node:path";
+import {chromeLaunchArgs, resolveChromeBinary} from "./chrome-binary.mjs";
 
 const artifact=resolve(process.env.GAIUS_FILE_ARTIFACT);
 const output=resolve(process.env.GAIUS_FILE_OUTPUT);
-const chromeBin=process.env.GAIUS_CHROME_BIN||"C:/Program Files/Google/Chrome/Application/chrome.exe";
+const chromeBin=resolveChromeBinary();
+const linuxChromeArgs=chromeLaunchArgs();
 const port=Number(process.env.GAIUS_DIAG_PORT||9229);
 const profile=await mkdtemp(`${tmpdir()}/gaius-diag-`);
-const child=spawn(chromeBin,["--headless=new",`--remote-debugging-port=${port}`,"--remote-allow-origins=*",`--user-data-dir=${profile}`,"--disable-background-networking","about:blank"],{stdio:["ignore","pipe","pipe"],windowsHide:true});
+const child=spawn(chromeBin,[...linuxChromeArgs,"--headless=new",`--remote-debugging-port=${port}`,"--remote-allow-origins=*",`--user-data-dir=${profile}`,"--disable-background-networking","about:blank"],{stdio:["ignore","pipe","pipe"],windowsHide:true});
 const events=[]; const errors=[]; const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function getJson(url){for(let i=0;i<100;i++){try{const r=await fetch(url);if(r.ok)return r.json();}catch{}await sleep(100);}throw Error(`cannot connect ${url}`);}
 let target;

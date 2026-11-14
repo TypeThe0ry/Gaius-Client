@@ -1,6 +1,8 @@
 package dev.gaius.browser.kernel.mesh;
 
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.chunk.RenderSectionRegion;
 import net.minecraft.client.renderer.chunk.SectionCopy;
@@ -17,11 +19,14 @@ import net.minecraft.world.level.biome.BiomeSpecialEffects;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.GlobalPalette;
 import net.minecraft.world.level.chunk.Palette;
 import net.minecraft.world.level.chunk.PalettedContainer;
 import net.minecraft.world.level.lighting.LayerLightEventListener;
 import net.minecraft.world.level.lighting.LevelLightEngine;
+import net.minecraft.world.level.lighting.LightEngine;
+import net.minecraft.world.level.lighting.GaiusLightColumnAccess;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -45,6 +50,10 @@ import net.minecraft.world.phys.Vec3;
 final class SectionSnapshot {
     private static final Direction[] DIRECTIONS = Direction.values();
     private static final int SWAMP_BELOW_COLOR = 0x4C763C;
+    private static final Comparator<BlockEntity> BLOCK_ENTITY_ORDER = Comparator
+            .comparingInt((BlockEntity entity) -> entity.getBlockPos().getZ())
+            .thenComparingInt(entity -> entity.getBlockPos().getY())
+            .thenComparingInt(entity -> entity.getBlockPos().getX());
 
     private SectionSnapshot() {
     }
@@ -67,15 +76,16 @@ final class SectionSnapshot {
         int sx = SectionPos.x(node);
         int sy = SectionPos.y(node);
         int sz = SectionPos.z(node);
+        boolean fast = MeshKernelBridge.fastSnapshotEnabled();
         if (copies == null || copies.length != 27 || level == null || minX != sx - 1 || minY != sy - 1
                 || minZ != sz - 1 || level.isDebug()) {
             return false;
         }
         b.beginJob(table.wideIds());
-        if (!captureStates(b, copies, minX, minY, minZ, sx, sy, sz, table)) {
+        if (!captureStates(b, copies, minX, minY, minZ, sx, sy, sz, table, fast)) {
             return false;
         }
-        captureLight(b, level.getLightEngine(), sx, sy, sz);
+        captureLight(b, level.getLightEngine(), sx, sy, sz, fast);
         if (!captureBiomes(b, level, sx, sy, sz, blend)) {
             return false;
         }
@@ -86,14 +96,17 @@ final class SectionSnapshot {
         b.floats[6] = (float) (camera.x - (sx << 4));
         b.floats[7] = (float) (camera.y - (sy << 4));
         b.floats[8] = (float) (camera.z - (sz << 4));
-        collectBlockEntities(b, region, sx, sy, sz, table, blockEntities);
+        collectBlockEntities(b, region, sx, sy, sz, table, blockEntities, fast);
         return true;
     }
 
     // --- states ---------------------------------------------------------------------------------
 
     private static boolean captureStates(MeshJobBuffers b, SectionCopy[] copies, int minX, int minY, int minZ,
-            int sx, int sy, int sz, MeshModelTable table) {
+            int sx, int sy, int sz, MeshModelTable table, boolean fast) {
+        if (fast && capturePackedStates(b, copies, minX, minY, minZ, sx, sy, sz, table)) {
+            return true;
+        }
         int air = table.airId;
         int nonAir = 0;
         for (int dy = -1; dy <= 1; dy++) {
@@ -128,9 +141,11 @@ final class SectionSnapshot {
                     MeshKernelAccess.Paletted paletted = (MeshKernelAccess.Paletted) (Object) states;
                     BitStorage storage = paletted.gaius$storage();
                     Palette<?> palette = paletted.gaius$palette();
+                    long[] raw = fast && storage.getSize() == 4096 ? storage.getRaw() : null;
+                    int bits = raw == null ? 0 : storage.getBits();
                     int[] ids = null;
                     int paletteSize = 0;
-                    if (!(palette instanceof GlobalPalette)) {
+                    if (!(palette instanceof GlobalPalette) && fast) {
                         paletteSize = palette.getSize();
                         ids = b.paletteIds(paletteSize);
                         for (int i = 0; i < paletteSize; i++) {
@@ -140,6 +155,22 @@ final class SectionSnapshot {
                         }
                     }
                     boolean center = dx == 0 && dy == 0 && dz == 0;
+                    if (fast && storage.getSize() == 4096 && raw != null) {
+                        for (int y = y0; y <= y1; y++) {
+                            for (int z = z0; z <= z1; z++) {
+                                int at = MeshJobBuffers.regionIndex(dx * 16 + x0, dy * 16 + y, dz * 16 + z);
+                                for (int x = x0; x <= x1; x++) {
+                                    int id = map(packed(raw, bits, (y << 8) | (z << 4) | x), ids, paletteSize,
+                                            air, table.stateCount);
+                                    b.setId(at++, id);
+                                    if (center && !table.isAir(id)) {
+                                        nonAir++;
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     if (center && storage.getSize() == 4096) {
                         int[] unpacked = b.sectionScratch;
                         storage.unpack(unpacked);
@@ -148,7 +179,9 @@ final class SectionSnapshot {
                             for (int z = 0; z < 16; z++) {
                                 int at = MeshJobBuffers.regionIndex(0, y, z);
                                 for (int x = 0; x < 16; x++) {
-                                    int id = map(unpacked[index++], ids, paletteSize, air, table.stateCount);
+                                    int value = unpacked[index++];
+                                    int id = fast ? map(value, ids, paletteSize, air, table.stateCount)
+                                            : mapVanilla(value, palette, air, table.stateCount);
                                     b.setId(at++, id);
                                     if (!table.isAir(id)) {
                                         nonAir++;
@@ -163,7 +196,9 @@ final class SectionSnapshot {
                             int at = MeshJobBuffers.regionIndex(dx * 16 + x0, dy * 16 + y, dz * 16 + z);
                             int row = (y << 8) | (z << 4);
                             for (int x = x0; x <= x1; x++) {
-                                int id = map(storage.get(row | x), ids, paletteSize, air, table.stateCount);
+                                int value = raw != null ? packed(raw, bits, row | x) : storage.get(row | x);
+                                int id = fast ? map(value, ids, paletteSize, air, table.stateCount)
+                                        : mapVanilla(value, palette, air, table.stateCount);
                                 b.setId(at++, id);
                                 if (center && !table.isAir(id)) {
                                     nonAir++;
@@ -178,6 +213,91 @@ final class SectionSnapshot {
         return true;
     }
 
+    /** Copies palette metadata and raw section words; the Worker expands the 20^3 region. */
+    private static boolean capturePackedStates(MeshJobBuffers b, SectionCopy[] copies,
+            int minX, int minY, int minZ, int sx, int sy, int sz, MeshModelTable table) {
+        b.beginPackedStates();
+        b.appendPackedState(table.airId);
+        b.appendPackedState(27);
+        int nonAir = 0;
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    SectionCopy copy = copies[RenderSectionRegion.index(minX, minY, minZ,
+                            sx + dx, sy + dy, sz + dz)];
+                    if (copy == null) {
+                        b.appendPackedState(0);
+                        b.appendPackedState(0);
+                        b.appendPackedState(0);
+                        continue;
+                    }
+                    MeshKernelAccess.Copy copyAccess = (MeshKernelAccess.Copy) (Object) copy;
+                    if (copyAccess.gaius$debug()) {
+                        b.packedStateLength = 0;
+                        return false;
+                    }
+                    PalettedContainer<BlockState> states = copyAccess.gaius$states();
+                    if (states == null) {
+                        b.appendPackedState(0);
+                        b.appendPackedState(0);
+                        b.appendPackedState(0);
+                        continue;
+                    }
+                    MeshKernelAccess.Paletted paletted = (MeshKernelAccess.Paletted) (Object) states;
+                    BitStorage storage = paletted.gaius$storage();
+                    if (storage.getSize() != 4096 || storage.getRaw() == null) {
+                        b.packedStateLength = 0;
+                        return false;
+                    }
+                    Palette<?> palette = paletted.gaius$palette();
+                    int paletteSize = palette instanceof GlobalPalette ? -1 : palette.getSize();
+                    b.appendPackedState(storage.getBits());
+                    b.appendPackedState(paletteSize);
+                    long[] raw = storage.getRaw();
+                    b.appendPackedState(raw.length);
+                    int[] ids = null;
+                    if (paletteSize > 0) {
+                        ids = b.paletteIds(paletteSize);
+                        for (int i = 0; i < paletteSize; i++) {
+                            Object value = palette.valueFor(i);
+                            int id = value instanceof BlockState state ? Block.BLOCK_STATE_REGISTRY.getId(state) : -1;
+                            ids[i] = id < 0 || id >= table.stateCount ? table.airId : id;
+                            b.appendPackedState(ids[i]);
+                        }
+                    }
+                    for (long word : raw) {
+                        b.appendPackedState((int) word);
+                        b.appendPackedState((int) (word >>> 32));
+                    }
+                    if (dx == 0 && dy == 0 && dz == 0) {
+                        for (int i = 0; i < 4096; i++) {
+                            int value = packed(raw, storage.getBits(), i);
+                            int id = ids == null
+                                    ? (value >= 0 && value < table.stateCount ? value : table.airId)
+                                    : (value < paletteSize ? ids[value] : table.airId);
+                            if (!table.isAir(id)) {
+                                nonAir++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        lastNonAir = nonAir;
+        return true;
+    }
+
+    /** Reads one packed entry without the virtual BitStorage.get call on the hot neighbour path. */
+    private static int packed(long[] raw, int bits, int index) {
+        if (bits == 0) {
+            return 0;
+        }
+        int valuesPerWord = 64 / bits;
+        int word = index / valuesPerWord;
+        int shift = (index - word * valuesPerWord) * bits;
+        return (int) ((raw[word] >>> shift) & ((1L << bits) - 1L));
+    }
+
     private static int map(int value, int[] ids, int paletteSize, int air, int stateCount) {
         if (ids == null) {
             return value >= 0 && value < stateCount ? value : air;
@@ -185,9 +305,85 @@ final class SectionSnapshot {
         return value >= 0 && value < paletteSize ? ids[value] : air;
     }
 
+    private static int mapVanilla(int value, Palette<?> palette, int air, int stateCount) {
+        if (palette instanceof GlobalPalette) {
+            return value >= 0 && value < stateCount ? value : air;
+        }
+        Object state = palette.valueFor(value);
+        int id = state instanceof BlockState blockState ? Block.BLOCK_STATE_REGISTRY.getId(blockState) : -1;
+        return id >= 0 && id < stateCount ? id : air;
+    }
+
     // --- light ----------------------------------------------------------------------------------
 
-    private static void captureLight(MeshJobBuffers b, LevelLightEngine engine, int sx, int sy, int sz) {
+    private static void captureLight(MeshJobBuffers b, LevelLightEngine engine, int sx, int sy, int sz,
+            boolean fast) {
+        if (!fast) {
+            captureVanillaLight(b, engine, sx, sy, sz);
+            return;
+        }
+        LightEngine<?, ?> blockEngine = GaiusLightColumnAccess.engine(engine, LightLayer.BLOCK);
+        LightEngine<?, ?> skyEngine = GaiusLightColumnAccess.engine(engine, LightLayer.SKY);
+        LayerLightEventListener blockLight = engine.getLayerListener(LightLayer.BLOCK);
+        LayerLightEventListener skyLight = engine.getLayerListener(LightLayer.SKY);
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    DataLayer layer = blockEngine == null ? null : GaiusLightColumnAccess.visibleLayer(blockEngine,
+                            SectionPos.asLong(sx + dx, sy + dy, sz + dz));
+                    DataLayer skyLayer = skyEngine == null ? null : GaiusLightColumnAccess.visibleLayer(skyEngine,
+                            SectionPos.asLong(sx + dx, sy + dy, sz + dz));
+                    boolean homogeneous = layer != null && layer.isDefinitelyHomogenous();
+                    int uniform = homogeneous ? layer.get(0, 0, 0) & 15 : 0;
+                    byte[] raw = layer != null && !homogeneous ? layer.getData() : null;
+                    boolean skyHomogeneous = skyLayer != null && skyLayer.isDefinitelyHomogenous();
+                    int skyUniform = skyHomogeneous ? skyLayer.get(0, 0, 0) & 15 : 0;
+                    byte[] skyRaw = skyLayer != null && !skyHomogeneous ? skyLayer.getData() : null;
+                    int x0 = dx < 0 ? -1 : dx > 0 ? 16 : 0;
+                    int x1 = dx < 0 ? -1 : dx > 0 ? 16 : 15;
+                    int y0 = dy < 0 ? -1 : dy > 0 ? 16 : 0;
+                    int y1 = dy < 0 ? -1 : dy > 0 ? 16 : 15;
+                    int z0 = dz < 0 ? -1 : dz > 0 ? 16 : 0;
+                    int z1 = dz < 0 ? -1 : dz > 0 ? 16 : 15;
+                    for (int y = y0; y <= y1; y++) {
+                        for (int z = z0; z <= z1; z++) {
+                            int at = MeshJobBuffers.regionIndex(x0, y, z);
+                            for (int x = x0; x <= x1; x++) {
+                                cursor.set((sx << 4) + x, (sy << 4) + y, (sz << 4) + z);
+                                int sky;
+                                if (skyEngine == null || skyLayer == null) {
+                                    // Missing sky data keeps vanilla's top-section default and upward fallback.
+                                    sky = skyLight.getLightValue(cursor) & 15;
+                                } else if (skyHomogeneous) {
+                                    sky = skyUniform;
+                                } else {
+                                    int localIndex = ((y - dy * 16) << 8) | ((z - dz * 16) << 4) | (x - dx * 16);
+                                    int packed = skyRaw[localIndex >> 1] & 0xFF;
+                                    sky = (packed >> ((localIndex & 1) << 2)) & 15;
+                                }
+                                int block;
+                                if (blockEngine == null) {
+                                    block = blockLight.getLightValue(cursor) & 15;
+                                } else if (layer == null) {
+                                    block = 0;
+                                } else if (homogeneous) {
+                                    block = uniform;
+                                } else {
+                                    int localIndex = ((y - dy * 16) << 8) | ((z - dz * 16) << 4) | (x - dx * 16);
+                                    int packed = raw[localIndex >> 1] & 0xFF;
+                                    block = (packed >> ((localIndex & 1) << 2)) & 15;
+                                }
+                                b.light[at++] = (byte) ((sky << 4) | block);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static void captureVanillaLight(MeshJobBuffers b, LevelLightEngine engine, int sx, int sy, int sz) {
         LayerLightEventListener blockLight = engine.getLayerListener(LightLayer.BLOCK);
         LayerLightEventListener skyLight = engine.getLayerListener(LightLayer.SKY);
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
@@ -196,12 +392,8 @@ final class SectionSnapshot {
                 int out = MeshJobBuffers.regionIndex(-1, y, z);
                 for (int x = -1; x <= 16; x++) {
                     cursor.set((sx << 4) + x, (sy << 4) + y, (sz << 4) + z);
-                    // Match RenderSectionRegion.getBrightness: getDataLayerData may return a
-                    // queued packet layer that is not yet in the renderer's visible light map.
-                    // The listener also implements vanilla's missing-sky-layer lookup.
-                    int block = blockLight.getLightValue(cursor) & 15;
-                    int sky = skyLight.getLightValue(cursor) & 15;
-                    b.light[out++] = (byte) ((sky << 4) | block);
+                    b.light[out++] = (byte) (((skyLight.getLightValue(cursor) & 15) << 4)
+                            | (blockLight.getLightValue(cursor) & 15));
                 }
             }
         }
@@ -261,7 +453,30 @@ final class SectionSnapshot {
     // --- block entities -------------------------------------------------------------------------
 
     private static void collectBlockEntities(MeshJobBuffers b, RenderSectionRegion region, int sx, int sy, int sz,
-            MeshModelTable table, List<BlockEntity> out) {
+            MeshModelTable table, List<BlockEntity> out, boolean fast) {
+        MeshKernelAccess.Region access = (MeshKernelAccess.Region) (Object) region;
+        SectionCopy center = access.gaius$sections()[RenderSectionRegion.index(
+                access.gaius$minSectionX(), access.gaius$minSectionY(), access.gaius$minSectionZ(), sx, sy, sz)];
+        if (fast && center != null) {
+            MeshKernelAccess.Copy copy = (MeshKernelAccess.Copy) (Object) center;
+            Map<BlockPos, BlockEntity> entities = copy.gaius$blockEntities();
+            if (entities != null && !entities.isEmpty()) {
+                int first = out.size();
+                for (Map.Entry<BlockPos, BlockEntity> entry : entities.entrySet()) {
+                    BlockPos p = entry.getKey();
+                    if ((p.getX() >> 4) == sx && (p.getY() >> 4) == sy && (p.getZ() >> 4) == sz) {
+                        int x = p.getX() - (sx << 4);
+                        int y = p.getY() - (sy << 4);
+                        int z = p.getZ() - (sz << 4);
+                        if (table.hasBlockEntity(b.id(MeshJobBuffers.regionIndex(x, y, z)))) {
+                            out.add(entry.getValue());
+                        }
+                    }
+                }
+                out.subList(first, out.size()).sort(BLOCK_ENTITY_ORDER);
+            }
+            return;
+        }
         BlockPos.MutableBlockPos pos = null;
         int baseX = sx << 4;
         int baseY = sy << 4;

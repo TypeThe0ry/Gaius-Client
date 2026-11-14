@@ -14,10 +14,11 @@ function deferred() {
 
 const source = readFileSync(process.env.GAIUS_WEBGPU_GLUE || new URL("gpu-glue.js", import.meta.url), "utf8");
 
-function fixture() {
-  const context = vm.createContext({ console, performance, Uint8Array, Int8Array });
+function fixture(search = "", switches = undefined) {
+  const context = vm.createContext({ console, performance, Uint8Array, Int8Array, URLSearchParams,
+    location: { search }, __gaiusSwitches: switches });
   // Test-only seam: install a fake pass without exposing production state or APIs.
-  const testSource = source.replace("  root.GaiusWebGpu = G;\n", "  G.__testSetIndirectPass=function(p){pass=p;currentPipelineValid=true;};\n  G.__testPipeline=function(label){return put({label:label,pipeline:{},valid:true});};\n  G.__testSetPass=function(p){pass=p;currentPipelineValid=true;};\n  G.__testBindGroup=function(label){return put({label:label});};\n  root.GaiusWebGpu = G;\n");
+  const testSource = source.replace("  root.GaiusWebGpu = G;\n", "  G.__testSetIndirectPass=function(p){pass=p;currentPipelineValid=true;};\n  G.__testPipeline=function(label){return put({label:label,pipeline:{},valid:true});};\n  G.__testSetPass=function(p){pass=p;currentPipelineValid=true;};\n  G.__testBindGroup=function(label){return put({label:label});};\n  G.__testDeviceLost=function(){invalidateRegionEpochs();G.status=-1;G.device=null;G.queue=null;};\n  root.GaiusWebGpu = G;\n");
   vm.runInContext(testSource, context, { filename: "gpu-glue.js" });
   const gpu = context.GaiusWebGpu;
   const completions = [];
@@ -182,6 +183,61 @@ async function flush() {
   assert.equal(gpu.stats.indirectDraws, 3);
   assert.equal(gpu.stats.indirectBatches, 1);
   assert.equal(gpu.stats.draws, 3);
+}
+
+{
+  const { gpu } = fixture("?gaiusWebGpuMultiDraw=1");
+  const calls = [], binds = [];
+  const fakePass = {
+    setBindGroup(...args) { binds.push(args); },
+    drawIndexedIndirect(buffer, offset) { calls.push(["single", buffer, offset]); },
+    multiDrawIndexedIndirect(buffer, offset, count, stride) {
+      calls.push(["multi", buffer, offset, count, stride]);
+    }
+  };
+  const group = gpu.__testBindGroup("terrain-multidraw");
+  const commandBuffer = gpu.createBuffer(128, 0x100, "multi-indirect-test");
+  gpu.__testSetIndirectPass(fakePass);
+  gpu.drawIndexedIndirectWithOffsets(group, 2, 16, 32, 0, 0, commandBuffer, 12, 3);
+  assert.equal(binds.length, 1, "the fused path applies terrain offsets before the batch");
+  assert.deepEqual(Array.from(binds[0][2]).slice(0, 2), [16, 32]);
+  assert.deepEqual(calls.map(call => call[0]), ["multi"],
+    "the opt-in path submits one native multi-draw call when the pass exposes it");
+  assert.deepEqual(calls[0].slice(2), [12, 3, 20], "native multi-draw preserves offset, count, and stride");
+  assert.equal(calls[0][1], gpu.debugObject(commandBuffer));
+  assert.equal(gpu.stats.indirectMultiDrawCalls, 1);
+  assert.equal(gpu.stats.indirectDraws, 3);
+  assert.equal(gpu.stats.indirectBatches, 1);
+  assert.equal(gpu.stats.draws, 3);
+}
+
+{
+  const { gpu } = fixture();
+  const calls = [];
+  const fakePass = {
+    drawIndexedIndirect(buffer, offset) { calls.push(offset); },
+    multiDrawIndexedIndirect() { throw new Error("opt-in switch is off"); }
+  };
+  const commandBuffer = gpu.createBuffer(128, 0x100, "multi-indirect-disabled-test");
+  gpu.__testSetIndirectPass(fakePass);
+  gpu.drawIndexedIndirect(commandBuffer, 12, 3);
+  assert.deepEqual(calls, [12, 32, 52], "the extension stays unused unless explicitly enabled");
+  assert.equal(gpu.stats.indirectMultiDrawCalls, 0);
+}
+
+{
+  const { gpu } = fixture("?gaiusWebGpuMultiDraw=1");
+  const calls = [];
+  const fakePass = {
+    drawIndexedIndirect(buffer, offset) { calls.push(["single", buffer, offset]); },
+    multiDrawIndexedIndirect() { calls.push(["multi"]); }
+  };
+  const commandBuffer = gpu.createBuffer(128, 0x100, "multi-indirect-single-test");
+  gpu.__testSetIndirectPass(fakePass);
+  gpu.drawIndexedIndirect(commandBuffer, 12, 1);
+  assert.deepEqual(calls.map(call => call[0]), ["single"],
+    "a one-record run keeps the ordinary call even when the extension is enabled");
+  assert.equal(gpu.stats.indirectMultiDrawCalls, 0);
 }
 
 {
@@ -363,4 +419,61 @@ for (const [label, format, texelBytes, offset] of [["aligned", "rgba8unorm", 4, 
     `${label} compact readback temporary ${index} must be destroyed when submit throws`));
 }
 
-console.log("WebGPU completion smoke passed: fences, rejection, device loss, packed readback, failed mapping, synchronous submit cleanup");
+{
+  const { gpu, completions } = fixture("", { gaiusRegionArena: false });
+  gpu.status = 2;
+  gpu.submit();
+  assert.equal(gpu.regionArenaEnabled, false);
+  assert.equal(completions.length, 0, "the disabled switch adds no queue completion tracking");
+}
+
+{
+  const { gpu, completions } = fixture("", { gaiusRegionArena: true });
+  gpu.status = 2;
+  gpu.submit();
+  assert.equal(gpu.regionArenaEnabled, true);
+  assert.equal(gpu.regionArenaNextRetireEpoch(), 2);
+  assert.equal(completions.length, 1, "the first queue submission starts completion tracking");
+  gpu.submit();
+  assert.equal(gpu.regionArenaNextRetireEpoch(), 3);
+  assert.equal(completions.length, 1, "only one queue completion promise is outstanding");
+  completions[0].resolve();
+  await flush();
+  assert.equal(gpu.regionArenaCompletedEpoch(), 1);
+  assert.equal(completions.length, 2, "a later submission receives its own completion epoch");
+  completions[1].resolve();
+  await flush();
+  assert.equal(gpu.regionArenaCompletedEpoch(), 2);
+}
+
+{
+  const { gpu, completions } = fixture("", { gaiusRegionArena: true });
+  gpu.status = 2;
+  gpu.submit();
+  const before = gpu.regionArenaGeneration();
+  gpu.__testDeviceLost();
+  assert.equal(gpu.regionArenaGeneration(), (before + 1) >>> 0,
+    "device loss advances the arena generation");
+  assert.equal(gpu.regionArenaCompletedEpoch(), 0,
+    "device loss drops the completed epoch immediately");
+  completions[0].resolve();
+  await flush();
+  assert.equal(gpu.regionArenaCompletedEpoch(), 0,
+    "a completion from the lost device cannot reclaim old leases");
+  assert.equal(gpu.regionArenaNextRetireEpoch(), 0,
+    "the lost device fails closed for new retire epochs");
+}
+
+{
+  const { gpu, completions } = fixture("", { gaiusRegionArena: true });
+  gpu.status = 2;
+  gpu.submit();
+  completions[0].reject(new Error("queue completion failed"));
+  await flush();
+  assert.equal(gpu.regionArenaCompletedEpoch(), 0,
+    "a rejected completion must never authorize range reuse");
+  gpu.submit();
+  assert.equal(completions.length, 1, "a rejected completion permanently fails closed for this device");
+}
+
+console.log("WebGPU completion smoke passed: fences, region epochs, rejection, device loss, packed readback, failed mapping, synchronous submit cleanup");

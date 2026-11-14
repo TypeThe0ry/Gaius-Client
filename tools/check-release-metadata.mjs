@@ -66,7 +66,7 @@ for (const profile of ["26.3", "26.2", "1.21.11"]) {
     try {
         const metadata = JSON.parse(await readFile(resolve(root, `port/versions/${profile}.json`), "utf8"));
         if (metadata.pages?.enabled !== true || JSON.stringify(metadata.pages?.runtimes) !== JSON.stringify(["wasm"])) {
-            fail(`port/versions/${profile}.json: release pages must declare WasmGC-only runtimes`);
+            fail(`port/versions/${profile}.json: release profiles must declare the primary WasmGC roles`);
         }
         enabledProfiles.push(profile);
     } catch (error) {
@@ -84,8 +84,9 @@ if (releasing) {
         "Gaius-site-<profile>.tar.gz",
         "SHA256SUMS",
         "30 distinct passing cases",
-        "runtimePolicy: \"wasm-only\"",
-        "--no-js-fallback",
+        "runtimePolicy: \"auto\"",
+        "--frozen-js",
+        "FROZEN-JS.json",
     ]) {
         if (!releasing.includes(phrase)) fail(`docs/releasing.md: missing v0.4 release requirement ${phrase}`);
     }

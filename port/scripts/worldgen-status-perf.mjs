@@ -102,6 +102,7 @@ for (const profile of manifests) {
     + '                    int x = ParityCompat.x(position);\n'
     + '                    int z = ParityCompat.z(position);\n'
     + '                    ChunkAccess chunk = completed.get(index);\n'
+    + '                    CompoundTag generatedTag = SerializableChunkData.copyOf(level, chunk).write();\n'
     + '                    addChunk(chunkLines, blocksAggregate, biomesAggregate, x, z,\n'
     + '                            chunk.getPersistedStatus().getName(),');
   replace('String blocks = HexFormat.of().formatHex(blocksAggregate.digest());',
@@ -134,6 +135,7 @@ for (const profile of manifests) {
   }
   if (enabled) {
     for (const helper of [...hooks, 'dev/gaius/browser/kernel/worldgen/WorldgenIr.java',
+      'dev/gaius/browser/kernel/KernelStatusFrontier.java',
       'net/minecraft/world/level/chunk/GaiusKernelSections.java']) {
       const resolved = sourceFile(profile, 'src', helper, {root, target: 'wasmgc'});
       if (!resolved) throw new Error('Missing JVM hook source ' + helper);
@@ -147,7 +149,8 @@ for (const profile of manifests) {
       join(root, 'port/tools/src/main/java/dev/gaius/tools/patches/worldgen/WorldgenKernelPatches.java'));
   }
   if (correctness) extra.push(join(root, 'port/scripts/worldgen-status-perf/WorldgenCorrectness.java'));
-  await run(tool('javac'), ['-J-Xmx3g', '-proc:none', '-cp', classpath, '-d', classes, harness,
+  await run(tool('javac'), ['-J-Xmx3g', '-proc:none', '-cp', classpath,
+    '-sourcepath', join(root, 'port/tools/src/main/java'), '-d', classes, harness,
     join(root, 'port/scripts/worldgen-seed-parity/LightFixtureWriter.java'),
     join(root, 'port/scripts/worldgen-seed-parity/compat', profile.id, 'ParityCompat.java'),
     join(root, 'port/scripts/worldgen-status-perf/StatusAgent.java'),

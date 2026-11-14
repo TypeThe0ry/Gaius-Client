@@ -16,6 +16,8 @@ import dev.gaius.tools.patches.telemetry.TelemetryPatches;
 import dev.gaius.tools.patches.telemetry.TickPacketParityPatches;
 import dev.gaius.tools.patches.ui.SettingsLayoutPatches;
 import dev.gaius.tools.patches.ui.UiPatches;
+import dev.gaius.tools.patches.worldgen.WorldgenHotPathPatches;
+import dev.gaius.tools.patches.worldgen.FeaturePlacementPatches;
 import dev.gaius.tools.patches.worldgen.WorldgenPatches;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -145,6 +147,7 @@ public final class MinecraftClientPatcher {
         }
         PatchRegistry.run("MinecraftClientPatcher.patchMainBrowserStorageMount", "REQUIRED js wasmgc", () -> StoragePatches.patchMainBrowserStorageMount(args[0], root.resolve("net/minecraft/client/main/Main.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchMinecraft", "REQUIRED js wasmgc", () -> PlatformPatches.patchMinecraft(args[0], root));
+        PatchRegistry.run("MinecraftClientPatcher.patchDeferredChoiceTypeChecks", "PERF js wasmgc", () -> StoragePatches.patchDeferredChoiceTypeChecks(args[0], root));
         PatchRegistry.run("MinecraftClientPatcher.patchWorldStemBrowserSave", "REQUIRED js wasmgc", () -> StoragePatches.patchWorldStemBrowserSave(args[0], root.resolve(
                 "net/minecraft/server/WorldStem.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchLevelStorageAccessBrowserDelete", "REQUIRED js wasmgc", () -> StoragePatches.patchLevelStorageAccessBrowserDelete(args[0], root.resolve(
@@ -241,10 +244,22 @@ public final class MinecraftClientPatcher {
                 "net/minecraft/world/level/levelgen/NoiseChunk$CacheOnce.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchDensityFunctionsPureTransformersBrowserDirect", "PERF js", () -> WorldgenPatches.patchDensityFunctionsPureTransformersBrowserDirect(args[0], root));
         PatchRegistry.run("MinecraftClientPatcher.patchWorldgenRecordHashCodeCaches", "PERF js wasmgc", () -> WorldgenPatches.patchWorldgenRecordHashCodeCaches(args[0], root));
+        // Feature placement: the last-section lookup and Function view of the ore block loop, and the
+        // last true/false tag answer of each block holder (applyBiomeDecoration asks both per block).
+        PatchRegistry.run("MinecraftClientPatcher.patchBulkSectionAccessLookup", "PERF js wasmgc", () -> FeaturePlacementPatches.patchBulkSectionAccessLookup(args[0], root));
+        PatchRegistry.run("MinecraftClientPatcher.patchHolderReferenceTagMemo", "PERF js wasmgc", () -> FeaturePlacementPatches.patchHolderReferenceTagMemo(args[0], root));
         PatchRegistry.run("MinecraftClientPatcher.patchClimateRTreeBrowserSynchronous", "REQUIRED js wasmgc", () -> WorldgenPatches.patchClimateRTreeBrowserSynchronous(args[0], root.resolve(
                 "net/minecraft/world/level/biome/Climate$RTree$SubTree.class"),
                 deepWorldgenCheckpoints));
         PatchRegistry.run("MinecraftClientPatcher.patchClimateRTreeBrowserFlatIndex", "PERF wasmgc >=26.2", () -> WorldgenPatches.patchClimateRTreeBrowserFlatIndex(args[0], root));
+        PatchRegistry.run("MinecraftClientPatcher.patchTagKeyBrowserHashCodeCache", "PERF wasmgc", () -> WorldgenHotPathPatches.patchTagKeyBrowserHashCodeCache(args[0], root.resolve(
+                "net/minecraft/tags/TagKey.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchWorldGenRegionBrowserCachedHeight", "PERF wasmgc", () -> WorldgenHotPathPatches.patchWorldGenRegionBrowserCachedHeight(args[0], root.resolve(
+                "net/minecraft/server/level/WorldGenRegion.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchWorldGenRegionBrowserLastChunk", "PERF wasmgc NOT_APPLICABLE", () -> WorldgenHotPathPatches.patchWorldGenRegionBrowserLastChunk(args[0], root.resolve(
+                "net/minecraft/server/level/WorldGenRegion.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchMultiNoiseBiomeSourceBrowserCachedParameters", "PERF wasmgc", () -> WorldgenHotPathPatches.patchMultiNoiseBiomeSourceBrowserCachedParameters(args[0], root.resolve(
+                "net/minecraft/world/level/biome/MultiNoiseBiomeSource.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchClimateRTreeNodeBrowserDoubleDistance", "PERF js", () -> WorldgenPatches.patchClimateRTreeNodeBrowserDoubleDistance(args[0], root.resolve(
                 "net/minecraft/world/level/biome/Climate$RTree$Node.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchSurfaceSystemBrowserSynchronous", "REQUIRED js wasmgc", () -> WorldgenPatches.patchSurfaceSystemBrowserSynchronous(args[0], root.resolve(
@@ -287,6 +302,8 @@ public final class MinecraftClientPatcher {
                 "net/minecraft/client/renderer/chunk/CompiledSectionMesh.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchRegionFileVersionBrowserNoCompression", "REQUIRED js wasmgc", () -> StoragePatches.patchRegionFileVersionBrowserNoCompression(args[0], root.resolve(
                 "net/minecraft/world/level/chunk/storage/RegionFileVersion.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchPalettedContainerBrowserEncode", "PERF js wasmgc", () -> StoragePatches.patchPalettedContainerBrowserEncode(args[0], root.resolve(
+                "net/minecraft/world/level/chunk/PalettedContainer.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchNaturalSpawnerGenerationSpawnTelemetry", "TELEMETRY js wasmgc", () -> TelemetryPatches.patchNaturalSpawnerGenerationSpawnTelemetry(args[0], root.resolve(
                 "net/minecraft/world/level/NaturalSpawner.class"), minecraftVersion));
         // Debug-only: the order trace must stay out of release patch manifests.
@@ -369,9 +386,17 @@ public final class MinecraftClientPatcher {
                 "com/mojang/blaze3d/platform/NativeImage.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchNativeImageBrowserPng", "REQUIRED js wasmgc", () -> RenderPatches.patchNativeImageBrowserPng(args[0], root.resolve(
                 "com/mojang/blaze3d/platform/NativeImage.class")));
+        // Startup: replay the mip chains and atlas layouts the build recorded from the vanilla
+        // classes for exactly these inputs (BrowserAtlasPrebake, port/tools/atlasprebake).
+        PatchRegistry.run("MinecraftClientPatcher.patchMipmapGeneratorAtlasPrebake", "PERF NOT_APPLICABLE wasmgc", () -> RenderPatches.patchMipmapGeneratorAtlasPrebake(args[0], root.resolve(
+                "net/minecraft/client/renderer/texture/MipmapGenerator.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchStitcherAtlasPrebake", "PERF NOT_APPLICABLE wasmgc", () -> RenderPatches.patchStitcherAtlasPrebake(args[0],
+                root.resolve("net/minecraft/client/renderer/texture/Stitcher.class"),
+                root.resolve("net/minecraft/client/renderer/texture/Stitcher$Region.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchBlockCacheSupportMemo", "PERF js wasmgc", () -> PlatformPatches.patchBlockCacheSupportMemo(args[0], root.resolve(
                 "net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase$Cache.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchBlockShapeFullMemo", "PERF js wasmgc", () -> PlatformPatches.patchBlockShapeFullMemo(args[0], root));
+        PatchRegistry.run("MinecraftClientPatcher.patchStateDefinitionNeighbourTables", "PERF js wasmgc", () -> PlatformPatches.patchStateDefinitionNeighbourTables(args[0], root));
         PatchRegistry.run("MinecraftClientPatcher.patchIdentifierHashMemo", "PERF js wasmgc", () -> PlatformPatches.patchIdentifierHashMemo(args[0], root.resolve(
                 "net/minecraft/resources/Identifier.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchWallBlockShapeMemo", "PERF js wasmgc", () -> PlatformPatches.patchWallBlockShapeMemo(args[0], root.resolve(

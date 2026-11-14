@@ -85,6 +85,7 @@ public final class BrowserTerrainBatch {
         }
         sectionCount = 0;
         sectionOwner = null;
+        BrowserGpuIndirectTerrain.beginSections(expected);
     }
 
     public static void addSection(int x, int y, int z, float visibility) {
@@ -99,6 +100,7 @@ public final class BrowserTerrainBatch {
         sections[at + 2] = z;
         sections[at + 3] = Float.floatToRawIntBits(visibility);
         sectionCount++;
+        BrowserGpuIndirectTerrain.addSection(x, y, z, visibility);
     }
 
     /** Ties the captured table to the uniform slice array vanilla wrote it into. */
@@ -113,6 +115,11 @@ public final class BrowserTerrainBatch {
 
     public static int sectionCount() {
         return sectionCount;
+    }
+
+    /** Publishes the current section table to the opt-in GPU terrain path. */
+    public static void publishGpuIndirectTerrain() {
+        BrowserGpuIndirectTerrain.sectionCount();
     }
 
     /** Scratch record array for {@code draws} draws, valid until the next call. */

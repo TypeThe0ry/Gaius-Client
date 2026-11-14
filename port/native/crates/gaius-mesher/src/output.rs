@@ -11,15 +11,14 @@
 //! Four vertices per quad, quads in vanilla emission order, so a layer's bytes
 //! equal what `SectionCompiler.compile` leaves in that layer's `BufferBuilder`.
 //!
-//! # Compact vertices (12 bytes) plus one u32 per quad
+//! # Compact vertices (20 bytes)
 //!
 //! ```text
 //! @0  u16 x, y, z     round((p + 8) * 2048), p section-relative (covers -8..24 blocks, 1/2048 steps)
-//! @6  u16 u, v        round(uv * 65535) (atlas unorm)
-//! @10 u16 light       bits 0-4 block (smooth block light 0..240 >> 3), bits 5-9 sky (same),
-//!                     bits 10-15 shade (vertex gray from AO and CardinalLighting, 0..255 >> 2)
-//! quad u32            tint ARGB of the quad (0xFFFFFFFF untinted); the shader multiplies
-//!                     tint * shade / 63 (fetch it with gl_VertexID / 4)
+//! @6  u16 padding     zero, aligns the next attribute to 4 bytes
+//! @8  u8 r, g, b, a   exact vanilla vertex color (ARGB.toABGR, little-endian)
+//! @12 u16 u, v        round(uv * 65535) (atlas unorm)
+//! @16 u16 block, sky  smooth light channels, unquantized
 //! ```
 //!
 //! # Result payload (after the ABI result header), little-endian
@@ -32,7 +31,7 @@
 //! @24 u32 table_epoch     the epoch resident in the kernel
 //! @28 u32 visibility_lo   @32 u32 visibility_hi   VisibilitySet bits a + 6 * b
 //! @36 u32 flags           bit 0 vanilla vertices, 1 compact vertices, 2 translucent sorted,
-//!                         3 centroids, 4 no geometry
+//!                         3 centroids, 4 no geometry, 5 compact v2 (20-byte vertices)
 //! @40 f32 camera x, y, z  sort origin used
 //! @52 u32 detail          status 2: the first unsupported state id; otherwise non-air blocks
 //! @56 u32 reserved[2]
@@ -40,8 +39,8 @@
 //!                         u32 quad_count, u32 vanilla_offset, u32 compact_offset,
 //!                         u32 tint_offset, u32 order_offset, u32 centroid_offset, u32 0, u32 0
 //!                         offsets are from the payload start, 8-aligned, 0 when absent;
-//!                         vanilla: quad_count * 4 * 28 bytes; compact: quad_count * 4 * 12;
-//!                         tint: quad_count u32; order (translucent): quad_count u32 quad indices,
+//!                         vanilla: quad_count * 4 * 28 bytes; compact v2: quad_count * 4 * 20;
+//!                         tint offset is reserved and zero for compact v2; order (translucent): quad_count u32 quad indices,
 //!                         farthest first (MeshData.SortState indices before the 6-per-quad
 //!                         expansion); centroids (translucent): quad_count * 3 f32
 //! ```
@@ -59,10 +58,11 @@ pub mod result_flags {
     pub const SORTED: u32 = 1 << 2;
     pub const CENTROIDS: u32 = 1 << 3;
     pub const EMPTY: u32 = 1 << 4;
+    pub const COMPACT_V2: u32 = 1 << 5;
 }
 
 pub const VANILLA_VERTEX: usize = 28;
-pub const COMPACT_VERTEX: usize = 12;
+pub const COMPACT_VERTEX: usize = 20;
 
 /// One output vertex before encoding.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -74,8 +74,6 @@ pub struct Vertex {
     pub u: f32,
     pub v: f32,
     pub light: i32,
-    /// Gray level (0..255) before the tint, for the compact format.
-    pub shade: u8,
 }
 
 #[derive(Default)]
@@ -83,7 +81,6 @@ pub struct Layer {
     pub quads: u32,
     pub vanilla: Vec<u8>,
     pub compact: Vec<u8>,
-    pub tints: Vec<u32>,
     pub cx: Vec<f32>,
     pub cy: Vec<f32>,
     pub cz: Vec<f32>,
@@ -94,7 +91,6 @@ impl Layer {
         self.quads = 0;
         self.vanilla.clear();
         self.compact.clear();
-        self.tints.clear();
         self.cx.clear();
         self.cy.clear();
         self.cz.clear();
@@ -148,7 +144,7 @@ impl Output {
 
     /// Appends one quad (four vertices in order) to `layer`.
     #[inline]
-    pub fn quad(&mut self, layer: u8, v: &[Vertex; 4], tint: i32) {
+    pub fn quad(&mut self, layer: u8, v: &[Vertex; 4]) {
         let out = &mut self.layers[layer as usize];
         out.quads += 1;
         if self.vanilla {
@@ -172,15 +168,14 @@ impl Output {
                 b[0..2].copy_from_slice(&quantize_position(vert.x).to_le_bytes());
                 b[2..4].copy_from_slice(&quantize_position(vert.y).to_le_bytes());
                 b[4..6].copy_from_slice(&quantize_position(vert.z).to_le_bytes());
-                b[6..8].copy_from_slice(&quantize_uv(vert.u).to_le_bytes());
-                b[8..10].copy_from_slice(&quantize_uv(vert.v).to_le_bytes());
-                let block = (smooth_block(vert.light) >> 3).min(31) as u16;
-                let sky = (smooth_sky(vert.light) >> 3).min(31) as u16;
-                let word = block | (sky << 5) | (((vert.shade >> 2) as u16) << 10);
-                b[10..12].copy_from_slice(&word.to_le_bytes());
+                b[6..8].copy_from_slice(&[0, 0]);
+                b[8..12].copy_from_slice(&to_abgr(vert.color).to_le_bytes());
+                b[12..14].copy_from_slice(&quantize_uv(vert.u).to_le_bytes());
+                b[14..16].copy_from_slice(&quantize_uv(vert.v).to_le_bytes());
+                b[16..18].copy_from_slice(&(smooth_block(vert.light) as u16).to_le_bytes());
+                b[18..20].copy_from_slice(&(smooth_sky(vert.light) as u16).to_le_bytes());
             }
             out.compact.extend_from_slice(&bytes);
-            out.tints.push(tint as u32);
         }
         if layer == crate::table::LAYER_TRANSLUCENT {
             // MeshData.decodeQuadCentroids: the midpoint of vertices 0 and 2.
@@ -245,7 +240,7 @@ fn write_head(o: &mut [u8], head: &ResultHead, flags: u32) {
 pub fn encode(head: &ResultHead, out: &Output, order: &[u32], centroids: bool) -> Vec<u8> {
     let mut size = RESULT_HEADER_LEN;
     for l in &out.layers {
-        size += l.vanilla.len() + l.compact.len() + l.tints.len() * 4 + 64;
+        size += l.vanilla.len() + l.compact.len() + 64;
     }
     size += order.len() * 4 + out.layers[2].cx.len() * 12;
     let mut o = Vec::with_capacity(size);
@@ -256,6 +251,7 @@ pub fn encode(head: &ResultHead, out: &Output, order: &[u32], centroids: bool) -
     }
     if out.compact {
         flags |= result_flags::COMPACT;
+        flags |= result_flags::COMPACT_V2;
     }
     if !order.is_empty() {
         flags |= result_flags::SORTED;
@@ -278,8 +274,6 @@ pub fn encode(head: &ResultHead, out: &Output, order: &[u32], centroids: bool) -
         }
         if out.compact {
             d[2] = append_aligned(&mut o, &l.compact);
-            let tints: Vec<u8> = l.tints.iter().flat_map(|t| t.to_le_bytes()).collect();
-            d[3] = append_aligned(&mut o, &tints);
         }
         if k == 2 {
             if !order.is_empty() {
@@ -304,4 +298,70 @@ pub fn encode(head: &ResultHead, out: &Output, order: &[u32], centroids: bool) -
         }
     }
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn u32_at(bytes: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn compact_v2_preserves_color_and_full_precision_light() {
+        let mut output = Output::default();
+        output.reset(false, true);
+        let vertices = [
+            Vertex {
+                x: -2.25,
+                y: 15.5,
+                z: 0.125,
+                color: 0x7f12_3456,
+                u: 0.25,
+                v: 0.75,
+                light: crate::mth::smooth_pack(123, 231),
+                ..Vertex::default()
+            },
+            Vertex {
+                x: 0.0,
+                y: 1.0,
+                z: 2.0,
+                ..Vertex::default()
+            },
+            Vertex {
+                x: 3.0,
+                y: 4.0,
+                z: 5.0,
+                ..Vertex::default()
+            },
+            Vertex {
+                x: 6.0,
+                y: 7.0,
+                z: 8.0,
+                ..Vertex::default()
+            },
+        ];
+        output.quad(0, &vertices);
+        let bytes = encode(&ResultHead::default(), &output, &[], false);
+
+        assert_eq!(u32_at(&bytes, 36), result_flags::COMPACT | result_flags::COMPACT_V2);
+        assert_eq!(u32_at(&bytes, 64), 1);
+        assert_eq!(u32_at(&bytes, 64 + 12), 0, "compact v2 has no tint sidecar");
+        let compact_at = u32_at(&bytes, 64 + 8) as usize;
+        assert_eq!(bytes.len(), compact_at + COMPACT_VERTEX * 4);
+        let vertex = &bytes[compact_at..compact_at + COMPACT_VERTEX];
+
+        for (offset, position) in [(0, vertices[0].x), (2, vertices[0].y), (4, vertices[0].z)] {
+            let encoded = u16::from_le_bytes(vertex[offset..offset + 2].try_into().unwrap());
+            let decoded = encoded as f32 / 2048.0 - 8.0;
+            assert!((decoded - position).abs() <= 0.5 / 2048.0);
+        }
+        assert_eq!(&vertex[6..8], &[0, 0]);
+        assert_eq!(&vertex[8..12], &[0x12, 0x34, 0x56, 0x7f]);
+        assert_eq!(u16::from_le_bytes(vertex[12..14].try_into().unwrap()), 16384);
+        assert_eq!(u16::from_le_bytes(vertex[14..16].try_into().unwrap()), 49151);
+        assert_eq!(u16::from_le_bytes(vertex[16..18].try_into().unwrap()), 123);
+        assert_eq!(u16::from_le_bytes(vertex[18..20].try_into().unwrap()), 231);
+    }
 }

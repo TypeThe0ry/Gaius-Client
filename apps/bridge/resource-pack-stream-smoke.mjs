@@ -216,6 +216,11 @@ try {
     chunks.push(Buffer.from(part.value));
   }
   assert.deepEqual(Buffer.concat(chunks), bytes);
+  const cachedStream = await request("/gated.zip");
+  assert.equal(cachedStream.status, 200);
+  assert.deepEqual(Buffer.from(await cachedStream.arrayBuffer()), bytes);
+  assert.equal(hits.get("/gated.zip"), 1,
+    "a completed stream=1 request must publish a cache entry for the next stream=1 request");
   const cached = await fetch(url("/gated.zip", false), {headers: {origin, "x-gaius-bridge-token": token}});
   assert.deepEqual(Buffer.from(await cached.arrayBuffer()), bytes);
   assert.equal(hits.get("/gated.zip"), 1, "completed stream must populate the shared cache");

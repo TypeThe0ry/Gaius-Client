@@ -19,6 +19,10 @@
   // setTimeout takes a signed 32-bit delay; a longer one fires at once (TimeoutOverflowWarning).
   // A thread that waits longer re-parks for the time left when the timer fires.
   var MAX_TIMER_MS = 2147483647;
+  // JSPI resumes can continue through a long Promise-microtask chain before the activation
+  // reaches its next suspension point. Keep that activation at the head of the FIFO, but let the
+  // browser dispatch Worker replies, input and CDP tasks between bounded microtask batches.
+  var HOST_YIELD_HOPS = 256;
   // JspiHost.clinitEvent kinds.
   var CLINIT_SUSPEND = 0;
   var CLINIT_WAIT = 1;
@@ -48,7 +52,26 @@
     return false;
   }
 
-  function reportSlowActivation(stats, pending) {
+  // The clock of the run queue: it is read once for every item the queue runs (a resumed thread
+  // or a zero-delay event), thousands of times per second in a busy server Worker. In a Worker
+  // `performance` is an accessor of the global's prototype chain and every reference runs a
+  // getter inside the browser, so the object is looked up once and kept. The method is still
+  // looked up on it for each reading (a test may replace performance.now), and a realm without
+  // performance.now falls back to Date.now().
+  var clockSource = null;
+  function hostNow() {
+    var source = clockSource;
+    if (source === null) {
+      source = globalThis.performance;
+      if (!source || typeof source.now !== "function") {
+        source = Date;
+      }
+      clockSource = source;
+    }
+    return source.now();
+  }
+
+  function reportSlowActivation(stats, pending, activationHops) {
     stats.slowActivations = (stats.slowActivations || 0) + 1;
     var telemetry = globalThis.__gaiusFrameTelemetry;
     if (telemetry && telemetry.enabled) {
@@ -59,7 +82,7 @@
     }
     slowActivationLogged = true;
     console.warn("JSPI activation is taking unusually long to suspend", {
-      hops: stats.hops, pending: pending, turns: stats.turns, occurrences: stats.slowActivations
+      hops: activationHops, totalHops: stats.hops, pending: pending, turns: stats.turns, occurrences: stats.slowActivations
     });
   }
 
@@ -73,8 +96,14 @@
     // clinitSuspend: suspensions of a thread with a class initializer on its stack; clinitWait:
     // waits of a thread for a class that another thread initializes (JVM semantics, design
     // D3); clinitUnwaitable: a JS callback reached such a class and went on without waiting.
-    var stats = { posts: 0, slices: 0, maxQueue: 0, turns: 0, hops: 0, parks: 0, frames: 0,
+    var stats = { posts: 0, slices: 0, maxQueue: 0, turns: 0, hops: 0, hostYields: 0, parks: 0, frames: 0,
       activationFailures: 0, scheduleFailures: 0, clinitSuspend: 0, clinitWait: 0, clinitUnwaitable: 0 };
+    var frameTelemetry = globalThis.__gaiusFrameTelemetry;
+    if (frameTelemetry && frameTelemetry.enabled
+        && (typeof frameTelemetry.jspiSlowActivationCount !== "number"
+          || !Number.isFinite(frameTelemetry.jspiSlowActivationCount))) {
+      frameTelemetry.jspiSlowActivationCount = 0;
+    }
     // True from the moment the drain loop resumes (or starts) an activation until that
     // activation suspends again (a suspending import returned a promise) or finishes.
     var turn = { running: false };
@@ -144,7 +173,7 @@
     async function drain() {
       if (closed) return;
       stats.slices++;
-      var end = performance.now() + SLICE_MS;
+      var end = hostNow() + SLICE_MS;
       slice.end = end;
       slice.draining = true;
       try {
@@ -164,20 +193,35 @@
           if (resumed) {
             stats.turns++;
             var warned = false;
+            // Keep the full activation count for diagnostics.  The host-yield budget is a
+            // separate contiguous microtask batch: resetting the full count here would make
+            // the 1024-hop diagnostic unreachable whenever the activation yields fairly.
+            var activationHops = 0;
+            var batchHops = 0;
             for (;;) {
               if (!turn.running) break;
               stats.hops++;
-              if (!warned && stats.hops % 1024 === 0) {
+              activationHops++;
+              batchHops++;
+              if (!warned && activationHops >= 1024) {
                 warned = true;
-                reportSlowActivation(stats, queue.length - head);
+                reportSlowActivation(stats, queue.length - head, activationHops);
               }
-              await null;
+              if (batchHops >= HOST_YIELD_HOPS) {
+                stats.hostYields++;
+                batchHops = 0;
+                await new Promise(function (resolve) {
+                  setTimeout(resolve, 0);
+                });
+              } else {
+                await null;
+              }
             }
           } else {
             // Synchronous events have no activation callback to clear the state.
             turn.running = false;
           }
-          if ((resumed && endsDrain) || performance.now() >= end) {
+          if ((resumed && endsDrain) || hostNow() >= end) {
             break;
           }
         }
@@ -227,15 +271,15 @@
       // macrotask of its own: the Java code it resumes gets a fresh slice.
       beginSlice: function () {
         if (!slice.draining) {
-          slice.end = performance.now() + SLICE_MS;
+          slice.end = hostNow() + SLICE_MS;
         }
       },
       // A frame starts: it gets a slice of its own also when the drain resumed it.
       freshSlice: function () {
-        slice.end = performance.now() + SLICE_MS;
+        slice.end = hostNow() + SLICE_MS;
       },
       sliceExpired: function () {
-        return performance.now() >= slice.end;
+        return hostNow() >= slice.end;
       },
       close: function () {
         if (closed) return false;

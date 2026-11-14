@@ -149,8 +149,16 @@ public final class BrowserRenderScheduler {
     private static final int T_MESH_REQUESTS_IN_FLIGHT = 81;
     private static final int T_MESH_RESULTS_READY = 82;
     private static final int T_FAILED_TASKS = 83;
-    private static final int T_COUNT = 84;
-    private static final double[] TELEMETRY = new double[T_COUNT];
+    private static final int T_INSTALL_NANOS_PER_FRAME = 84;
+    private static final int T_FRAME_INSTALL_NANOS = 85;
+    private static final int T_ADAPTIVE_INSTALL_BUDGET = 86;
+    private static final int T_LAST_FRAME_DURATION_MILLIS = 87;
+    private static final int BASE_TELEMETRY_COUNT = 84;
+    private static final int T_COUNT = 88;
+    private static final int EXTENDED_TELEMETRY_COUNT = 88;
+    /** The four adaptive fields are allocated only after the opt-in flag is true. */
+    private static final double[] TELEMETRY = new double[BASE_TELEMETRY_COUNT];
+    private static double[] extendedTelemetry;
     /**
      * Without a diagnostic opt-in ({@link #telemetryEveryCallRequested}) the snapshot is written
      * at most once per this interval: readers poll it (acceptance, the singleplayer CDP probe)
@@ -167,6 +175,8 @@ public final class BrowserRenderScheduler {
     private static boolean fastProfile;
     private static boolean frameTailProfileInitialized;
     private static boolean frameTailProfile;
+    private static boolean adaptiveInstallInitialized;
+    private static boolean adaptiveInstall;
     private static int frameTasks;
     private static long frameWorkNanos;
     private static boolean waitingForFrame;
@@ -216,6 +226,10 @@ public final class BrowserRenderScheduler {
     private static long totalHighWaterNanos;
     private static long longestHighWaterNanos;
     private static long renderFrames;
+    private static long frameStartedNanos;
+    private static long lastFrameDurationNanos;
+    private static long adaptiveInstallBytes;
+    private static long adaptiveInstallNanos;
     private static int lastTaskDrainCount;
     private static int peakTaskDrainCount;
     private static boolean lastTaskBudgetExhausted;
@@ -312,12 +326,18 @@ public final class BrowserRenderScheduler {
 
     /** Starts the hard upload budget shared by all terrain upload calls in one rendered frame. */
     public static void beginFrame() {
+        long frameNow = System.nanoTime();
+        if (frameStartedNanos != 0L) {
+            lastFrameDurationNanos = Math.max(0L, frameNow - frameStartedNanos);
+        }
+        frameStartedNanos = frameNow;
         sweepExpiredUploadRetries();
         if (uploadFrameInitialized) {
             lastUploadDrainCount = currentUploadDrainCount;
             peakUploadDrainCount = Math.max(peakUploadDrainCount, currentUploadDrainCount);
         }
         uploadFrameInitialized = true;
+        updateAdaptiveInstallBudget();
         currentUploadDrainCount = 0;
         UPLOAD_FRAME_DRAIN_COUNTS.clear();
         compileRunsDuringUploadThisFrame = 0;
@@ -341,6 +361,8 @@ public final class BrowserRenderScheduler {
         pumpMeshResults();
         installReadyMeshes();
         resumeAfterFrame();
+        // Render pipelines deferred out of the resource reload compile here, after the title screen.
+        BrowserPipelineWarmup.onFrame();
     }
 
     /**
@@ -371,8 +393,8 @@ public final class BrowserRenderScheduler {
             return;
         }
         Budget budget = budget();
-        long bytesLeft = budget.installBytesPerFrame() - frameInstallBytes;
-        long nanosLeft = budget.installNanosPerFrame() - frameInstallNanos;
+        long bytesLeft = effectiveInstallBytesPerFrame() - frameInstallBytes;
+        long nanosLeft = effectiveInstallNanosPerFrame() - frameInstallNanos;
         if (bytesLeft <= 0L || nanosLeft <= 0L) {
             waitForInstallFrame();
             return;
@@ -1102,6 +1124,55 @@ public final class BrowserRenderScheduler {
         currentUploadBytes = 0L;
     }
 
+    private static long effectiveInstallBytesPerFrame() {
+        if (!adaptiveInstallRequested()) {
+            return budget().installBytesPerFrame();
+        }
+        if (adaptiveInstallBytes == 0L) {
+            adaptiveInstallBytes = budget().installBytesPerFrame();
+        }
+        return adaptiveInstallBytes;
+    }
+
+    private static long effectiveInstallNanosPerFrame() {
+        if (!adaptiveInstallRequested()) {
+            return budget().installNanosPerFrame();
+        }
+        if (adaptiveInstallNanos == 0L) {
+            adaptiveInstallNanos = budget().installNanosPerFrame();
+        }
+        return adaptiveInstallNanos;
+    }
+
+    /** Adjusts only the optional mesh-install slice; compile and upload caps remain unchanged. */
+    private static void updateAdaptiveInstallBudget() {
+        if (!adaptiveInstallRequested()) {
+            return;
+        }
+        Budget base = budget();
+        if (adaptiveInstallBytes == 0L) {
+            adaptiveInstallBytes = base.installBytesPerFrame();
+            adaptiveInstallNanos = base.installNanosPerFrame();
+            return;
+        }
+        long duration = lastFrameDurationNanos;
+        if (duration <= 0L) {
+            return;
+        }
+        // Never throttle below the static budget: doing so creates a READY backlog and makes the
+        // opt-in path slower than FIFO after one long frame. Short frames may still grow the
+        // slice, bounded by twice the static budget.
+        if (duration > 20_000_000L) {
+            adaptiveInstallBytes = Math.max(base.installBytesPerFrame(), adaptiveInstallBytes);
+            adaptiveInstallNanos = Math.max(base.installNanosPerFrame(), adaptiveInstallNanos);
+        } else if (duration < 8_000_000L && BrowserMeshInstallQueue.readyCount() > 0) {
+            adaptiveInstallBytes = Math.min(base.installBytesPerFrame() * 2L,
+                    adaptiveInstallBytes * 11L / 10L);
+            adaptiveInstallNanos = Math.min(base.installNanosPerFrame() * 2L,
+                    adaptiveInstallNanos * 11L / 10L);
+        }
+    }
+
     private static void markUploadBudgetExhausted(boolean timeBudget) {
         if (uploadBudgetExhaustedThisFrame) {
             return;
@@ -1139,7 +1210,7 @@ public final class BrowserRenderScheduler {
                 ? Math.max(0L, System.nanoTime() - highWaterStartedAt)
                 : 0L;
         Budget budget = budget();
-        double[] t = TELEMETRY;
+        double[] t = telemetryArray();
         t[T_PENDING_TASKS] = pendingTasks();
         t[T_QUEUE_CAPACITY] = effectiveQueueHighWater();
         t[T_TASK_RUNNING] = runningTask ? 1 : 0;
@@ -1220,11 +1291,28 @@ public final class BrowserRenderScheduler {
         t[T_UPLOAD_BYTES_PER_FRAME] = budget.uploadBytesPerFrame();
         t[T_UPLOAD_BYTE_BUDGET_EXHAUSTIONS] = uploadByteBudgetExhaustions;
         t[T_LAST_INSTALL_BYTES] = lastInstallBytes;
-        t[T_INSTALL_BYTES_PER_FRAME] = budget.installBytesPerFrame();
+        t[T_INSTALL_BYTES_PER_FRAME] = effectiveInstallBytesPerFrame();
         t[T_MESH_REQUESTS_IN_FLIGHT] = BrowserMeshInstallQueue.inFlight();
         t[T_MESH_RESULTS_READY] = BrowserMeshInstallQueue.readyCount();
         t[T_FAILED_TASKS] = failedTasks;
+        if (t.length == EXTENDED_TELEMETRY_COUNT) {
+            t[T_INSTALL_NANOS_PER_FRAME] = nanosToMillis(effectiveInstallNanosPerFrame());
+            t[T_FRAME_INSTALL_NANOS] = nanosToMillis(frameInstallNanos);
+            t[T_ADAPTIVE_INSTALL_BUDGET] = 1;
+            t[T_LAST_FRAME_DURATION_MILLIS] = nanosToMillis(lastFrameDurationNanos);
+        }
         publishTelemetryJs(JsArrays.float64(t));
+    }
+
+    private static double[] telemetryArray() {
+        if (!adaptiveInstallRequested()) {
+            return TELEMETRY;
+        }
+        if (extendedTelemetry == null) {
+            extendedTelemetry = new double[EXTENDED_TELEMETRY_COUNT];
+            System.arraycopy(TELEMETRY, 0, extendedTelemetry, 0, TELEMETRY.length);
+        }
+        return extendedTelemetry;
     }
 
     private static void armTelemetryFlush(long now) {
@@ -1288,6 +1376,19 @@ public final class BrowserRenderScheduler {
             return /^(1|true|on)$/i.test(params.get('gaiusGlFrameBudget') || '');
             """)
     private static native boolean frameTailRequested();
+
+    private static boolean adaptiveInstallRequested() {
+        if (!adaptiveInstallInitialized) {
+            adaptiveInstall = adaptiveInstallRequestedJs();
+            adaptiveInstallInitialized = true;
+        }
+        return adaptiveInstall;
+    }
+
+    @JSBody(script = "var g=typeof globalThis!=='undefined'?globalThis:self;"
+            + "var flags=g.__gaiusLauncherFlags;"
+            + "return !!(flags&&flags.meshAdaptiveBudget===true);")
+    private static native boolean adaptiveInstallRequestedJs();
 
     /**
      * Writes {@code globalThis.__gaiusChunkPipelineTelemetry} from one packed snapshot: index
@@ -1403,7 +1504,21 @@ public final class BrowserRenderScheduler {
             state.meshRequestsInFlight=v[81]||0;
             state.meshResultsReady=v[82]||0;
             state.failedTasks=v[83]||0;
+            state.installNanosPerFrame=v[84]||0;
+            state.frameInstallNanos=v[85]||0;
+            state.adaptiveInstallBudget=!!v[86];
+            state.lastFrameDurationMillis=v[87]||0;
             state.pumpDriver='completion';
+            const causal=state.causal;
+            if(causal&&globalThis.__gaiusChunkCausalTelemetryEnabled===true){
+              const at=typeof performance!=='undefined'&&Number.isFinite(performance.timeOrigin)
+                ? performance.timeOrigin+state.updatedAt : Date.now();
+              causal.schedulerSamples.push({atMillis:at,compileBacklog:state.compileBacklog,
+                uploadBacklog:state.uploadBacklog,queuedWork:Math.max(state.pendingTasks,
+                  state.compileBacklog,state.uploadBacklog)+(Number(state.meshRequestsInFlight)||0)});
+              if(causal.schedulerSamples.length>(Number(causal.schedulerCapacity)||512))
+                causal.schedulerSamples.shift();
+            }
             """)
     private static native void publishTelemetryJs(Float64Array values);
 

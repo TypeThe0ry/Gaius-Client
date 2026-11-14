@@ -19,6 +19,7 @@
 //        [--side 8 | --positions <file>] [--modes terrain,full] [--out-dir <dir>]
 //        [--vanilla client | --server-jar <server.jar> | --download-server]
 //        [--patched <client-named-26.3-gaius.jar>]
+//        [--no-rng-tap] [--only <class,class...>]
 //   node port/scripts/worldgen-seed-parity.mjs --compare <reference.json> <candidate.json>
 //   node port/scripts/worldgen-seed-parity.mjs --helpers [--helper-count 4000]
 //   node port/scripts/worldgen-seed-parity.mjs --self-test   (the comparison logic on synthetic results)
@@ -57,6 +58,13 @@
 // available, so the vanilla generation path runs. This proves that the browser bytecode patches keep vanilla
 // worldgen semantics; TeaVM arithmetic (no Math.fround for float) is only covered by a browser
 // run compared with --compare.
+//
+// --only a,b,c  (with --patched) overlays just the listed classes (dotted or slashed names) instead of
+// P6_WORLDGEN_CLASSES: the run then checks those patches alone against vanilla (the feature-placement
+// patches use it: --only net.minecraft.world.level.chunk.BulkSectionAccess,
+// net.minecraft.world.level.levelgen.feature.OreFeature,net.minecraft.core.Holder$Reference), and works on
+// profiles whose browser worldgen chain the harness cannot run on the JVM (26.2: the patched chunk
+// generator waits for the browser worldgen scheduler).
 //
 // Browser runs (M2 seed parity, JVM vs js vs wasm):
 //   node port/scripts/worldgen-seed-parity.mjs [--seeds ...] [--out-dir <dir>]
@@ -131,6 +139,14 @@ export const P6_WORLDGEN_CLASSES = [
   "net/minecraft/world/level/chunk/ProtoChunk",
   "net/minecraft/world/level/levelgen/Heightmap",
   "net/minecraft/world/level/chunk/storage/RegionFileStorage",
+  // WorldgenHotPathPatches: exact caches of the chunk-generation thread.
+  "net/minecraft/tags/TagKey",
+  "net/minecraft/server/level/WorldGenRegion",
+  "net/minecraft/world/level/biome/MultiNoiseBiomeSource",
+  // Feature placement (MinecraftClientPatcher.patchBulkSectionAccessLookup / patchHolderReferenceTagMemo).
+  "net/minecraft/world/level/chunk/BulkSectionAccess",
+  "net/minecraft/world/level/levelgen/feature/OreFeature",
+  "net/minecraft/core/Holder$Reference",
 ];
 
 /**
@@ -146,6 +162,7 @@ const REAL_HELPERS = [
   "dev/gaius/browser/kernel/mesh/MeshBiomeAccess.java",
   "dev/gaius/browser/kernel/worldgen/ChunkGeneratorKernelHooks263.java",
   "dev/gaius/browser/kernel/worldgen/WorldgenKernelHooks263.java",
+  "dev/gaius/browser/kernel/worldgen/WorldgenKernelHooks262.java",
 ];
 
 /**
@@ -221,7 +238,7 @@ function parseBrowser(text) {
 
 function parseArgs(argv) {
   const options = {profile: null, seeds: DEFAULT_SEEDS, side: 8, modes: ["terrain", "full"],
-    vanilla: "client", helperCount: 4000, browsers: [], saved: [], controlSide: 0, controlOrder: "shuffle", controlRuns: []};
+    vanilla: "client", rngTap: true, helperCount: 4000, browsers: [], saved: [], controlSide: 0, controlOrder: "shuffle", controlRuns: []};
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
     const value = () => argv[++index] ?? usage(`${argument} needs a value`);
@@ -240,6 +257,8 @@ function parseArgs(argv) {
       case "--compare": options.compare = [resolve(value()), resolve(value())]; break;
       case "--helpers": options.helpers = true; break;
       case "--self-test": options.selfTest = true; break;
+      case "--no-rng-tap": options.rngTap = false; break;
+      case "--only": options.only = value().split(",").map((owner) => owner.trim().replaceAll(".", "/")).filter(Boolean); break;
       case "--helper-count": options.helperCount = Number(value()); break;
       case "--browser": options.browsers.push(parseBrowser(value())); break;
       case "--control": {
@@ -454,6 +473,27 @@ export function compareResults(reference, candidate) {
     if (reference.mode === "terrain" && JSON.stringify(worldgenHeightmaps(chunk.heightmaps) ?? null)
         !== JSON.stringify(worldgenHeightmaps(other.heightmaps) ?? null)) {
       heightmapDiffs.push(`${chunk.x},${chunk.z}`);
+    }
+  }
+  if (reference.mode === "full") {
+    // Everything else a full chunk carries that feature placement writes: all its heightmaps, the
+    // post-processing marks, the scheduled ticks, block entities and structure starts, and the
+    // totals of the worldgen random (draw count and ordered hash) when both runs tapped it.
+    const extra = {heightmaps: [], postProcessing: [], blockTicks: [], fluidTicks: [], blockEntities: [], structures: []};
+    for (const chunk of reference.chunks) {
+      const other = byPosition.get(`${chunk.x},${chunk.z}`);
+      if (!other) continue;
+      for (const key of Object.keys(extra)) {
+        if (chunk[key] === undefined || other[key] === undefined) continue;
+        if (JSON.stringify(chunk[key]) !== JSON.stringify(other[key])) extra[key].push(`${chunk.x},${chunk.z}`);
+      }
+    }
+    for (const [key, positions] of Object.entries(extra)) {
+      if (positions.length) problems.push(`${key} differ in ${positions.length} chunk(s): ${positions.join(" ")}`);
+    }
+    if (reference.rng && candidate.rng
+        && (reference.rng.count !== candidate.rng.count || reference.rng.hash !== candidate.rng.hash)) {
+      problems.push(`worldgen random draws differ: ${JSON.stringify(reference.rng)} vs ${JSON.stringify(candidate.rng)}`);
     }
   }
   if (blockDiffs.length) problems.push(`block hashes differ in ${blockDiffs.length} chunk(s): ${blockDiffs.join(" ")}`);
@@ -764,7 +804,11 @@ export function compareSavedPair(first, second) {
   const light = compareSavedLight(first, second);
   Object.assign(counts, light.counts);
   differences.push(...light.differences.map((position) => `light ${position}`));
-  return {counts, problems: differences.length ? [`${differences.length} difference(s): ${differences.slice(0, 40).join(" ")}`] : []};
+  const problems = differences.length ? [`${differences.length} difference(s): ${differences.slice(0, 40).join(" ")}`] : [];
+  if (counts.blocksCompared === 0) {
+    problems.push("no common TERRAIN chunks; block parity was not exercised");
+  }
+  return {counts, problems};
 }
 
 /**
@@ -806,18 +850,47 @@ function report(label, problems) {
   return problems.length === 0;
 }
 
+/**
+ * A copy of WorldgenRandom that counts every next(int) and hashes (bits, result) in order
+ * (RngTap.java), first on the class path of the vanilla and of the patched run: the totals
+ * ("rng" in the result files) are compared, so one extra, dropped or reordered random draw
+ * fails the run even where no block differs. Returns the directory, or null with --no-rng-tap.
+ */
+function prepareRngTap(options, vanilla, temp) {
+  if (!options.rngTap) return null;
+  const maven = nativePath(process.env.GAIUS_MAVEN_REPOSITORY || join(homedir(), ".m2/repository"));
+  const asm = ["asm", "asm-tree", "asm-commons"].map((artifact) =>
+    join(maven, "org/ow2/asm", artifact, "9.8", `${artifact}-9.8.jar`));
+  for (const jar of asm) if (!existsSync(jar)) throw new Error(`${jar} is missing (ASM 9.8 is needed for the RNG tap)`);
+  const tool = join(temp, "rng-tap-tool");
+  const output = join(temp, "rng-tap");
+  mkdirSync(tool, {recursive: true});
+  mkdirSync(output, {recursive: true});
+  run(javaTool(options, "javac"), ["-J-Duser.language=en", "--release", "25", "-proc:none", "-cp", asm.join(delimiter),
+    "-d", tool, join(harnessDir, "RngTap.java")], "compile RngTap");
+  run(javaTool(options, "java"), ["-cp", [tool, ...asm].join(delimiter), "dev.gaius.parity.RngTap", vanilla.jar, output],
+    "write the RNG tap copy of WorldgenRandom");
+  return output;
+}
+
 function preparePatched(options, work, vanilla, harnessClasses, temp) {
   const overlay = join(temp, "patched-classes");
   const shims = join(temp, "shim-classes");
   mkdirSync(overlay, {recursive: true});
-  run(javaTool(options, "jar"), ["xf", options.patched,
-    ...P6_WORLDGEN_CLASSES.map((owner) => `${owner}.class`)], "extract patched worldgen classes",
-  {cwd: overlay});
-  for (const owner of P6_WORLDGEN_CLASSES) {
-    if (!existsSync(join(overlay, `${owner}.class`))) {
+  // A class of the list that the profile's vanilla jar does not have (MaterialSystem before 26.3)
+  // is not patched there either; one the vanilla jar has must be in the patched jar.
+  const entries = (jar) => new Set(run(javaTool(options, "jar"), ["tf", jar], "list jar entries").split(/\r?\n/));
+  const vanillaEntries = entries(vanilla.jar);
+  const patchedEntries = entries(options.patched);
+  const wanted = options.only ?? P6_WORLDGEN_CLASSES;
+  const present = wanted.filter((owner) => vanillaEntries.has(`${owner}.class`));
+  for (const owner of present) {
+    if (!patchedEntries.has(`${owner}.class`)) {
       throw new Error(`patched jar ${options.patched} has no ${owner}.class`);
     }
   }
+  run(javaTool(options, "jar"), ["xf", options.patched, ...present.map((owner) => `${owner}.class`)],
+    "extract patched worldgen classes", {cwd: overlay});
   const unsigned = join(temp, "vanilla-unsigned.jar");
   run(javaTool(options, "java"), ["-cp", harnessClasses, "dev.gaius.parity.WorldgenSeedParity",
     "--strip-signature", vanilla.jar, unsigned], "strip vanilla jar signature");
@@ -990,6 +1063,13 @@ function selfTest() {
   const pair = compareSavedPair(saved(), saved({chunks: [chunk(1, 0, "minecraft:terrain", "x"), chunk(0, 0, "minecraft:full", "b", "n")]}));
   expect("two saves compare biomes and common TERRAIN chunks", pair.counts.blocksCompared === 1 && pair.counts.blocksMatched === 1
     && pair.counts.biomesMatched === 1 && pair.problems.length === 1);
+  const fullOnly = {chunks: [chunk(0, 0, "minecraft:full")]};
+  expect("FULL-only saves cannot establish terrain block parity",
+    compareSavedPair(fullOnly, fullOnly).problems.some(p => /block parity was not exercised/.test(p)));
+  expect("empty saves cannot pass block parity", compareSavedPair({chunks: []}, {chunks: []}).problems.length > 0);
+  const terrainOnly = {chunks: [chunk(0, 0, "minecraft:terrain")]};
+  expect("an exact common TERRAIN chunk exercises block parity",
+    compareSavedPair(terrainOnly, terrainOnly).problems.length === 0);
   // Light: compared only where both saves hold a lit 3 x 3 neighbourhood with equal blocks.
   const litWorld = (light = (x, z) => `L${x},${z}`, blocks = (x, z) => `b${x},${z}`, status = () => "minecraft:full") => {
     const chunks = [];
@@ -1023,6 +1103,28 @@ function selfTest() {
   relitWorld.chunks.find((chunk) => chunk.x === 0 && chunk.z === 0).relight = "L0,0:t";
   relit = compareRelight(relitWorld);
   expect("a sky light difference is reported apart", relit.differences.length === 0 && relit.skyDifferences.join() === "0,0");
+  // Full-mode result comparison: heightmaps, post-processing marks, ticks and the random draws.
+  const fullChunk = (x, z) => ({x, z, status: "minecraft:full", blocks: `b${x}`, biomes: `m${x}`,
+    heightmaps: {MOTION_BLOCKING: `h${x}`}, postProcessing: `p${x}`, blockTicks: `t${x}`, fluidTicks: `f${x}`});
+  const fullReference = {seed: "1", mode: "full", side: 1, preset: "p", origin: {x: 0, z: 0},
+    rng: {count: 10, hash: "00000000000000aa"}, chunks: [fullChunk(0, 0)]};
+  const fullCandidate = (change) => {
+    const candidate = JSON.parse(JSON.stringify(fullReference));
+    change(candidate);
+    return compareResults(fullReference, candidate);
+  };
+  expect("identical full results match", fullCandidate(() => {}).length === 0);
+  expect("a full heightmap difference fails", fullCandidate((c) => { c.chunks[0].heightmaps.MOTION_BLOCKING = "x"; })
+    .some((p) => /heightmaps differ/.test(p)));
+  expect("a post-processing difference fails", fullCandidate((c) => { c.chunks[0].postProcessing = "x"; })
+    .some((p) => /postProcessing differ/.test(p)));
+  expect("a block tick difference fails", fullCandidate((c) => { c.chunks[0].blockTicks = "x"; })
+    .some((p) => /blockTicks differ/.test(p)));
+  expect("one extra random draw fails", fullCandidate((c) => { c.rng.count = 11; })
+    .some((p) => /random draws differ/.test(p)));
+  expect("a reordered random draw fails", fullCandidate((c) => { c.rng.hash = "00000000000000ab"; })
+    .some((p) => /random draws differ/.test(p)));
+  expect("a candidate without the tap is not compared", fullCandidate((c) => { delete c.rng; }).length === 0);
   for (const failure of failures) console.log(`WORLDGEN_SEED_PARITY_SELF_TEST_FAIL ${failure}`);
   console.log(`WORLDGEN_SEED_PARITY_SELF_TEST ${failures.length === 0 ? "PASS" : "FAIL"} (${failures.length} failure(s))`);
   return failures.length === 0;
@@ -1079,8 +1181,18 @@ async function main() {
     const harnessClasses = join(temp, "harness-classes");
     const vanillaClasspath = [vanilla.jar, ...vanilla.libraries];
     compileHarness(options, vanillaClasspath, harnessClasses);
-    const patchedClasspath = options.patched
-      ? preparePatched(options, work, vanilla, harnessClasses, temp) : null;
+    const tap = prepareRngTap(options, vanilla, temp);
+    // A class loaded from the tap directory shares its package with the signed vanilla jar, which the
+    // JVM refuses (signer mismatch): the tapped runs use an unsigned copy of the same jar.
+    const unsignedVanilla = join(temp, "vanilla-unsigned-tap.jar");
+    if (tap) {
+      run(javaTool(options, "java"), ["-cp", harnessClasses, "dev.gaius.parity.WorldgenSeedParity",
+        "--strip-signature", vanilla.jar, unsignedVanilla], "strip vanilla jar signature for the RNG tap");
+    }
+    const withTap = (classpath) => (tap && classpath
+      ? [tap, ...classpath.map((entry) => (entry === vanilla.jar ? unsignedVanilla : entry))] : classpath);
+    const patchedClasspath = withTap(options.patched
+      ? preparePatched(options, work, vanilla, harnessClasses, temp) : null);
     const universe = join(temp, "universe");
     let ok = true;
     const summary = [];
@@ -1093,7 +1205,7 @@ async function main() {
       }
       for (const mode of options.modes) {
         const positions = options.positions ? ["--positions", options.positions] : [];
-        const reference = runSeed(options, [harnessClasses, ...vanillaClasspath], {seed, mode,
+        const reference = runSeed(options, withTap([harnessClasses, ...vanillaClasspath]), {seed, mode,
           label: `vanilla-${vanilla.kind}`, universe,
           outFile: join(outDir, `vanilla-${mode}-${seed}.json`), extra: positions});
         summary.push({seed, mode, label: reference.label, aggregate: reference.aggregate,

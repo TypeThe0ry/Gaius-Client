@@ -39,6 +39,11 @@ The WebGPU backend of Gaius without any Minecraft symbol. Package
   reports the counters. Buffer allocations round up to whole words; a non-word-sized write may
   use that padding only when it ends at the logical buffer's end. Interior writes remain aligned
   so rounding cannot overwrite adjacent data.
+- Persistent section storage is exposed only through `CoreDevice.regionArena()` when the launcher
+  switch `gaiusRegionArena` is on. Its domains keep layer, pipeline, index type and usage separate;
+  leases carry buffer/offset/size/generation and freed ranges stay retired until the submitted GPU
+  epoch completes. The bounded arena is an opt-in allocator primitive; callers retain the vanilla
+  upload path when allocation returns `null`.
 - Enum mapping: `EnumBridge` maps a vanilla enum to a core enum by `name()` (core names follow
   renderpearl); each seam has a completeness test (`port/mc/seams/test-seam.sh`).
 

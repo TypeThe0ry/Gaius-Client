@@ -21,5 +21,9 @@ dev/gaius/browser/kernel/worldgen/WorldgenSeedSource262.java
 dev/gaius/browser/render/BrowserTerrainBatchGlue.java
 dev/gaius/browser/render/BrowserSectionSliceCache.java
 net/minecraft/world/level/block/state/GaiusMeshBlockAccess.java
+# The multi-property state construction this table builder reproduces (StateDefinition$StateCollection,
+# a StateHolder[][] neighbour table per state) is not in the LTS client, whose StateHolder keeps a
+# neighbour Table; MinecraftClientPatcher.patchStateDefinitionNeighbourTables is dropped there.
+net/minecraft/world/level/block/state/GaiusStateNeighbourTables.java
 net/minecraft/world/level/chunk/GaiusKernelSections.java
 net/minecraft/world/level/levelgen/GaiusWorldgenExport262.java

@@ -15,6 +15,7 @@
 //     camera: [cx, cy, cz],                  // camera minus the section origin, in blocks
 //     biomeZoomSeed: 123n,                   // BigInt, decimal string or safe integer
 //     states: Uint16Array(8000) | Uint32Array(8000),   // 20^3 region, see regionIndex
+//     packedStates: Int32Array,              // optional packed palettes/raw words for 27 sections
 //     light: Uint8Array(8000),               // (sky << 4) | block
 //     biomeQuarts: Uint8Array(216),          // palette indices, quart origin section * 4 - 1
 //     biomePalette: Int32Array(n * 5) | [{grass, grassModifier, foliage, dryFoliage, water}],
@@ -54,7 +55,8 @@
   const PALETTE_ENTRY_LEN = 20;
   const RESULT_HEADER_LEN = 160;
   const VANILLA_VERTEX = 28;
-  const COMPACT_VERTEX = 12;
+  const COMPACT_VERTEX_V1 = 12;
+  const COMPACT_VERTEX = 20;
   const SWAMP_BYTES = 32;
   const SWAMP_BLEND_BYTES = 50;
   const MAX_BIOME_BLEND = 2;
@@ -70,8 +72,9 @@
     INLINE_TABLE: 1 << 7,
     EMIT_CENTROIDS: 1 << 8,
     BIOME_BLEND: 1 << 9,
+    PACKED_STATES: 1 << 10,
   });
-  const RESULT_FLAGS = Object.freeze({VANILLA: 1, COMPACT: 2, SORTED: 4, CENTROIDS: 8, EMPTY: 16});
+  const RESULT_FLAGS = Object.freeze({VANILLA: 1, COMPACT: 2, SORTED: 4, CENTROIDS: 8, EMPTY: 16, COMPACT_V2: 32});
   const STATUS = Object.freeze({MESHED: 0, TABLE_MISSING: 1, NEEDS_VANILLA: 2});
   const STATUS_NAMES = Object.freeze(["meshed", "table-missing", "needs-vanilla"]);
   const LAYERS = Object.freeze(["solid", "cutout", "translucent"]);
@@ -184,14 +187,17 @@
     if (wide) flags |= FLAGS.WIDE_IDS;
     if (withTable) flags |= FLAGS.INLINE_TABLE;
     if (biomeBlend(input) >= 0) flags |= FLAGS.BIOME_BLEND;
+    if (input.packedStates) flags |= FLAGS.PACKED_STATES;
     return flags;
   }
 
   // Encodes a framed mesh_section job into one ArrayBuffer ready to transfer. `table` (optional)
   // attaches the model table for a worker that does not hold `tableEpoch`.
   function meshSection(input, jobId, table) {
+    const packedStates = input.packedStates ? toBytes(input.packedStates, "packedStates") : null;
     const wide = input.states instanceof Uint32Array;
-    if (!wide && !(input.states instanceof Uint16Array)) throw new TypeError("states must be a Uint16Array or Uint32Array");
+    if (!packedStates && !wide && !(input.states instanceof Uint16Array)) throw new TypeError("states must be a Uint16Array or Uint32Array");
+    if (packedStates && packedStates.byteLength % 4 !== 0) throw new RangeError("packedStates must contain whole i32 values");
     const light = toBytes(input.light, "light");
     const quarts = toBytes(input.biomeQuarts, "biomeQuarts");
     if (light.byteLength !== VOLUME) throw new RangeError(`light must hold ${VOLUME} bytes`);
@@ -205,7 +211,8 @@
     if (swamp && swamp.byteLength !== swampBytes) throw new RangeError(`swampMask must hold ${swampBytes} bytes`);
 
     const statesAt = JOB_HEADER_LEN;
-    const lightAt = statesAt + VOLUME * (wide ? 4 : 2);
+    const statesBytes = packedStates ? 4 + packedStates.byteLength : VOLUME * (wide ? 4 : 2);
+    const lightAt = statesAt + statesBytes;
     const quartsAt = lightAt + VOLUME;
     const paletteAt = pad(quartsAt + QUART_VOLUME, 8);
     const swampAt = paletteAt + PALETTE_ENTRY_LEN * paletteCount;
@@ -232,7 +239,12 @@
     view.setBigInt64(72, BigInt.asIntN(64, BigInt(input.biomeZoomSeed || 0)), true);
     view.setUint32(80, blend >= 0 ? blend : 0, true);
 
-    writeIds(buffer, HEADER_LEN + statesAt, input.states, wide);
+    if (packedStates) {
+      view.setUint32(statesAt, packedStates.byteLength / 4, true);
+      new Uint8Array(buffer, HEADER_LEN + statesAt + 4, packedStates.byteLength).set(packedStates);
+    } else {
+      writeIds(buffer, HEADER_LEN + statesAt, input.states, wide);
+    }
     new Uint8Array(buffer, HEADER_LEN + lightAt, VOLUME).set(light);
     new Uint8Array(buffer, HEADER_LEN + quartsAt, QUART_VOLUME).set(quarts);
     writePalette(view, paletteAt, input.biomePalette);
@@ -274,6 +286,7 @@
     if (length < RESULT_HEADER_LEN) throw new Error("mesh_section result is shorter than its header");
     const status = view.getUint32(0, true);
     const flags = view.getUint32(36, true);
+    const compactVertexSize = (flags & RESULT_FLAGS.COMPACT_V2) !== 0 ? COMPACT_VERTEX : COMPACT_VERTEX_V1;
     const at = (offset, bytes) => {
       if (offset === 0) return -1;
       if (offset + bytes > length) throw new Error("mesh_section result section is out of bounds");
@@ -284,7 +297,7 @@
       const base = 64 + 32 * k;
       const quadCount = view.getUint32(base, true);
       const vanillaAt = at(view.getUint32(base + 4, true), quadCount * 4 * VANILLA_VERTEX);
-      const compactAt = at(view.getUint32(base + 8, true), quadCount * 4 * COMPACT_VERTEX);
+      const compactAt = at(view.getUint32(base + 8, true), quadCount * 4 * compactVertexSize);
       const tintAt = at(view.getUint32(base + 12, true), quadCount * 4);
       const orderAt = at(view.getUint32(base + 16, true), quadCount * 4);
       const centroidAt = at(view.getUint32(base + 20, true), quadCount * 12);
@@ -292,7 +305,8 @@
         quadCount,
         vertexCount: quadCount * 4,
         vertices: vanillaAt < 0 ? null : new Uint8Array(buffer, vanillaAt, quadCount * 4 * VANILLA_VERTEX),
-        compact: compactAt < 0 ? null : new Uint8Array(buffer, compactAt, quadCount * 4 * COMPACT_VERTEX),
+        compact: compactAt < 0 ? null : new Uint8Array(buffer, compactAt, quadCount * 4 * compactVertexSize),
+        compactVertexSize,
         quadTints: tintAt < 0 ? null : new Uint32Array(buffer, tintAt, quadCount),
         order: orderAt < 0 ? null : new Uint32Array(buffer, orderAt, quadCount),
         centroids: centroidAt < 0 ? null : new Float32Array(buffer, centroidAt, quadCount * 3),
@@ -315,6 +329,41 @@
       // needs-vanilla: the first unsupported state id; meshed: the count of non-air blocks.
       detail: view.getUint32(52, true),
       layers,
+    };
+  }
+
+  /**
+   * Decodes one compact vertex for codec/parity tools. The renderer still consumes the vanilla
+   * vertex stream until a backend advertises the compact layout. V2 keeps the vanilla colour and
+   * light channels lossless; positions and UVs use the quantisation documented by output.rs.
+   */
+  function decodeCompactVertex(view, offset, vertexSize) {
+    const size = vertexSize == null ? COMPACT_VERTEX : vertexSize | 0;
+    if (size === COMPACT_VERTEX_V1) {
+      const light = view.getUint16(offset + 10, true);
+      return {
+        version: 1,
+        x: view.getUint16(offset, true) / 2048 - 8,
+        y: view.getUint16(offset + 2, true) / 2048 - 8,
+        z: view.getUint16(offset + 4, true) / 2048 - 8,
+        u: view.getUint16(offset + 6, true) / 65535,
+        v: view.getUint16(offset + 8, true) / 65535,
+        block: (light & 31) << 3,
+        sky: ((light >>> 5) & 31) << 3,
+        shade: ((light >>> 10) & 63) << 2,
+      };
+    }
+    if (size !== COMPACT_VERTEX) throw new RangeError(`unsupported compact vertex size ${size}`);
+    return {
+      version: 2,
+      x: view.getUint16(offset, true) / 2048 - 8,
+      y: view.getUint16(offset + 2, true) / 2048 - 8,
+      z: view.getUint16(offset + 4, true) / 2048 - 8,
+      color: view.getUint32(offset + 8, true),
+      u: view.getUint16(offset + 12, true) / 65535,
+      v: view.getUint16(offset + 14, true) / 65535,
+      block: view.getUint16(offset + 16, true),
+      sky: view.getUint16(offset + 18, true),
     };
   }
 
@@ -455,9 +504,10 @@
 
   global.GaiusMeshJob = Object.freeze({
     ABI_VERSION, KIND_LOAD_MODEL_TABLE, KIND_MESH_SECTION, FLAGS, RESULT_FLAGS, STATUS, LAYERS, CARDINAL,
-    GRASS_MODIFIER, REGION, MARGIN, VOLUME, QUART_VOLUME, VANILLA_VERTEX, COMPACT_VERTEX,
+    GRASS_MODIFIER, REGION, MARGIN, VOLUME, QUART_VOLUME, VANILLA_VERTEX, COMPACT_VERTEX, COMPACT_VERTEX_V1,
     SWAMP_BYTES, SWAMP_BLEND_BYTES, MAX_BIOME_BLEND,
     regionIndex, tableEpoch, loadModelTable, readModelTableLoaded, meshSection, readResult, readMeshSection,
+    decodeCompactVertex,
     sortedIndices, sortOrder, estimateResultBytes, enabled, noteSuccess, noteFailure, status,
     session: (tableBytes, epoch) => new MeshTableSession(tableBytes, epoch),
     MeshTableSession,

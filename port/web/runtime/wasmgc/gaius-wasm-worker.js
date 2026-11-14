@@ -75,10 +75,15 @@
       "passColor", "passDepth", "passBegin", "passEnd", "passSuspend", "passResume",
       "setPipeline", "setVertexBuffer", "setIndexBuffer", "setBindGroup", "stageOffset",
       "setBindGroupStaged", "setScissor", "draw", "drawIndexed", "drawIndexedWithOffsets",
-      "drawIndexedIndirect", "drawIndexedIndirectWithOffsets", "drawWithOffsets", "submit",
+      "drawIndexedIndirect", "gpuIndirectDrawIndexed", "gpuIndirectDrawIndexedSource",
+      "drawIndexedIndirectWithOffsets", "drawWithOffsets", "submit",
       "closeFence", "blitToSurface", "present"
     ].forEach(function (name) { forward(name, undefined); });
-    ["writeOrdered", "createBindGroup", "createFence", "fenceStatus", "configureSurface", "acquireSurface"]
+    ["regionArenaEnabled", "gpuIndirectRequested", "gpuIndirectHiZRequested", "gpuIndirectEncodeFrustum", "gpuIndirectEncodeHiZ", "gpuIndirectEncodeHiZLive",
+      "gpuIndirectDrawIndexedRanges", "gpuIndirectParityReadbackLive"]
+      .forEach(function (name) { forward(name, false); });
+    ["writeOrdered", "createBindGroup", "createFence", "fenceStatus", "configureSurface", "acquireSurface",
+      "regionArenaNextRetireEpoch", "regionArenaCompletedEpoch", "regionArenaGeneration"]
       .forEach(function (name) { forward(name, 0); });
     imports.gaiusGpu = gpu;
   }

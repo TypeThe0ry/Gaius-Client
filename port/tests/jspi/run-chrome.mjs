@@ -4,7 +4,7 @@
 //
 //   node port/tests/jspi/run-chrome.mjs <suite-dir> [--json out.json] [--timeout ms]
 //
-// GAIUS_CHROME_BIN names the browser (default: the Windows Chrome path, else google-chrome).
+// GAIUS_CHROME_BIN names the browser; otherwise the shared resolver uses the platform default.
 // The page is served from 127.0.0.1; every other host goes to a closed proxy port, so the run
 // never reaches the network.
 import {spawn} from "node:child_process";
@@ -14,6 +14,7 @@ import {createServer as httpServer} from "node:http";
 import {createServer as netServer} from "node:net";
 import {tmpdir} from "node:os";
 import {extname, isAbsolute, join, normalize, relative, resolve} from "node:path";
+import {chromeLaunchArgs, resolveChromeBinary} from "../../scripts/chrome-binary.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => {
@@ -28,8 +29,8 @@ if (!dir) {
 const root = resolve(dir);
 const jsonOut = option("--json", null);
 const timeoutMs = Number(option("--timeout", "180000"));
-const chromeBin = process.env.GAIUS_CHROME_BIN
-  || (process.platform === "win32" ? "C:/Program Files/Google/Chrome/Application/chrome.exe" : "google-chrome");
+const chromeBin = resolveChromeBinary();
+const linuxChromeArgs = chromeLaunchArgs();
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const MIME = {".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm"};
 
@@ -56,7 +57,7 @@ const port = await new Promise((done) => {
   });
 });
 const profile = await mkdtemp(join(tmpdir(), "gaius-jspi-suite-"));
-const chrome = spawn(chromeBin, ["--headless=new", `--remote-debugging-port=${port}`,
+const chrome = spawn(chromeBin, [...linuxChromeArgs, "--headless=new", `--remote-debugging-port=${port}`,
   "--remote-allow-origins=*", `--user-data-dir=${profile}`, "--no-first-run",
   "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
   "--proxy-server=http://127.0.0.1:9", "--proxy-bypass-list=127.0.0.1;localhost", "about:blank"],

@@ -25,6 +25,9 @@ public final class MeshJobBuffers {
     public final int[] header = new int[MeshKernelBridge.HEADER_LENGTH];
     public final short[] ids16 = new short[VOLUME];
     public final int[] ids32 = new int[VOLUME];
+    /** Packed section descriptors for the worker-side snapshot decoder. */
+    public int[] packedStates;
+    public int packedStateLength;
     public final byte[] light = new byte[VOLUME];
     public final byte[] quarts = new byte[QUART_VOLUME];
     public final int[] palette = new int[MAX_BIOMES * PALETTE_INTS];
@@ -39,7 +42,7 @@ public final class MeshJobBuffers {
     /** Scratch for one unpacked 16^3 section. */
     public final int[] sectionScratch = new int[4096];
     /** Scratch for palette index to global id. */
-    public int[] paletteIds = new int[256];
+    public int[] paletteIds;
 
     /** Index of a section-relative position (each coordinate in -2..17). */
     public static int regionIndex(int x, int y, int z) {
@@ -49,6 +52,7 @@ public final class MeshJobBuffers {
     /** Resets the biome palette and the swamp mask for a new job. */
     public void beginJob(boolean wideIds) {
         wide = wideIds;
+        packedStateLength = 0;
         for (int i = 0; i < biomeCount; i++) {
             biomes[i] = null;
         }
@@ -109,9 +113,30 @@ public final class MeshJobBuffers {
     }
 
     public int[] paletteIds(int size) {
+        if (paletteIds == null) {
+            paletteIds = new int[Math.max(size, 256)];
+            return paletteIds;
+        }
         if (paletteIds.length < size) {
             paletteIds = new int[Math.max(size, paletteIds.length * 2)];
         }
         return paletteIds;
     }
+
+    public void beginPackedStates() {
+        if (packedStates == null) {
+            packedStates = new int[65536];
+        }
+        packedStateLength = 0;
+    }
+
+    public void appendPackedState(int value) {
+        if (packedStateLength == packedStates.length) {
+            int[] grown = new int[packedStates.length * 2];
+            System.arraycopy(packedStates, 0, grown, 0, packedStates.length);
+            packedStates = grown;
+        }
+        packedStates[packedStateLength++] = value;
+    }
+
 }

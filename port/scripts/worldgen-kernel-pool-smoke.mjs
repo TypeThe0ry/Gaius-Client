@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Worldgen kernel through the real kernel pool (port/web/kernels).
 //
-//   node port/scripts/worldgen-kernel-pool-smoke.mjs [wasm-dir]
+//   node port/scripts/worldgen-kernel-pool-smoke.mjs [wasm-dir] [seed.gwir ...] [--replay=directory ...]
+// Replay directories contain the bounded .job/.result pairs optionally captured by
+// worldgen-status-perf/kernel-host.mjs with GAIUS_WORLDGEN_REPLAY_DIR.
 //
 // wasm-dir holds gaius_worldgen_wasm.{simd,baseline}.wasm and the example IRs 26.2.gwir and
 // 26.3.gwir (default $CARGO_TARGET_DIR/wasm-worldgen or port/native/target/wasm-worldgen). Build them first:
@@ -15,7 +17,8 @@
 // produce byte-identical chunks.
 import {CANONICAL_PROFILE, RENDERPEARL_PROFILE} from "./verification-profiles.mjs";
 import assert from "node:assert/strict";
-import {readFileSync} from "node:fs";
+import {createHash} from "node:crypto";
+import {readFileSync, readdirSync} from "node:fs";
 import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import vm from "node:vm";
@@ -42,7 +45,7 @@ parentPort.on("message", (data) => { if (typeof self.onmessage === "function") s
 vm.runInThisContext(workerData.source, {filename: "kernel-worker.js"});
 `;
 
-function createEnv() {
+function createEnv(isolated = false) {
   const blobs = new Map();
   const threads = [];
   class ThreadWorker {
@@ -68,6 +71,7 @@ function createEnv() {
   const context = vm.createContext({
     console, performance, setTimeout, clearTimeout, WebAssembly, TextEncoder, TextDecoder, BigInt, DataView,
     navigator: {hardwareConcurrency: 6},
+    crossOriginIsolated: isolated,
     Worker: ThreadWorker,
     Blob: class { constructor(parts) { this.text = parts.join(""); } },
     URL: {
@@ -152,6 +156,101 @@ for (const profile of Object.keys(irs)) {
     }
     assert.ok(outputs[0].equals(outputs[1]), "simd and baseline chunks differ");
     return `${outputs[0].length} chunk bytes`;
+  });
+}
+
+// Optional seeded IRs exercise the real train module with the same chunk requests serially
+// and over multiple Workers, including the isolated shared-frame transport. Compare payloads:
+// the result header contains the request ID, which intentionally changes with submission order.
+for (const irPath of process.argv.slice(3).filter(path => !path.startsWith("--replay="))) {
+  test(`seeded serial/parallel transport parity: ${irPath}`, async () => {
+    const positions = [[0, 0], [-3, 9], [8, -8], [1, 0], [-2, 3], [5, -7]];
+    const ir = readFileSync(irPath);
+    const expected = new Map();
+    for (const isolated of [false, true]) {
+      for (const size of [1, 3]) {
+        const env = createEnv(isolated);
+        const pool = await env.create(variants.simd, {size, name: "worldgen-parity"});
+        try {
+          const gen = env.codec.generator(11, ir);
+          const order = size === 1 ? positions : [...positions].reverse();
+          const generate = async ([cx, cz]) => {
+            const chunk = await env.codec.terrain(pool, gen, cx, cz, {surface: true, biomes: true});
+            const payload = bytesOf(chunk.bytes).subarray(24);
+            const key = `${cx},${cz}`;
+            if (!isolated && size === 1) expected.set(key, Buffer.from(payload));
+            else assert.ok(expected.get(key)?.equals(payload), `${key}: size=${size} isolated=${isolated}`);
+            return {key, sha256: createHash("sha256").update(payload).digest("hex")};
+          };
+          const hashes = [];
+          if (size === 1) for (const position of order) hashes.push(await generate(position));
+          else hashes.push(...await Promise.all(order.map(generate)));
+          console.log(JSON.stringify({irPath, isolated, size, hashes, telemetry: pool.telemetry()}));
+        } finally {
+          await env.shutdown(pool);
+        }
+      }
+    }
+    return `${positions.length} chunks, serial and reversed parallel, SAB and Transferable`;
+  });
+}
+
+// Replays recorded production seam jobs, including their sampler arrays and biome rings.
+// Inline the recorded generator so any Worker can accept the identical terrain body.
+for (const argument of process.argv.slice(3).filter(path => path.startsWith("--replay="))) {
+  const directory = argument.slice("--replay=".length);
+  test("captured production job parity: " + directory, async () => {
+    const names = readdirSync(directory).filter(name => name.endsWith(".job")).sort();
+    const loads = new Map();
+    const jobs = [];
+    for (const name of names) {
+      const frame = readFileSync(join(directory, name));
+      assert.equal(frame.readUInt32LE(0), 0x424a4b47);
+      assert.equal(frame.readUInt32LE(12), frame.length - 16);
+      const kind = frame.readUInt16LE(6), key = frame.readUInt32LE(16);
+      const irLength = frame.readUInt32LE(32);
+      if (kind === 0x0401) {
+        assert.ok(irLength > 0);
+        loads.set(key, Buffer.from(frame.subarray(40, 40 + irLength)));
+      } else if (kind === 0x0403) {
+        const ir = loads.get(key);
+        assert.ok(ir, "terrain requires a captured generator");
+        const bodyOffset = 16 + Math.ceil((24 + irLength) / 8) * 8;
+        const referenceLength = Math.ceil((24 + ir.length) / 8) * 8;
+        const body = frame.subarray(bodyOffset);
+        const inline = Buffer.alloc(16 + referenceLength + body.length);
+        frame.copy(inline, 0, 0, 40);
+        inline.writeUInt32LE(inline.length - 16, 12);
+        inline.writeUInt32LE(frame.readUInt32LE(20) | 1, 20);
+        inline.writeUInt32LE(ir.length, 32);
+        ir.copy(inline, 40);
+        body.copy(inline, 16 + referenceLength);
+        assert.ok(inline.subarray(16 + referenceLength).equals(body));
+        jobs.push({name, frame: inline, expected: readFileSync(join(directory, name.replace(/.job$/, ".result")))});
+      }
+    }
+    assert.ok(jobs.length > 0, "capture must execute terrain jobs");
+    for (const isolated of [false, true]) {
+      for (const size of [1, 3]) {
+        const env = createEnv(isolated);
+        const pool = await env.create(variants.simd, {size, name: "worldgen-replay"});
+        try {
+          const order = size === 1 ? jobs : [...jobs].reverse();
+          const run = async job => {
+            const buffer = isolated ? new SharedArrayBuffer(job.frame.length) : new ArrayBuffer(job.frame.length);
+            new Uint8Array(buffer).set(job.frame);
+            const result = await pool.submit("terrain", buffer, {kernel: "worldgen", retry: false});
+            assert.ok(Buffer.from(result).equals(job.expected), job.name + ": serial/parallel result differs");
+          };
+          if (size === 1) for (const job of order) await run(job);
+          else await Promise.all(order.map(run));
+          console.log(JSON.stringify({directory, isolated, size, jobs: jobs.length, telemetry: pool.telemetry()}));
+        } finally {
+          await env.shutdown(pool);
+        }
+      }
+    }
+    return jobs.length + " production terrain bodies: exact recorded results on 1/3 Workers, SAB/Transferable";
   });
 }
 

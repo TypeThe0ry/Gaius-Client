@@ -15,7 +15,7 @@
 //!   any worker can recover that way after a restart.
 //!
 //! Output (a) is byte-identical to the vanilla BLOCK buffers of each layer;
-//! output (b) is a 12-byte compact vertex for a later Gaius terrain shader.
+//! output (b) is an optional 20-byte compact vertex for a later Gaius terrain shader.
 //! Greedy merging is not offered: it cannot keep the vanilla output.
 
 pub mod job;

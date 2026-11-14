@@ -58,6 +58,18 @@ final class WebGpuGlue {
     @JSBody(params = "key", script = "return globalThis.GaiusWebGpu.stat(key);")
     static native double stat(String key);
 
+    @Import(module = "gaiusGpu", name = "regionArenaEnabled")
+    static native boolean regionArenaEnabled();
+
+    @Import(module = "gaiusGpu", name = "regionArenaNextRetireEpoch")
+    static native int regionArenaNextRetireEpoch();
+
+    @Import(module = "gaiusGpu", name = "regionArenaCompletedEpoch")
+    static native int regionArenaCompletedEpoch();
+
+    @Import(module = "gaiusGpu", name = "regionArenaGeneration")
+    static native int regionArenaGeneration();
+
     /** Adds {@code delta} to the glue's counter {@code key} (telemetry of the core's downgrades). */
     @JSBody(params = { "key", "delta" }, script = "globalThis.GaiusWebGpu.count(key, delta);")
     static native void count(String key, int delta);
@@ -299,6 +311,35 @@ final class WebGpuGlue {
 
     @Import(module = "gaiusGpu", name = "drawIndexedIndirect")
     static native void drawIndexedIndirect(int buffer, int offset, int drawCount);
+
+    @Import(module = "gaiusGpu", name = "gpuIndirectDrawIndexed")
+    static native void gpuIndirectDrawIndexed(int generated, int fallback, int offset, int drawCount);
+
+    @Import(module = "gaiusGpu", name = "gpuIndirectDrawIndexedRanges")
+    static native void gpuIndirectDrawIndexedRanges(int generated, int fallback, int generatedOffset,
+            int fallbackOffset, int drawCount);
+
+    @Import(module = "gaiusGpu", name = "gpuIndirectParityReadbackLive")
+    static native void gpuIndirectParityReadbackLive(int generated, int fallback, int offset, int drawCount);
+
+    @Import(module = "gaiusGpu", name = "gpuIndirectDrawIndexedSource")
+    static native void gpuIndirectDrawIndexedSource(int buffer, int offset, int drawCount);
+
+    @Import(module = "gaiusGpu", name = "gpuIndirectRequested")
+    static native boolean gpuIndirectRequested();
+
+    @Import(module = "gaiusGpu", name = "gpuIndirectHiZRequested")
+    static native boolean gpuIndirectHiZRequested();
+
+    @Import(module = "gaiusGpu", name = "gpuIndirectEncodeFrustum")
+    static native boolean gpuIndirectEncodeFrustum(int input, int bounds, int planes, int output, int count);
+
+    @Import(module = "gaiusGpu", name = "gpuIndirectEncodeHiZ")
+    static native boolean gpuIndirectEncodeHiZ(int input, int projected, int hiz, int sampler, int config,
+            int output, int count);
+
+    @Import(module = "gaiusGpu", name = "gpuIndirectEncodeHiZLive")
+    static native boolean gpuIndirectEncodeHiZLive(int input, int projected, int output, int count);
 
     @Import(module = "gaiusGpu", name = "drawIndexedIndirectWithOffsets")
     static native void drawIndexedIndirectWithOffsets(int bindGroup, int count, int o0, int o1, int o2, int o3,

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {DEFAULT_RELOAD_MEMORY_BUDGET_BYTES, parseMemoryBudget, reloadMemoryGate} from "./reload-memory-gate.mjs";
+import {DEFAULT_RELOAD_MEMORY_BUDGET_BYTES, parseMemoryBudget, parseSmapsBreakdown, reloadMemoryGate} from "./reload-memory-gate.mjs";
+
+test("smaps breakdown groups private and anonymous bytes by mapping", () => {
+  const rows = parseSmapsBreakdown(`1000-2000 rw-p 00000000 00:00 0 /dev/nvidia0\nRss: 128 kB\nPrivate_Clean: 8 kB\nPrivate_Dirty: 16 kB\nAnonymous: 4 kB\n2000-3000 rw-p 00000000 00:00 0\nRss: 64 kB\nPrivate_Dirty: 32 kB\nAnonymous: 32 kB\n`);
+  assert.deepEqual(rows.map(row => [row.mapping, row.privateBytes, row.anonymous]).sort(), [["/dev/nvidia0", 24576, 4096], ["[anonymous]", 32768, 32768]].sort());
+});
 
 test("reload memory budget parsing uses byte units and the 0.75 GiB default", () => {
   assert.equal(parseMemoryBudget(), DEFAULT_RELOAD_MEMORY_BUDGET_BYTES);

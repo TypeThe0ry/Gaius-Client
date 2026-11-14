@@ -1,7 +1,14 @@
-import {readFileSync} from 'node:fs';
+import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+import {join} from 'node:path';
 
 const module = await WebAssembly.instantiate(readFileSync(process.argv[2]), {});
 const exports = module.instance.exports;
+// Optional bounded replay evidence, kept outside the binary stdout protocol.
+const replayRoot = process.env.GAIUS_WORLDGEN_REPLAY_DIR;
+const replayDir = replayRoot ? join(replayRoot, String(process.pid)) : null;
+if (replayDir) mkdirSync(replayDir, {recursive: true});
+let replayCount = 0;
+let replayBytes = 0;
 const names = new Map([[0x0401, 'run_load_generator'], [0x0402, 'run_biomes'],
   [0x0403, 'run_terrain'], [0x0404, 'run_surface'], [0x0405, 'run_ore']]);
 let pending = Buffer.alloc(0);
@@ -30,6 +37,13 @@ process.stdin.on('data', data => {
       response.writeUInt32LE(status, 0);
       response.writeUInt32LE(resultLength, 4);
       response.set(new Uint8Array(exports.memory.buffer, resultPointer, resultLength), 8);
+      if (replayDir && status === 0 && replayCount < 8
+          && replayBytes + frame.length + response.length <= 16 * 1024 * 1024) {
+        const id = String(replayCount++).padStart(3, '0');
+        writeFileSync(join(replayDir, id + '.job'), frame, {flag: 'wx'});
+        writeFileSync(join(replayDir, id + '.result'), response.subarray(8), {flag: 'wx'});
+        replayBytes += frame.length + response.length;
+      }
       process.stdout.write(response);
     } finally {
       if (descriptor) exports.release(descriptor);

@@ -269,18 +269,21 @@ fi
   | tee "$build_root/wasm-reach.txt" \
   || echo "The wasm reachability lint did not run (warn mode, ignored)" >&2
 
-if [[ "$role" == client ]]; then
-  phase_begin resources
-  # The same client-jar steps as build-teavm.sh: Gson TypeToken capture fixes and
-  # the generated Unicode font definitions.
+if [[ "$role" == client || "$role" == singleplayer-worker ]]; then
+  # DataFixerUpper is reached only when old chunks are loaded. Its Guava
+  # TypeToken witnesses rely on generic superclass reflection, which TeaVM
+  # does not preserve in the Worker either. Patch both runtimes identically.
   gson_patches="$build_root/gson-type-token-client-patches"
   rm -rf "$gson_patches"
   mkdir -p "$gson_patches"
   java -classpath "$tool_classpath" dev.gaius.tools.GsonTypeTokenClientPatcher \
     "$client_overlay" "$gson_patches" "$work/libraries"
-  # Both updates rewrite the overlay jar in place on every build (--skip-overlays too) and stamp
-  # the entries with a fixed date, so the jar, and the overlay identity of the build's sidecars,
-  # are the same after the second build as after the first.
+  jar --update --date=1980-01-01T00:00:02Z --file "$client_overlay" -C "$gson_patches" .
+fi
+
+if [[ "$role" == client ]]; then
+  phase_begin resources
+  # Add the generated Unicode font definitions after shared runtime patches.
   jar_date=1980-01-01T00:00:02Z
   jar --update --date="$jar_date" --file "$client_overlay" -C "$gson_patches" .
   rm -rf "$build_root/generated-resources"
@@ -299,12 +302,36 @@ if [[ "$role" == client ]]; then
   # pack (the archive index is profile-specific even when the resource root is reused).
   asset_index_id="$(jq -er '.assetIndex.id // .assets' "$work/version.json" 2>/dev/null | tr -d '\r\n' || true)"
   asset_index="${work}/assets/indexes/${asset_index_id}.json"
+  # A copied resource root may predate the current sound selection. Refresh the
+  # list before TeaVM embeds it, as pack bytes alone cannot add discoverable paths.
+  "$root/port/scripts/run-python.sh" "$root/port/scripts/refresh-browser-sounds.py" \
+    "$asset_index" "$build_root/generated-resources" "$build_root"
   pack_args=("$build_root/generated-resources/dev/gaius/browser/minecraft-resources.txt"
     "$client_overlay" "$build_root/generated-resources" "$dist/vanilla-assets.pack.gz")
   if [[ -n "$asset_index_id" && -f "$asset_index" ]]; then
     pack_args+=("$asset_index")
   fi
   "$root/port/scripts/run-python.sh" "$root/port/scripts/build-vanilla-assets-pack.py" "${pack_args[@]}"
+  # The unihex glyph table of this pack (gaius-unihex.bin.gz, dev.gaius.browser.UnihexGlyphTable):
+  # vanilla's own unihex loader of the unpatched client jar runs on every font zip of the pack.
+  # Without it the page reads the zips as before; GAIUS_UNIHEX_TABLE_STRICT=1 makes that an error.
+  rm -f "$dist/gaius-unihex.bin.gz"
+  if java -classpath "$tool_classpath" dev.gaius.tools.UnihexTableBuilder \
+      --client-jar "$(native_path "$work/client-named.jar")" \
+      --libraries "$(native_path "$work/libraries")" \
+      --pack "$(native_path "$dist/vanilla-assets.pack.gz")" \
+      --out "$(native_path "$dist/gaius-unihex.bin.gz")" \
+      >"$build_root/unihex-table.json" 2>"$build_root/unihex-table.log"; then
+    echo "unihex glyph table: $(tail -n 1 "$build_root/unihex-table.json" | tr -d '\r\n')" | tee -a "$timings"
+  elif [[ "${GAIUS_UNIHEX_TABLE_STRICT:-}" == "1" ]]; then
+    tail -n 20 "$build_root/unihex-table.log" >&2
+    echo "The unihex glyph table could not be built for Minecraft $version" >&2
+    exit 1
+  else
+    tail -n 5 "$build_root/unihex-table.log" >&2
+    echo "WARNING: no unihex glyph table for Minecraft $version; the page parses the font zips" >&2
+    rm -f "$dist/gaius-unihex.bin.gz"
+  fi
   phase_end resources
   role_root="$build_root"
   target_file="classes.wasm"
@@ -553,6 +580,37 @@ if [[ "$role" == client && "${GAIUS_SKIP_KERNELS:-}" != "1" ]]; then
     rm -f "$dist/gaius-png.wasm"
   fi
 fi
+# The atlas prebake (port/tools/atlasprebake): this profile's vanilla classes run over the pack
+# built above, recording the mip chains and atlas layouts that BrowserAtlasPrebake replays for
+# identical inputs. Without it the vanilla atlas code runs; GAIUS_ATLAS_PREBAKE_STRICT=1 makes a
+# failed build an error, GAIUS_SKIP_ATLAS_PREBAKE=1 builds none.
+# The prebake tool reads the atlas registry of the newer vanilla layout (AtlasManager); a profile whose
+# client jar does not have that class has nothing to bake, so the tool is not run for it (and a
+# strict train does not fail on it).
+atlas_prebake_supported=1
+atlas_client_jar="$root/port/work/$version/client-named.jar"
+if [[ -f "$atlas_client_jar" ]] && ! unzip -l "$atlas_client_jar" 2>/dev/null \
+    | grep -q 'net/minecraft/client/resources/model/sprite/AtlasManager.class'; then
+  atlas_prebake_supported=0
+  echo "atlas prebake: Minecraft $version has no AtlasManager; the vanilla atlas code runs" >&2
+fi
+if [[ "$role" == client && "${GAIUS_SKIP_ATLAS_PREBAKE:-}" != "1" && "$atlas_prebake_supported" == 1 && -f "$dist/vanilla-assets.pack.gz" ]]; then
+  atlas_prebake="$role_root/atlas-prebake/gaius-atlas-prebake.bin.gz"
+  if "$root/port/scripts/run-python.sh" "$root/port/tools/atlasprebake/atlasprebake.py" build \
+      --profile "$version" --pack "$dist/vanilla-assets.pack.gz" --out "$atlas_prebake" \
+      --scratch "$role_root/atlas-prebake" >"$role_root/atlas-prebake.log" 2>&1 && [[ -s "$atlas_prebake" ]]; then
+    stage_arguments+=(--atlas-prebake "$atlas_prebake")
+    tail -n 1 "$role_root/atlas-prebake.log" | tee -a "$timings"
+  elif [[ "${GAIUS_ATLAS_PREBAKE_STRICT:-}" == "1" ]]; then
+    tail -n 20 "$role_root/atlas-prebake.log" >&2
+    echo "The atlas prebake could not be built for Minecraft $version" >&2
+    exit 1
+  else
+    tail -n 5 "$role_root/atlas-prebake.log" >&2
+    echo "WARNING: no atlas prebake for Minecraft $version; the vanilla atlas code runs" >&2
+    rm -f "$dist/gaius-atlas-prebake.bin.gz"
+  fi
+fi
 "$root/port/scripts/run-python.sh" "$root/port/scripts/stage-web-runtime.py" "${stage_arguments[@]}"
 node "$root/port/scripts/build-relay-protocol.mjs" --profile "$version" --out "$dist"
 # The page names the wasm builds present in the dist (window.__gaiusRuntimes), so it is
@@ -629,5 +687,13 @@ if [[ "$role" == client && -f "$dist/vanilla-assets.pack.gz" ]]; then
     --root "$root" \
     --role vanilla-assets \
     --artifact "$dist/vanilla-assets.pack.gz"
+fi
+# Record the shader toolchain staged by this client build, independently of
+# whether the resource JavaScript page declares the same compiler dependency.
+if [[ "$role" == client && -f "$dist/gaius-shader-toolchain.json" ]]; then
+  "$root/port/scripts/run-python.sh" "$root/port/scripts/gaius_build_identity.py" write \
+    --root "$root" \
+    --role shader-toolchain \
+    --artifact "$dist/gaius-shader-toolchain.json"
 fi
 echo "BUILD_EXIT=0"

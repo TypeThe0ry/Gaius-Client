@@ -78,7 +78,7 @@
     }
   }
 
-  // Encodes the framed job (header + payload) into one ArrayBuffer ready to transfer.
+  // Encodes the framed job in shared memory when isolation allows, otherwise an ArrayBuffer.
   function noisePoints(job, jobId) {
     const xyz = job.xyz;
     if (xyz.length % 3 !== 0) throw new RangeError("xyz must hold whole [x, y, z] triples");
@@ -89,7 +89,9 @@
     const xyzAt = pad(noiseAt + noiseLength, 8);
     const payloadLength = xyzAt + 8 * xyz.length;
 
-    const buffer = new ArrayBuffer(HEADER_LEN + payloadLength);
+    const buffer = global.crossOriginIsolated === true && typeof global.SharedArrayBuffer === "function"
+      ? new global.SharedArrayBuffer(HEADER_LEN + payloadLength)
+      : new ArrayBuffer(HEADER_LEN + payloadLength);
     const view = new DataView(buffer);
     view.setUint32(0, JOB_MAGIC, true);
     view.setUint16(4, ABI_VERSION, true);

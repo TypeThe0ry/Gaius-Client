@@ -18,6 +18,7 @@ import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.IntInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TypeInsnNode;
@@ -179,8 +180,9 @@ public final class RenderpearlTerrainPatches {
             init.add(new TypeInsnNode(Opcodes.NEW,
                     "it/unimi/dsi/fastutil/ints/Int2ObjectOpenHashMap"));
             init.add(new InsnNode(Opcodes.DUP));
+            init.add(new IntInsnNode(Opcodes.SIPUSH, 256));
             init.add(new MethodInsnNode(Opcodes.INVOKESPECIAL,
-                    "it/unimi/dsi/fastutil/ints/Int2ObjectOpenHashMap", "<init>", "()V", false));
+                    "it/unimi/dsi/fastutil/ints/Int2ObjectOpenHashMap", "<init>", "(I)V", false));
             init.add(new FieldInsnNode(Opcodes.PUTFIELD, LEVEL_RENDERER,
                     DRAW_GROUP_CACHE_FIELD, INT_DRAW_GROUP_MAP));
             constructor.instructions.insertBefore(returnNode, init);

@@ -1,14 +1,15 @@
 gaius-source-patch 2
 base 8b90ef6304cd0ac470189ad527bfa8b49369fbd482b9633999f96b591beca4a7
-result c46e53aab8c61daad1a4e4e57d5a5eca132c691f18f5cf63ec11571eaa8034de
+result 742bcc6bd4f78d1a93c6074af7809964d30999f5982851a6ef33db91b44c45cf
 @@ 2 1
++import dev.gaius.browser.ArchivedStreams;
 +import dev.gaius.browser.AssetArchive;
++import dev.gaius.browser.BrowserResourceList;
 +import java.io.ByteArrayInputStream;
 +import java.io.IOException;
 @@ 4 1
 +import java.nio.charset.StandardCharsets;
 @@ 7 3
-+import java.util.Arrays;
 @@ 12 1
 @@ 15 1
 @@ 17 1
@@ -153,7 +154,7 @@ result c46e53aab8c61daad1a4e4e57d5a5eca132c691f18f5cf63ec11571eaa8034de
 +        return () -> {
 +            byte[] external = archive.read(resource);
 +            if (external != null) {
-+                return new ByteArrayInputStream(external);
++                return ArchivedStreams.track(resource, new ByteArrayInputStream(external));
 =59 1
 +            InputStream input = openResourceStream(resource);
 +            if (input == null) {
@@ -189,15 +190,7 @@ result c46e53aab8c61daad1a4e4e57d5a5eca132c691f18f5cf63ec11571eaa8034de
 +            if (input == null) {
 +                return new String[0];
 =59 1
-+            String[] lines = new String(input.readAllBytes(), StandardCharsets.UTF_8).split("\\r?\\n");
-+            List<String> result = new ArrayList<>(lines.length);
-+            for (String line : lines) {
-+                String trimmed = line.trim();
-+                if (!trimmed.isEmpty()) {
-+                    result.add(trimmed);
-=87 1
-=59 1
-+            return result.toArray(String[]::new);
++            return BrowserResourceList.parse(new String(input.readAllBytes(), StandardCharsets.UTF_8));
 +        } catch (IOException ignored) {
 +            return new String[0];
 =60 1
@@ -209,9 +202,7 @@ result c46e53aab8c61daad1a4e4e57d5a5eca132c691f18f5cf63ec11571eaa8034de
 +     * even when a stale, locale-sorted, or hand-authored list is supplied.
 +     */
 +    private static String[] sortedResourceCopy(String[] values) {
-+        String[] copy = Arrays.copyOf(values, values.length);
-+        Arrays.sort(copy);
-+        return copy;
++        return BrowserResourceList.sortedCopy(values);
 =49 1
 @@ 179 3
 +    private static final class ListedResource {

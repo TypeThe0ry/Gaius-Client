@@ -139,6 +139,17 @@ compressed client and Wasm modules as browser-local Blob URLs and passes the
 compressed official server payload into its Worker. Single-player therefore
 remains frontend-only and works without a hosted Gaius service.
 
+Browser harnesses use `port/scripts/chrome-binary.mjs`. `GAIUS_CHROME_BIN` selects
+an explicit executable; otherwise Windows keeps its standard installation path
+and Linux checks `/usr/bin/google-chrome`, `/usr/bin/google-chrome-stable`, then
+`/usr/bin/chromium`. A missing executable fails before Chrome is spawned. On
+Linux the default GPU arguments are `--enable-unsafe-webgpu`,
+`--enable-features=Vulkan`, and `--use-angle=vulkan`; set
+`GAIUS_CHROME_GPU_FLAGS_JSON=[]` to disable them or provide a JSON array of
+replacement flags. When running as root on Linux, the resolver also adds
+`--no-sandbox`, which Chrome requires in this environment. Release acceptance
+forwards the binary and GPU-policy variables into each case.
+
 External Java servers remain unmodified. `apps/bridge/dist/main.js` is a raw,
 backpressured WebSocket-to-TCP tunnel with SRV resolution and constrained HTTP
 proxies for Mojang authentication, skins, Realms, and resource packs. The

@@ -51,8 +51,14 @@
 // a pool that cannot keep workers alive halts ("runtime-unavailable"); jobs refused by the
 // memory budget reject with "backpressure". URL switches: ?gaiusKernels=0 (all off),
 // ?gaiusKernelsOff=mesher,light, ?gaiusKernelSimd=0|1, ?gaiusKernelWorkers=<n>,
-// ?gaiusKernelBudgetMB=<n>; the same settings persist under localStorage
-// gaius.kernels.settings.v1 ({enabled, off, simd, workers, budgetMB}).
+// ?gaiusKernelBudgetMB=<n>, ?gaiusKernelIdleUnloadMs=<n>; the same settings persist under localStorage
+// gaius.kernels.settings.v1 ({enabled, off, simd, workers, budgetMB, timeline}).
+//
+// Job timeline (diagnostics, off by default): ?gaiusKernelTimeline=1 (or a row capacity) records
+// enqueue/dispatch/worker-receive/start/finish per job attempt and the busy intervals of every
+// worker in fixed-capacity rings, readable with runtime.timelineExport({since, max}) (see the
+// ring block below) and over an attached port with {type: "timeline", tid}. Off, no ring exists
+// and scheduling, messages and results are exactly what they are without the feature.
 (function (global) {
   "use strict";
 
@@ -99,6 +105,8 @@
 
   const now = () => (global.performance && global.performance.now ? global.performance.now() : Date.now());
   const isArrayBuffer = (value) => Object.prototype.toString.call(value) === "[object ArrayBuffer]";
+  const isSharedArrayBuffer = (value) => Object.prototype.toString.call(value) === "[object SharedArrayBuffer]";
+  const isBuffer = (value) => isArrayBuffer(value) || isSharedArrayBuffer(value);
   const finite = (value) => typeof value === "number" && isFinite(value);
 
   function policy() {
@@ -109,13 +117,13 @@
 
   function toArrayBuffer(payload) {
     if (payload == null) return new ArrayBuffer(0);
-    if (isArrayBuffer(payload)) return payload;
+    if (isBuffer(payload)) return payload;
     if (ArrayBuffer.isView(payload)) {
       const {buffer, byteOffset, byteLength} = payload;
-      if (isArrayBuffer(buffer) && byteOffset === 0 && byteLength === buffer.byteLength) return buffer;
+      if (isBuffer(buffer) && byteOffset === 0 && byteLength === buffer.byteLength) return buffer;
       return new Uint8Array(buffer, byteOffset, byteLength).slice().buffer;
     }
-    throw new TypeError("kernel payload must be an ArrayBuffer or a view of one");
+    throw new TypeError("kernel payload must be a buffer or a view of one");
   }
 
   function decodeBase64(text) {
@@ -171,7 +179,8 @@
   }
 
   function readSwitches(search, storage) {
-    const switches = {enabled: true, off: new Set(), simd: "auto", size: null, budgetBytes: 0};
+    const switches = {enabled: true, off: new Set(), simd: "auto", size: null, budgetBytes: 0,
+      idleUnloadMs: null, timeline: timelineCapacity(global.__gaiusKernelTimeline)};
     let stored = null;
     try {
       const raw = storage && storage.getItem(SETTINGS_KEY);
@@ -185,6 +194,7 @@
       if (stored.simd === "off" || stored.simd === "force") switches.simd = stored.simd;
       if (finite(stored.workers) && stored.workers >= 1) switches.size = Math.floor(stored.workers);
       if (finite(stored.budgetMB) && stored.budgetMB > 0) switches.budgetBytes = stored.budgetMB * 1024 * 1024;
+      if (stored.timeline !== undefined) switches.timeline = timelineCapacity(stored.timeline);
     }
     let params = null;
     try {
@@ -205,6 +215,10 @@
       if (finite(workers) && workers >= 1) switches.size = Math.floor(workers);
       const budget = Number(params.get("gaiusKernelBudgetMB"));
       if (finite(budget) && budget > 0) switches.budgetBytes = budget * 1024 * 1024;
+      const idleUnloadMs = Number(params.get("gaiusKernelIdleUnloadMs"));
+      if (finite(idleUnloadMs) && idleUnloadMs >= 1000) switches.idleUnloadMs = idleUnloadMs;
+      const timeline = params.get("gaiusKernelTimeline");
+      if (timeline !== null) switches.timeline = timelineCapacity(timeline);
     }
     // The memory tier is resolved before the kernel runtime is created.  Apply the low tier
     // before any worker/wasm instance is allocated; shrinking after startup cannot reclaim a
@@ -214,6 +228,159 @@
     if (tier && tier.lowMemory && switches.budgetBytes === 0) switches.budgetBytes = 96 * 1024 * 1024;
     return switches;
   }
+
+  // --- job timeline ring begin (this block is kept identical in kernel-runtime.js and kernel-pool.js) ---
+  // Opt-in diagnostics: one row per job attempt (enqueue, dispatch, worker receive/start/finish,
+  // outcome) in a fixed-capacity ring of typed arrays, plus one row per busy interval of a worker
+  // (the stretch in which it had at least one job in flight). Nothing here exists unless a
+  // timeline was requested, and writing a row allocates nothing. Times are wall-clock
+  // milliseconds (performance.timeOrigin + performance.now()), so the stamps of different
+  // realms line up up to the clock resolution of the engine. Switch: ?gaiusKernelTimeline=1
+  // (or a row capacity), localStorage gaius.kernels.settings.v1 {timeline}, the global
+  // __gaiusKernelTimeline, or the create option `timeline`.
+  const TIMELINE_SCHEMA = "gaius-kernel-timeline/1";
+  const TIMELINE_DEFAULT_CAPACITY = 4096;
+  const TIMELINE_MIN_CAPACITY = 8;
+  const TIMELINE_MAX_CAPACITY = 65536;
+  const TIMELINE_EXPORT_MAX_ROWS = 8192;
+  const TIMELINE_NAME_LIMIT = 1024;
+  const TIMELINE_COLS = Object.freeze(["seq", "id", "w", "k", "kd", "st", "at", "cls", "enq", "dsp", "rcv", "t0", "t1", "exec", "port", "rid"]);
+
+  // true/"1"/"on" -> default capacity, a number -> that many rows, anything else -> 0 (off).
+  function timelineCapacity(value) {
+    if (value === true || value === "1" || value === "on" || value === "true") return TIMELINE_DEFAULT_CAPACITY;
+    const n = typeof value === "string" && value !== "" ? Number(value) : value;
+    if (typeof n !== "number" || !isFinite(n) || n < 1) return 0;
+    return n === 1 ? TIMELINE_DEFAULT_CAPACITY
+      : Math.min(TIMELINE_MAX_CAPACITY, Math.max(TIMELINE_MIN_CAPACITY, Math.floor(n)));
+  }
+
+  function timelineOrigin() {
+    const p = global.performance;
+    return p && typeof p.timeOrigin === "number" ? p.timeOrigin : Date.now() - now();
+  }
+
+  class JobTimeline {
+    constructor(capacity, busyCapacity) {
+      const n = this.capacity = capacity;
+      const m = this.busyCapacity = busyCapacity || capacity;
+      this.origin = timelineOrigin();
+      this.seq = 0;
+      this.id = new Float64Array(n);
+      this.w = new Int32Array(n);
+      this.k = new Int16Array(n);
+      this.kd = new Int16Array(n);
+      this.st = new Int16Array(n);
+      this.at = new Uint8Array(n);
+      this.cls = new Int8Array(n);
+      this.enq = new Float64Array(n);
+      this.dsp = new Float64Array(n);
+      this.rcv = new Float64Array(n);
+      this.t0 = new Float64Array(n);
+      this.t1 = new Float64Array(n);
+      this.exec = new Float64Array(n);
+      this.port = new Int32Array(n);
+      this.rid = new Float64Array(n);
+      this.busySeq = 0;
+      this.bw = new Int32Array(m);
+      this.bb = new Float64Array(m);
+      this.be = new Float64Array(m);
+      this.names = ["?"];
+      this.index = new Map();
+    }
+
+    intern(text) {
+      const known = this.index.get(text);
+      if (known !== undefined) return known;
+      if (this.names.length >= TIMELINE_NAME_LIMIT) return 0;
+      this.names.push(String(text));
+      this.index.set(text, this.names.length - 1);
+      return this.names.length - 1;
+    }
+
+    // Appends one attempt. Missing stamps are NaN. No allocation (names are interned once).
+    record(id, w, kernel, kind, status, attempt, cls, enq, dsp, rcv, t0, t1, exec, port, rid) {
+      const i = this.seq % this.capacity;
+      this.id[i] = id;
+      this.w[i] = w;
+      this.k[i] = this.intern(kernel);
+      this.kd[i] = this.intern(kind);
+      this.st[i] = this.intern(status);
+      this.at[i] = attempt > 255 ? 255 : attempt;
+      this.cls[i] = cls;
+      this.enq[i] = enq;
+      this.dsp[i] = dsp;
+      this.rcv[i] = rcv;
+      this.t0[i] = t0;
+      this.t1[i] = t1;
+      this.exec[i] = exec;
+      this.port[i] = port;
+      this.rid[i] = rid;
+      this.seq++;
+    }
+
+    busy(w, begin, end) {
+      const i = this.busySeq % this.busyCapacity;
+      this.bw[i] = w;
+      this.bb[i] = begin;
+      this.be[i] = end;
+      this.busySeq++;
+    }
+
+    stats() {
+      return {
+        capacity: this.capacity, total: this.seq, kept: Math.min(this.seq, this.capacity),
+        dropped: Math.max(0, this.seq - this.capacity),
+        busyTotal: this.busySeq, busyDropped: Math.max(0, this.busySeq - this.busyCapacity),
+      };
+    }
+
+    // Compact JSON-serializable view. Rows are arrays in TIMELINE_COLS order, oldest first; the
+    // k/kd/st columns index `strings`, times are milliseconds after `base` (epoch ms of this
+    // realm's time origin; a missing stamp is null). options.since is the `next` of an earlier
+    // export (rows lost to the ring in between are reported in `lost`), options.max bounds the
+    // rows, options.sinceBusy / `busy.next` do the same for the busy intervals.
+    export(options) {
+      const o = options || {};
+      const cap = this.capacity;
+      const limit = Math.min(TIMELINE_EXPORT_MAX_ROWS, Math.max(1,
+        Math.floor(Number(o.max)) || Math.min(cap, TIMELINE_DEFAULT_CAPACITY)));
+      const oldest = Math.max(0, this.seq - cap);
+      const hasSince = typeof o.since === "number" && isFinite(o.since) && o.since >= 0;
+      const start = hasSince ? Math.max(Math.floor(o.since), oldest) : Math.max(oldest, this.seq - limit);
+      const end = Math.min(this.seq, start + limit);
+      const base = this.origin;
+      const rel = (x) => (x !== x ? null : Math.round((x - base) * 1000) / 1000);
+      const rows = [];
+      for (let n = start; n < end; n++) {
+        const i = n % cap;
+        rows.push([n, this.id[i], this.w[i], this.k[i], this.kd[i], this.st[i], this.at[i], this.cls[i],
+          rel(this.enq[i]), rel(this.dsp[i]), rel(this.rcv[i]), rel(this.t0[i]), rel(this.t1[i]),
+          this.exec[i] !== this.exec[i] ? null : Math.round(this.exec[i] * 1000) / 1000, this.port[i],
+          this.rid[i]]);
+      }
+      const bcap = this.busyCapacity;
+      const boldest = Math.max(0, this.busySeq - bcap);
+      const hasBusy = typeof o.sinceBusy === "number" && isFinite(o.sinceBusy) && o.sinceBusy >= 0;
+      const bstart = hasBusy ? Math.max(Math.floor(o.sinceBusy), boldest) : Math.max(boldest, this.busySeq - limit);
+      const bend = Math.min(this.busySeq, bstart + limit);
+      const busyRows = [];
+      for (let n = bstart; n < bend; n++) {
+        const i = n % bcap;
+        busyRows.push([n, this.bw[i], rel(this.bb[i]), rel(this.be[i])]);
+      }
+      const stats = this.stats();
+      return {
+        schema: TIMELINE_SCHEMA, enabled: true, base, exportedAt: Math.round((base + now()) * 1000) / 1000,
+        capacity: cap, total: stats.total, kept: stats.kept, dropped: stats.dropped,
+        lost: hasSince ? Math.max(0, oldest - Math.floor(o.since)) : 0, next: end,
+        cols: TIMELINE_COLS, strings: this.names.slice(), rows,
+        busy: {cols: ["seq", "w", "b", "e"], rows: busyRows, total: stats.busyTotal, dropped: stats.busyDropped,
+          lost: hasBusy ? Math.max(0, boldest - Math.floor(o.sinceBusy)) : 0, next: bend},
+      };
+    }
+  }
+  // --- job timeline ring end ---
 
   // --- queue ------------------------------------------------------------------------------------
 
@@ -312,6 +479,8 @@
       this.name = options.name;
       this.features = features;
       this.switches = switches;
+      this.idleUnloadMs = switches.idleUnloadMs === null
+        ? options.idleUnloadMs : Math.max(1000, Number(switches.idleUnloadMs));
       this.enabled = switches.enabled && features.wasm && features.workers;
       this.sharedMemory = features.sharedMemory && options.sharedMemory !== "off";
       const nav = global.navigator || {};
@@ -373,6 +542,15 @@
       this.externalPressureAt = 0;
       this.lastTrimAt = -Infinity;
       this.primeKinds = new Set(Array.isArray(options.primeKinds) ? options.primeKinds.map(String) : []);
+      // Job timeline (see the ring block): null unless requested, and then every hook below is
+      // a single `!== null` test.
+      this.timeline = null;
+      const timelineRows = timelineCapacity(options.timeline !== undefined ? options.timeline : switches.timeline);
+      if (timelineRows > 0) {
+        this.timeline = new JobTimeline(timelineRows);
+        const sources = global.__gaiusKernelTimelineSources || (global.__gaiusKernelTimelineSources = new Set());
+        sources.add(this);
+      }
       this.stats = {
         submitted: 0, completed: 0, failed: 0, cancelled: 0, superseded: 0, deduped: 0, stale: 0,
         dropped: 0, retried: 0, crashes: 0, spawned: 0, respawns: 0, retired: 0, backpressure: 0,
@@ -395,7 +573,8 @@
         name, spec: spec || {}, variants: (spec && spec.variants) || {}, kinds: new Set(),
         module: null, compiling: null, variant: null, bytes: null, importsMemory: false,
         disabled: this.switches.off.has(name) ? "disabled-by-switch" : null,
-        trapStreak: 0, loadFailures: 0, parked: [], stats: {completed: 0, failed: 0, totalExecMs: 0, maxExecMs: 0},
+        trapStreak: 0, loadFailures: 0, parked: [], stats: {completed: 0, failed: 0, totalExecMs: 0, maxExecMs: 0,
+          totalQueueMs: 0, maxQueueMs: 0, totalLatencyMs: 0, maxLatencyMs: 0},
         compileMs: 0, compileError: null, primer: null,
       };
       const kinds = spec && Array.isArray(spec.kinds) ? spec.kinds : [];
@@ -557,13 +736,18 @@
       const P = this.P;
       const job = {
         id: this.nextJobId++, seq: this.seq++, kernel: kernel.name, kind, key, userKey: o.key, version,
-        payload: buffer, bytes: 0, queueBytes: 0, transfer: o.transfer !== false, retry: o.retry !== false,
+        payload: buffer, bytes: 0, queueBytes: 0,
+        transfer: o.transfer !== false && !isSharedArrayBuffer(buffer), retry: o.retry !== false,
         attempts: 0, state: "new", settled: false, slot: null, entry: null,
         visible: o.visible, background: o.background === true, near: o.near,
         priorityClass: o.priorityClass, priority: o.priority, distance: o.distance,
         cx: o.cx, cz: o.cz, cls: 0, score: 0,
         submittedAt: now(), detachSignal: null, promise: null, resolve: null, reject: null,
       };
+      if (this.timeline !== null && finite(o.tlRid)) {
+        job.tlPort = finite(o.tlPort) ? o.tlPort : 0;
+        job.tlRid = o.tlRid;
+      }
       job.bytes = buffer.byteLength + (finite(o.resultBytes) ? o.resultBytes : buffer.byteLength);
       // A queued job holds its payload; the result estimate is only charged while it runs, so a
       // long P0 queue does not fill the budget with results nobody has allocated yet.
@@ -657,6 +841,9 @@
 
     settle(job, error, value) {
       if (job.settled) return;
+      // A job that is answered by a worker gets its row from finish()/crash(); this one never
+      // reached a worker (or is between two attempts).
+      if (this.timeline !== null && job.state !== "inflight") this.recordAttempt(job, null, error ? error.code : "ok", null, NaN);
       if (job.state === "queued") this.unqueue(job);
       if (job.state === "parked") {
         const kernel = this.kernels.get(job.kernel);
@@ -715,7 +902,8 @@
       const id = this.nextJobId++;
       const payload = primer.payload.slice(0);
       try {
-        slot.worker.postMessage({type: "job", id, kernel: kernel.name, kind: primer.kind, payload}, [payload]);
+        slot.worker.postMessage({type: "job", id, kernel: kernel.name, kind: primer.kind, payload},
+          isSharedArrayBuffer(payload) ? [] : [payload]);
       } catch (_) {
         this.stats.primeErrors++;
         return false;
@@ -999,14 +1187,18 @@
         if (slot.dead) return;
         if (job.settled) {
           // Cancelled while its kernel was still loading: never reaches the worker.
+          if (this.timeline !== null) this.recordAttempt(job, slot, "cancelled-before-post", null, NaN);
           this.releaseInflight(slot, job);
           this.schedulePump();
           return;
         }
         try {
-          slot.worker.postMessage({type: "job", id: job.id, kernel: job.kernel, kind: job.kind, payload: buffer},
-            job.transfer ? [buffer] : []);
+          const message = {type: "job", id: job.id, kernel: job.kernel, kind: job.kind,
+            priorityClass: job.cls, payload: buffer};
+          if (this.timeline !== null) message.tl = 1;
+          slot.worker.postMessage(message, job.transfer ? [buffer] : []);
         } catch (error) {
+          if (this.timeline !== null) this.recordAttempt(job, slot, "post-failed", null, NaN);
           this.releaseInflight(slot, job);
           this.fail(job, new KernelRuntimeError("post-failed", String(error && error.message || error), {kind: job.kind, kernel: job.kernel}));
           return;
@@ -1021,9 +1213,22 @@
       if (!slot.inflight.delete(job.id)) return;
       this.budget.end(job.bytes);
       if (slot.inflight.size === 0 && finite(slot.busySince)) {
-        slot.busyMs += now() - slot.busySince;
+        const t = now();
+        slot.busyMs += t - slot.busySince;
+        if (this.timeline !== null) this.timeline.busy(slot.id, this.timeline.origin + slot.busySince, this.timeline.origin + t);
         slot.busySince = NaN;
       }
+    }
+
+    // Appends one timeline row for the current attempt of a job. tl is the worker's
+    // [received, started, finished] stamps (wall-clock ms) or null.
+    recordAttempt(job, slot, status, tl, execMs) {
+      const t = this.timeline;
+      const origin = t.origin;
+      t.record(job.id, slot ? slot.id : 0, job.kernel, job.kind, status, job.attempts, job.cls,
+        origin + job.submittedAt, slot ? origin + job.dispatchedAt : NaN,
+        tl ? tl[0] : NaN, tl ? tl[1] : NaN, tl ? tl[2] : NaN, execMs,
+        job.tlPort === undefined ? 0 : job.tlPort, job.tlRid === undefined ? -1 : job.tlRid);
     }
 
     armWatchdog(slot) {
@@ -1133,6 +1338,11 @@
     finish(slot, message) {
       const job = slot.inflight.get(message.id);
       if (!job) return;
+      if (this.timeline !== null) {
+        this.recordAttempt(job, slot, message.type === "result" ? (job.settled ? "dropped" : "ok")
+          : message.type === "error" ? (message.code || "kernel-error") : "cancelled",
+          Array.isArray(message.tl) ? message.tl : null, finite(message.execMs) ? message.execMs : NaN);
+      }
       this.releaseInflight(slot, job);
       this.armWatchdog(slot);
       const kernel = this.kernels.get(job.kernel);
@@ -1159,6 +1369,11 @@
         classStat.totalMs += latency;
         if (latency > classStat.maxMs) classStat.maxMs = latency;
         if (kernel) {
+          const queueMs = Math.max(0, job.dispatchedAt - job.submittedAt);
+          kernel.stats.totalQueueMs += queueMs;
+          kernel.stats.maxQueueMs = Math.max(kernel.stats.maxQueueMs, queueMs);
+          kernel.stats.totalLatencyMs += latency;
+          kernel.stats.maxLatencyMs = Math.max(kernel.stats.maxLatencyMs, latency);
           kernel.stats.completed++;
           kernel.stats.totalExecMs += exec;
           if (exec > kernel.stats.maxExecMs) kernel.stats.maxExecMs = exec;
@@ -1194,7 +1409,10 @@
     crash(slot, error) {
       if (slot.dead) return;
       const inflight = Array.from(slot.inflight.values());
-      for (const job of inflight) this.releaseInflight(slot, job);
+      for (const job of inflight) {
+        if (this.timeline !== null) this.recordAttempt(job, slot, error.code || "worker-crashed", null, NaN);
+        this.releaseInflight(slot, job);
+      }
       this.dropSlot(slot);
       if (this.terminated) return;
       this.stats.crashes++;
@@ -1273,6 +1491,9 @@
       slot.ready = false;
       if (slot.watchdog !== null) global.clearTimeout(slot.watchdog);
       slot.watchdog = null;
+      if (this.timeline !== null && finite(slot.busySince)) {
+        this.timeline.busy(slot.id, this.timeline.origin + slot.busySince, this.timeline.origin + now());
+      }
       this.retiredBusyMs += slot.busyMs + (finite(slot.busySince) ? now() - slot.busySince : 0);
       slot.busySince = NaN;
       slot.busyMs = 0;
@@ -1375,7 +1596,7 @@
 
     unloadIdleInstances(t) {
       const tight = this.budget.residentPressure() > 0.75;
-      const idleLimit = tight ? 5000 : this.options.idleUnloadMs;
+      const idleLimit = tight ? 5000 : this.idleUnloadMs;
       for (const slot of this.slots) {
         if (slot.dead) continue;
         for (const [name, loaded] of slot.loaded) {
@@ -1421,6 +1642,7 @@
         this.dropSlot(slot);
       }
       this.terminated = true;
+      if (this.timeline !== null && global.__gaiusKernelTimelineSources) global.__gaiusKernelTimelineSources.delete(this);
       for (const timer of this.timers) global.clearInterval(timer);
       this.timers = [];
       if (this.respawnTimer !== null) global.clearTimeout(this.respawnTimer);
@@ -1444,7 +1666,11 @@
       for (const [name, kernel] of this.kernels) {
         kernels[name] = {available: this.available(name), variant: kernel.variant, kinds: Array.from(kernel.kinds), disabled: kernel.disabled};
       }
-      return {enabled: this.available(), sharedMemory: this.sharedMemory, kernels};
+      const status = {enabled: this.available(), sharedMemory: this.sharedMemory, kernels};
+      // Lets a port client (the server Worker) follow the page's switch: the key exists only while
+      // the job timeline is on.
+      if (this.timeline !== null) status.timeline = this.timeline.capacity;
+      return status;
     }
 
     broadcastStatus() {
@@ -1462,7 +1688,8 @@
     // shares or supersedes a job of an old one.
     attachPort(port) {
       if (this.portDetach.has(port)) return;
-      const prefix = "p" + (++this.nextPortId) + ":";
+      const portNo = ++this.nextPortId;
+      const prefix = "p" + portNo + ":";
       const keys = new Map();   // scoped key -> submits not yet answered
       const maxPending = Math.max(1, Math.floor(Number(this.options.maxPendingRequests) || DEFAULTS.maxPendingRequests));
       const maxWaiters = Math.max(1, Math.floor(Number(this.options.maxPendingWaiters) || maxPending));
@@ -1512,6 +1739,10 @@
             opts.key = key;
             keys.set(key, (keys.get(key) || 0) + 1);
           }
+          if (this.timeline !== null) {
+            opts.tlPort = portNo;
+            opts.tlRid = finite(message.id) ? message.id : -1;
+          }
           const promise = this.submit(message.kind, message.payload, opts);
           let portShare = portWaiters.get(promise);
           if (!portShare) {
@@ -1553,6 +1784,8 @@
           this.reportPressure(message.level);
         } else if (message.type === "status") {
           post({type: "status", status: this.status()});
+        } else if (message.type === "timeline") {
+          post({type: "timeline", tid: message.tid, data: this.timelineExport(message)});
         } else if (message.type === "close") {
           this.detachPort(port);
         }
@@ -1596,10 +1829,26 @@
         telemetry() {
           return runtime.telemetry();
         },
+        timelineExport(options) {
+          return runtime.timelineExport(options);
+        },
       };
     }
 
     // --- telemetry --------------------------------------------------------------------------
+
+    // Compact export of the job timeline ring ({enabled: false} when it is off); see JobTimeline.
+    timelineExport(options) {
+      const t = this.timeline;
+      if (t === null) return {schema: TIMELINE_SCHEMA, enabled: false, host: "runtime", name: this.name};
+      const out = t.export(options);
+      out.host = "runtime";
+      out.name = this.name;
+      out.workers = this.slots.map((slot) => ({id: slot.id, dead: slot.dead, draining: slot.draining,
+        completed: slot.completed, inFlight: slot.inflight.size, busyMs: slot.busyMs,
+        busySince: finite(slot.busySince) ? Math.round(slot.busySince * 1000) / 1000 : null}));
+      return out;
+    }
 
     telemetry() {
       const kernels = {};
@@ -1611,11 +1860,15 @@
           completed: kernel.stats.completed, failed: kernel.stats.failed,
           meanExecMs: kernel.stats.completed ? kernel.stats.totalExecMs / kernel.stats.completed : 0,
           maxExecMs: kernel.stats.maxExecMs,
+          meanQueueMs: kernel.stats.completed ? kernel.stats.totalQueueMs / kernel.stats.completed : 0,
+          maxQueueMs: kernel.stats.maxQueueMs,
+          meanLatencyMs: kernel.stats.completed ? kernel.stats.totalLatencyMs / kernel.stats.completed : 0,
+          maxLatencyMs: kernel.stats.maxLatencyMs,
         };
       }
       let inFlight = 0;
       for (const slot of this.slots) inFlight += slot.inflight.size;
-      return Object.assign({
+      const telemetry = Object.assign({
         name: this.name,
         enabled: this.enabled,
         features: this.features,
@@ -1630,6 +1883,7 @@
         inFlight,
         halted: this.halted ? this.halted.message : null,
         terminated: this.terminated,
+        idleUnloadMs: this.idleUnloadMs,
         heapPressure: this.heapPressure(),
         ports: this.ports.size,
         workers: this.slots.map((slot) => ({
@@ -1641,6 +1895,8 @@
         })),
         kernels,
       }, this.stats);
+      if (this.timeline !== null) telemetry.timeline = this.timeline.stats();
+      return telemetry;
     }
   }
 
@@ -1652,6 +1908,8 @@
     const pending = new Map();
     let status = {enabled: false, kernels: {}};
     const listeners = [];
+    const timelineWaiters = new Map();   // tid -> resolve, only filled by timeline()
+    let nextTimelineId = 1;
     let markReady = null;
     const ready = new Promise((resolve) => { markReady = resolve; });
     port.onmessage = (event) => {
@@ -1667,6 +1925,14 @@
           try {
             listener(status);
           } catch (_) { /* a listener must not break the port */ }
+        }
+        return;
+      }
+      if (message.type === "timeline") {
+        const resolve = timelineWaiters.get(message.tid);
+        if (resolve) {
+          timelineWaiters.delete(message.tid);
+          resolve(message.data);
         }
         return;
       }
@@ -1704,8 +1970,9 @@
         return new Promise((resolve, reject) => {
           pending.set(id, {resolve, reject});
           try {
+            const transfer = o.transfer !== false && !isSharedArrayBuffer(buffer);
             port.postMessage({type: "submit", id, kernel, kind, payload: buffer, opts: plain},
-              o.transfer === false ? [] : [buffer]);
+              transfer ? [buffer] : []);
           } catch (error) {
             pending.delete(id);
             reject(error);
@@ -1714,6 +1981,29 @@
       },
       cancel(key, kernel) {
         port.postMessage({type: "cancel", key, kernel: kernel || null});
+      },
+      // Diagnostics: asks the runtime for its job timeline export ({since, max}); resolves with
+      // {enabled: false} when the runtime has none, or null when it does not answer in time.
+      timeline(options) {
+        const o = options || {};
+        return new Promise((resolve) => {
+          const tid = nextTimelineId++;
+          const timer = global.setTimeout(() => {
+            timelineWaiters.delete(tid);
+            resolve(null);
+          }, finite(o.timeoutMs) ? Math.min(5000, Math.max(50, o.timeoutMs)) : 1000);
+          timelineWaiters.set(tid, (data) => {
+            global.clearTimeout(timer);
+            resolve(data);
+          });
+          try {
+            port.postMessage({type: "timeline", tid, since: o.since, max: o.max, sinceBusy: o.sinceBusy});
+          } catch (_) {
+            global.clearTimeout(timer);
+            timelineWaiters.delete(tid);
+            resolve(null);
+          }
+        });
       },
       setViewer(viewer) {
         port.postMessage({type: "viewer", viewer});

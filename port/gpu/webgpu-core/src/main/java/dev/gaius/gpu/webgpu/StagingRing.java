@@ -45,7 +45,7 @@ public final class StagingRing {
     boolean writeOrdered(CoreBuffer destination, int offset, ByteBuffer data, int size) {
         this.orderedWrites++;
         this.orderedBytes += size;
-        if (WebGpuGlue.writeOrdered(destination.handle, offset, data, size)) {
+        if (WebGpuGlue.writeOrdered(destination.handle, destination.baseOffset() + offset, data, size)) {
             return true;
         }
         this.orderedStaged++;

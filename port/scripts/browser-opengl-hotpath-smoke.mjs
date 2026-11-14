@@ -11,6 +11,11 @@ const sourcePath = path.resolve(
   "../overrides/libraries/lwjgl-opengl/src/main/java/org/lwjgl/opengl/BrowserOpenGL.java",
 );
 const source = fs.readFileSync(sourcePath, "utf8");
+const terrainBatch = source.match(/state\.terrainBatchDraw=function[\s\S]*?\n            };/i)?.[0] || "";
+assert.match(terrainBatch, /gl\.bindBuffer\(gl\.UNIFORM_BUFFER,ubo\);/,
+  "terrain batch must establish the generic UBO binding before range uploads");
+assert.match(terrainBatch, /gl\.bindBuffer\(gl\.UNIFORM_BUFFER,previousUniformId \? this\.buffers\.get\(previousUniformId\) : null\);/,
+  "terrain batch must restore the generic UBO binding unconditionally");
 
 function jsBody(method) {
   const escaped = method.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

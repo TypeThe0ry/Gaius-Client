@@ -240,11 +240,19 @@ function createRuntime(opfsFiles, idbRecords) {
     queueMicrotask,
     setTimeout,
     __gaiusStartIntegratedServerPump() {},
+    TeaVM: {},
+    GaiusJspi: {},
   };
   context.globalThis = context;
   context.close = () => {};
   context.importScripts = () => {};
   context.main = () => {};
+  context.GaiusWasmWorker = {
+    async compile() {},
+    async instantiate() {},
+    async startMain() { context.main(); },
+    info() { return {phase: "test"}; },
+  };
   let runtimeStopped = false;
   context.stopIntegratedServer = () => { runtimeStopped = true; };
   context.isIntegratedServerStopped = () => runtimeStopped;
@@ -268,7 +276,9 @@ async function startRuntime(runtime, worldId) {
       storageOpfsDirectory: DEFAULT_STORAGE_CONFIG.storageOpfsDirectory,
       renderDistance: 6,
       simulationDistance: 4,
-      serverScriptUrl: "https://client.example/singleplayer-server.js",
+      serverRuntime: "wasm",
+      serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+      wasmRuntimeScripts: [],
       port,
     },
     ports: [port],

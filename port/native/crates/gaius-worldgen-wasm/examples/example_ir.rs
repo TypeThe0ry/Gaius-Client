@@ -9,10 +9,11 @@ use gaius_worldgen::ir::example::overworld;
 
 fn main() {
     let dir = std::env::args().nth(1).expect("usage: example_ir <out-dir>");
+    let seed = std::env::args().nth(2).map(|s| s.parse::<i64>().expect("seed")).unwrap_or(1234);
     std::fs::create_dir_all(&dir).expect("output directory");
     for (profile, semantics) in profiles() {
         let path = std::path::Path::new(&dir).join(format!("{profile}.gwir"));
-        std::fs::write(&path, overworld(semantics, 1234).encode()).expect("write IR");
+        std::fs::write(&path, overworld(semantics, seed).encode()).expect("write IR");
         println!("{}", path.display());
     }
 }

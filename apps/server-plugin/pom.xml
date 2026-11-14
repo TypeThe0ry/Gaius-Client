@@ -6,7 +6,7 @@
 
   <groupId>dev.gaius</groupId>
   <artifactId>gaius-server-plugin</artifactId>
-  <version>0.4.0</version>
+  <version>0.4.0-pre.6</version>
   <name>GaiusServerBridge</name>
 
   <properties>

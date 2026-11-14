@@ -37,6 +37,7 @@ import {tmpdir} from "node:os";
 import {join, resolve, relative, normalize, extname, isAbsolute, dirname} from "node:path";
 import {fileURLToPath, pathToFileURL} from "node:url";
 import {chromeIsolationArgs} from "./bench/harness-common.mjs";
+import {chromeLaunchArgs, resolveChromeBinary} from "./chrome-binary.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -53,7 +54,8 @@ const out = resolve(env.OUT || "lan-invite-out");
 const names = [env.PLAYER_A || "LanHost", env.PLAYER_B || "LanGuest"];
 const sitePort = Number(env.SITE_PORT || 8781), bridgePort = Number(env.BRIDGE_PORT || 8094);
 const bootTimeout = Number(env.BOOT_TIMEOUT_MS || 600000), joinTimeout = Number(env.JOIN_TIMEOUT_MS || 240000);
-const chromeBin = env.GAIUS_CHROME_BIN || "C:/Program Files/Google/Chrome/Application/chrome.exe";
+const chromeBin = resolveChromeBinary();
+const linuxChromeArgs = chromeLaunchArgs();
 const gpu = env.GPU || "webgpu";
 const localBridge = `http://127.0.0.1:${bridgePort}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -149,7 +151,7 @@ class Conn {
 }
 const profileDir = await mkdtemp(join(tmpdir(), "gaius-lan-"));
 const chromePort = await freePort();
-const chrome = spawn(chromeBin, ["--headless=new", `--remote-debugging-port=${chromePort}`, "--remote-allow-origins=*",
+const chrome = spawn(chromeBin, [...linuxChromeArgs, "--headless=new", `--remote-debugging-port=${chromePort}`, "--remote-allow-origins=*",
   `--user-data-dir=${profileDir}`, "--window-size=1280,720", "--ignore-gpu-blocklist", "--enable-unsafe-swiftshader",
   "--enable-unsafe-webgpu", "--allow-file-access-from-files",
   "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows",

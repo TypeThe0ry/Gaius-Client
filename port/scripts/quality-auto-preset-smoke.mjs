@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Automatic video preset bookkeeping (GaiusQuality.autoPreset in
 // web/runtime/quality/quality-profile.js) and its Java bridge in BrowserFilePersistence:
-// the first start records the seeded tier preset, an untouched profile follows a new tier, and
-// once the player changed a video option the profile is never adjusted again.
+// the first start records the vanilla FAST seed, tier changes leave it unchanged, and once the
+// player changed a video option the profile is never adjusted again.
 //
 //   node port/scripts/quality-auto-preset-smoke.mjs
 
@@ -21,22 +21,27 @@ function jsBody(java, signature) {
   return java.slice(start, java.lastIndexOf('"""', end));
 }
 
-// The tier seeds as BrowserFilePersistence writes them (graphics part).
-function tierBlock(java, name) {
-  const at = java.indexOf(`private static final String ${name} = String.join("\\n",`);
-  assert.ok(at > 0, name);
+// BrowserFilePersistence writes one vanilla FAST graphics block for every tier.
+function fastBlock(java) {
+  const at = java.indexOf('private static final String VANILLA_FAST_GRAPHICS_DEFAULTS = String.join("\\n",');
+  assert.ok(at > 0, "VANILLA_FAST_GRAPHICS_DEFAULTS");
   const end = java.indexOf(') + "\\n";', at);
   return [...java.slice(at, end).matchAll(/^\s*"((?:[^"\\]|\\.)*)"[,)]?\s*$/gm)]
     .map((match) => match[1].replace(/\\"/g, '"')).join("\n") + "\n";
 }
 const COMMON = "version:4790\nautoJump:false\nmaxFps:120\nenableVsync:true\n";
+const FAST = fastBlock(persistence);
 const seeds = {
-  low: COMMON + tierBlock(persistence, "LOW_TIER_GRAPHICS_DEFAULTS"),
-  mid: COMMON + tierBlock(persistence, "MID_TIER_GRAPHICS_DEFAULTS"),
-  high: COMMON + tierBlock(persistence, "HIGH_TIER_GRAPHICS_DEFAULTS"),
+  low: COMMON + FAST,
+  mid: COMMON + FAST,
+  high: COMMON + FAST,
 };
-assert.match(seeds.low, /^renderDistance:6$/m);
-assert.match(seeds.high, /^graphicsPreset:"fancy"$/m);
+for (const seed of Object.values(seeds)) {
+  assert.match(seed, /^graphicsPreset:"fast"$/m);
+  assert.match(seed, /^renderDistance:8$/m);
+  assert.match(seed, /^simulationDistance:6$/m);
+  assert.match(seed, /^improvedTransparency:false$/m);
+}
 
 function page() {
   const storage = new Map();
@@ -75,7 +80,7 @@ function setOption(options, key, value) {
 const p = page();
 assert.equal(p.sync("26.3|a", "", seeds.mid, "mid", true), "");
 assert.equal(p.root.__gaiusAutoPreset.action, "seeded");
-assert.match(p.logs.at(-1), /^Gaius quality: first start, applied the automatic mid video preset, render distance 8$/);
+assert.match(p.logs.at(-1), /^Gaius quality: first start, applied vanilla FAST video settings, render distance 8$/);
 const markers = JSON.parse(p.storage.get("gaius.quality.autoPreset.v1"));
 assert.equal(markers["26.3|a"].tier, "mid");
 assert.equal(markers["26.3|a"].values.renderDistance, "8");
@@ -86,18 +91,14 @@ let saved = gameSave(seeds.mid);
 assert.equal(p.sync("26.3|a", saved, seeds.mid, "mid", false), "");
 assert.equal(p.root.__gaiusAutoPreset.action, "auto-kept");
 
-// 3. A new classification (high) on an untouched profile re-applies the preset in place.
+// 3. A new classification (high) on an untouched profile keeps the vanilla FAST values.
 const upgraded = p.sync("26.3|a", saved, seeds.high, "high", false);
-assert.notEqual(upgraded, "");
-assert.equal(p.root.__gaiusAutoPreset.action, "reapplied");
-assert.match(upgraded, /^renderDistance:10$/m);
-assert.match(upgraded, /^improvedTransparency:true$/m);
-assert.match(upgraded, /^lang:en_us$/m, "other options are kept");
-assert.equal(upgraded.split("\n").length, saved.split("\n").length, "no line added or removed");
-assert.match(p.logs.at(-1), /untouched since the automatic mid preset, applied the high preset, render distance 10/);
+assert.equal(upgraded, "");
+assert.equal(p.root.__gaiusAutoPreset.action, "auto-kept");
+assert.match(p.logs.at(-1), /video settings follow vanilla FAST values/);
 
 // 4. The player changes the render distance: detected once, then never adjusted again.
-saved = setOption(gameSave(upgraded), "renderDistance", "16");
+saved = setOption(saved, "renderDistance", "16");
 assert.equal(p.sync("26.3|a", saved, seeds.low, "low", false), "");
 assert.equal(p.root.__gaiusAutoPreset.action, "manual-detected");
 assert.deepEqual([...p.root.__gaiusAutoPreset.changed], ["renderDistance"]);
@@ -110,8 +111,8 @@ assert.equal(p.root.__gaiusAutoPreset.action, "manual");
 p.sync("26.3|b", "", seeds.mid, "mid", true);
 const fps = setOption(setOption(gameSave(seeds.mid), "maxFps", "260"), "enableVsync", "false");
 const lowered = p.sync("26.3|b", fps, seeds.low, "low", false);
-assert.match(lowered, /^renderDistance:6$/m);
-assert.match(lowered, /^maxFps:260$/m, "the player's frame settings stay");
+assert.equal(lowered, "");
+assert.match(fps, /^maxFps:260$/m, "the player's frame settings stay");
 
 // 6. A key the game of this version does not write is not compared and not re-added.
 p.sync("1.21.11|c", "", seeds.mid, "mid", true);
@@ -119,8 +120,7 @@ const legacy = gameSave(seeds.mid).replace(/^graphicsPreset:.*\n/m, "").replace(
 assert.equal(p.sync("1.21.11|c", legacy, seeds.mid, "mid", false), "");
 assert.equal(p.root.__gaiusAutoPreset.action, "auto-kept");
 const legacyLow = p.sync("1.21.11|c", legacy, seeds.low, "low", false);
-assert.doesNotMatch(legacyLow, /^graphicsPreset:/m);
-assert.match(legacyLow, /^particles:1$/m);
+assert.equal(legacyLow, "");
 
 // 7. Profiles are independent; a profile without a record (saved before this feature) is left alone.
 assert.equal(p.sync("26.2|d", gameSave(seeds.mid), seeds.high, "high", false), "");
@@ -144,7 +144,7 @@ assert.equal(p.root.__gaiusAutoPreset.action, "untracked");
   q.sync("26.3|f", "", seeds.mid, "mid", true);
   const crlf = gameSave(seeds.mid).replace(/\n/g, "\r\n");
   const result = q.sync("26.3|f", crlf, seeds.low, "low", false);
-  assert.match(result, /\r\nrenderDistance:6\r\n/);
+  assert.equal(result, "");
 }
 
 // 10. The F3 CPU line (BrowserQualityOptions.debugCpuInfo) names the tier and its source.
@@ -162,4 +162,4 @@ assert.equal(p.root.__gaiusAutoPreset.action, "untracked");
   assert.match(options, /return debugQuality\.isEmpty\(\) \? base : base \+ ", " \+ debugQuality;/);
 }
 
-console.log("PASS automatic video preset: seed record, follow-the-tier, player choice wins, version keys, bridge, F3 line");
+console.log("PASS automatic video preset: vanilla FAST seed, tier stability, player choice wins, version keys, bridge, F3 line");

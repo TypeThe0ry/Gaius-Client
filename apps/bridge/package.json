@@ -1,6 +1,6 @@
 {
   "name": "@gaius/relay-node",
-  "version": "0.4.0",
+  "version": "0.4.0-pre.6",
   "private": true,
   "type": "module",
   "description": "WebSocket-to-TCP translator node for Gaius multiplayer",
@@ -13,7 +13,7 @@
     "test:relay-e2e": "node relay-protocol-e2e.mjs",
     "start": "node dist/main.js",
     "start:registry": "node dist/registry.js",
-    "smoke": "node framed-stream-smoke.mjs && node relay-frame-batching-smoke.mjs && node client-tcp-bounded-drain-smoke.mjs && node server-packet-processor-isolation-smoke.mjs && node multiplayer-smoke.mjs && node resource-pack-timeout-smoke.mjs && node resource-pack-stream-smoke.mjs && node registry-smoke.mjs && node ../../port/scripts/browser-http-proxy-routing-smoke.mjs && node ../../port/scripts/browser-relay-routing-smoke.mjs && node ../../port/scripts/browser-inbound-backpressure-smoke.mjs && node ../../port/scripts/browser-outbound-backpressure-smoke.mjs && node ../../port/scripts/browser-global-pump-fairness-smoke.mjs && node ../../port/scripts/client-packet-drain-smoke.mjs && node ../../port/scripts/browser-bridge-install-lifecycle-smoke.mjs && node ../../port/scripts/browser-inbound-pump-jsbody-smoke.mjs && node ../../port/scripts/browser-compression-decoder-model-smoke.mjs && node ../../port/scripts/browser-compression-decoder-production-smoke.mjs && node browser-full-path-contract-smoke.mjs && node browser-arrival-timeline-runtime-smoke.mjs",
+    "smoke": "node framed-stream-smoke.mjs && node relay-frame-batching-smoke.mjs && node client-tcp-bounded-drain-smoke.mjs && node server-packet-processor-isolation-smoke.mjs && node multiplayer-smoke.mjs && node resource-pack-timeout-smoke.mjs && node resource-pack-stream-smoke.mjs && node registry-smoke.mjs && node ../../port/scripts/browser-http-proxy-routing-smoke.mjs && node ../../port/scripts/browser-resource-pack-direct-smoke.mjs && node ../../port/scripts/browser-relay-routing-smoke.mjs && node ../../port/scripts/browser-inbound-backpressure-smoke.mjs && node ../../port/scripts/browser-outbound-backpressure-smoke.mjs && node ../../port/scripts/browser-global-pump-fairness-smoke.mjs && node ../../port/scripts/client-packet-drain-smoke.mjs && node ../../port/scripts/browser-bridge-install-lifecycle-smoke.mjs && node ../../port/scripts/browser-inbound-pump-jsbody-smoke.mjs && node ../../port/scripts/browser-compression-decoder-model-smoke.mjs && node ../../port/scripts/browser-compression-decoder-production-smoke.mjs && node browser-full-path-contract-smoke.mjs && node browser-arrival-timeline-runtime-smoke.mjs",
     "smoke:profiles": "node profile-protocol-smoke.mjs",
     "smoke:public": "node public-relay-smoke.mjs",
     "smoke:deploy": "node relay-deploy-smoke.mjs",

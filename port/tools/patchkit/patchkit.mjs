@@ -41,10 +41,12 @@
 
 import {spawnSync} from "node:child_process";
 import {readAcknowledgements, targetChanges, validateTargets} from "./target-lock.mjs";
+import {stageSources} from "../sourcesets/sourcesets.mjs";
+import {createHash} from "node:crypto";
 import {copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
   writeFileSync} from "node:fs";
 import {homedir, tmpdir} from "node:os";
-import {delimiter, dirname, isAbsolute, join, resolve} from "node:path";
+import {basename, delimiter, dirname, isAbsolute, join, resolve} from "node:path";
 import {fileURLToPath, pathToFileURL} from "node:url";
 
 export const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -757,6 +759,8 @@ function bytecodeTest() {
     const classpath = compileTools(classes);
     const sources = [
       join(repositoryRoot, "port/tools/src/test/java/dev/gaius/tools/PatchTargetsTest.java"),
+      join(repositoryRoot, "port/tools/src/test/java/dev/gaius/tools/OverlayValidationTest.java"),
+      join(repositoryRoot, "port/tools/src/test/java/dev/gaius/tools/BreakingSoundBytecodeTest.java"),
       join(repositoryRoot, "port/tools/src/test/java/dev/gaius/tools/LoadingPresentationPatchesTest.java"),
       join(repositoryRoot, "port/tools/src/test/java/dev/gaius/tools/TitleScreenIconRowPatchTest.java"),
       join(repositoryRoot, "port/tools/src/test/java/dev/gaius/tools/BrowserTitleLayoutTest.java"),
@@ -765,7 +769,7 @@ function bytecodeTest() {
     const compiled = spawnSync(jdkTool("javac"), ["-J-Xmx3g", "--release", "21", "-classpath", classpath,
       "-d", classes, ...sources], {encoding: "utf8"});
     if (compiled.status !== 0) throw new UsageError(`bytecode tests did not compile: ${compiled.stderr}`);
-    const tested = spawnSync(jdkTool("java"), ["-Xmx3g", "-classpath", classpath,
+    const tested = spawnSync(jdkTool("java"), ["-Xmx3g", "-Xverify:all", "-classpath", classpath,
       "dev.gaius.tools.PatchTargetsTest", scratch], {encoding: "utf8"});
     process.stdout.write(tested.stdout ?? "");
     process.stderr.write(tested.stderr ?? "");
@@ -857,7 +861,103 @@ function runChain({profile, target, classpath, scratch, options}) {
   const vanilla = zipEntryNames(vanillaJar);
   const built = buildManifest({profile, target, clientSha1, steps: stepResults, records, vanilla});
   built.problems.push(...validateTargets(built.manifest));
+  // Outcomes and method locks do not prove that the composed classfiles are legal.
+  // Scan the entire merged client, including classes no individual patch wrote.
+  const members = spawnSync(jdkTool("java"), ["-Xmx2g", "-classpath", classpath,
+    "dev.gaius.tools.OverlayClassCheck", "members", jar, join(work, "overlay-members.json")],
+  {encoding: "utf8", maxBuffer: 16 * 1024 * 1024});
+  writeFileSync(join(work, "overlay-members.log"), `${members.stdout ?? ""}${members.stderr ?? ""}`);
+  process.stdout.write(members.stdout ?? "");
+  if (members.status !== 0) built.problems.push(`full-overlay member check failed: ${join(work, "overlay-members.log")}`);
+  if (!crashed && members.status === 0) {
+    const frames = spawnSync(jdkTool("java"), ["-Xmx3g", ...properties, "-classpath", classpath,
+      "dev.gaius.tools.OverlayClassCheck", "frames", join(work, "out"), jar,
+      verifierLibraries(profile, options.work).join(delimiter), join(work, "overlay-frames.json")],
+    {encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 600_000});
+    writeFileSync(join(work, "overlay-frames.log"), `${frames.stdout ?? ""}${frames.stderr ?? ""}`);
+    process.stdout.write(frames.stdout ?? "");
+    if (frames.status !== 0) built.problems.push(`production frame computation failed: ${join(work, "overlay-frames.log")}`);
+    else {
+      const update = spawnSync(jdkTool("jar"), ["--update", "--file", jar, "-C", join(work, "out"), "."], {encoding: "utf8", timeout: 300_000});
+      if (update.status !== 0) built.problems.push(`final frame jar update failed: ${update.stderr}`);
+    }
+  }
   return {...built, crashed, work};
+}
+
+function verifierLibraries(profile, work) {
+  const directory = join(work, profile);
+  const file = join(directory, "classpath.txt");
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8").trim().split(delimiter).filter(Boolean).map(value => {
+    const marker = value.replaceAll("\\", "/").indexOf("/libraries/");
+    return marker < 0 ? nativePath(value) : join(directory, value.slice(marker + 1));
+  }).filter(path => !basename(path).startsWith("client-"));
+}
+
+function verifyOverlay(argv) {
+  const options = {};
+  for (let i = 0; i < argv.length; i += 2) {
+    const key = argv[i];
+    if (!["--overlay", "--classpath", "--out", "--profile", "--target", "--dependencies"].includes(key) || !argv[i + 1]) throw new UsageError("verify needs --overlay <classes> --classpath <real dependencies> --out <report>");
+    options[key] = argv[i + 1];
+  }
+  if (!options["--overlay"] || !options["--classpath"] || !options["--out"]) throw new UsageError("verify needs --overlay, --classpath and --out");
+  const scratch = mkdtempSync(join(tmpdir(), "gaius-patchkit-verify-"));
+  try {
+    const classpath = compileTools(join(scratch, "classes"));
+    const report = resolve(nativePath(options["--out"]));
+    const sourcePaths = [];
+    let dependencies;
+    const roots = new Set();
+    const commands = [];
+    if (options["--profile"] || options["--dependencies"]) {
+      const profile = options["--profile"], target = options["--target"];
+      if (!profile || !TARGETS.includes(target) || !options["--dependencies"]) throw new UsageError("automatic real dependency compilation needs --profile, --target and a fresh --dependencies directory");
+      dependencies = resolve(nativePath(options["--dependencies"]));
+      if (existsSync(dependencies)) throw new UsageError(`verifier dependency output already exists: ${dependencies}`);
+      mkdirSync(dependencies, {recursive: true});
+      for (const kind of ["src", "client"]) {
+        const staged = join(scratch, `sources-${kind}`);
+        stageSources(profile, kind, target, staged, repositoryRoot);
+        sourcePaths.push(staged);
+      }
+      sourcePaths.push(join(repositoryRoot, `port/overrides/classlib/src/target-${target}/java`),
+        join(repositoryRoot, "port/overrides/classlib/src/main/java"));
+    }
+    const applicationCp = [dependencies, options["--classpath"]].filter(Boolean).join(delimiter);
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const args = ["-Xmx3g", "-Xverify:all", "-classpath", classpath,
+        "dev.gaius.tools.OverlayClassCheck", "verify", resolve(nativePath(options["--overlay"])), applicationCp, report];
+      const result = spawnSync(jdkTool("java"), args,
+        {encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 600_000});
+      process.stdout.write(result.stdout ?? "");
+      if (!existsSync(report)) { process.stderr.write(result.stderr ?? ""); return 1; }
+      const receipt = JSON.parse(readFileSync(report, "utf8"));
+      copyFileSync(report, `${report}.attempt-${attempt}.json`);
+      const missing = receipt.failures.map(f => f.match(/NoClassDefFoundError: ([\w/$]+)/)?.[1]).filter(Boolean);
+      const sources = missing.map(name => name.split("$")[0] + ".java")
+        .map(name => sourcePaths.map(path => join(path, name)).find(existsSync)).filter(Boolean);
+      const fresh = [...new Set(sources)].filter(path => !roots.has(path));
+      if (result.status === 0 || !dependencies || fresh.length === 0) {
+        receipt.realDependencyCompilation = {classes: dependencies ?? null, commands,
+          sources: [...roots].map(path => ({path: path.replace(scratch, "<scratch>"),
+            sha256: createHash("sha256").update(readFileSync(path)).digest("hex")})),
+          transformedOrStubbedDependencies: false};
+        writeJson(report, receipt);
+        if (result.status !== 0) process.stderr.write(result.stderr ?? "");
+        return result.status === 0 ? 0 : 1;
+      }
+      fresh.forEach(path => roots.add(path));
+      const compilerArgs = ["-J-Xmx3g", "-proc:none", "-encoding", "UTF-8", "-classpath", applicationCp,
+        "-sourcepath", sourcePaths.join(delimiter), "-d", dependencies, ...roots];
+      const compiled = spawnSync(jdkTool("javac"), compilerArgs, {encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 300_000});
+      commands.push({args: compilerArgs.map(v => v.replace(scratch, "<scratch>")), status: compiled.status});
+      writeFileSync(`${report}.compile-${attempt}.log`, `${compiled.stdout ?? ""}${compiled.stderr ?? ""}`);
+      if (compiled.status !== 0) { process.stderr.write(compiled.stderr ?? ""); return 1; }
+    }
+    throw new UsageError("verifier dependency closure did not settle in eight passes");
+  } finally { rmSync(scratch, {recursive: true, force: true}); }
 }
 
 function parseCheckArguments(argv) {
@@ -969,6 +1069,10 @@ function check(argv) {
         }
         const path = join(out, profile, `patch-manifest.${target}.json`);
         writeJson(path, manifest);
+        for (const gate of ["members", "frames"]) {
+          const receipt = join(run.work, `overlay-${gate}.json`);
+          if (existsSync(receipt)) copyFileSync(receipt, join(dirname(path), `overlay-${gate}.${target}.json`));
+        }
         const committed = join(repositoryRoot, "port/mc/profiles", profile, `patch-manifest.${target}.json`);
         let diff;
         if (existsSync(committed)) {
@@ -1287,6 +1391,8 @@ function main(argv) {
   switch (command) {
     case "check":
       return check(rest);
+    case "verify":
+      return verifyOverlay(rest);
     case "diff": {
       const files = rest.filter((value, index) => !value.startsWith("--") && rest[index - 1] !== "--json");
       const jsonIndex = rest.indexOf("--json");

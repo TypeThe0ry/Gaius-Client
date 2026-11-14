@@ -7,7 +7,7 @@ import {configureWorldSeed, seedScreenSupportsShortcut} from "./configure-browse
 import {stageAnimationCapture, captureViews, validateCaptureViews, captureCameraReadyExpression, captureDeterministicWorld, CAPTURE_OPTIONS, freezeCaptureWorld} from "./deterministic-world-capture.mjs";
 import {decodePng, encodePng, compareCaptures, reportCaptureDiff} from "./capture-pixel-diff.mjs";
 import {backendConsistencyChecks, clientRuntimeCheck, graphicsBackendFromLog, requestedFromQuery, fallbackReasons} from "./backend-consistency.mjs";
-import {terrainCompleteness, terrainVerdict, readRenderDistance, optionRenderDistance, visibleTerrainPass} from "./terrain-settle.mjs";
+import {terrainCompleteness, terrainVerdict, readRenderDistance, optionRenderDistance, expectedLoadedChunks, visibleTerrainPass} from "./terrain-settle.mjs";
 import {enableCreativeFlight, flightWindowMovement, holdKeyDuring} from "./flight-input.mjs";
 
 const output = resolve(process.env.OUT || "acceptance-harness-test-out");
@@ -271,7 +271,7 @@ test("329 loaded chunks with no uncompiled section complete a render distance 8 
   const sample = {loaded: 329, dist: {effectiveRenderDistance: 8, rawRenderDistance: 8}, audit: {uncompiled: 0}};
   const result = terrainCompleteness(sample);
   assert.equal(result.complete, true);
-  assert.equal(result.expectedLoaded, 289);
+  assert.equal(result.expectedLoaded, 329);
   assert.equal(result.renderDistanceSource, "effectiveRenderDistance");
   const verdict = terrainVerdict({spawn: sample, firstTerrainSeconds: 31, settleSeconds: 44, px: {other: 0.9}, requestedOptions: ["renderDistance:8"]});
   assert.equal(verdict.ok, true);
@@ -282,12 +282,18 @@ test("329 loaded chunks with no uncompiled section complete a render distance 8 
   assert.equal(late.detail.stable, false);
 });
 
+test("expected loaded count follows vanilla circular ChunkTrackingView", () => {
+  assert.equal(expectedLoadedChunks(8), 329);
+  assert.equal(expectedLoadedChunks(16), 1057);
+  assert.equal(expectedLoadedChunks(32), 3725);
+});
+
 test("the effective render distance is what counts, and an options mismatch is reported", () => {
   const sample = {loaded: 478, dist: {effectiveRenderDistance: 12, rawRenderDistance: 12}, audit: {uncompiled: 0}};
   const verdict = terrainVerdict({spawn: sample, firstTerrainSeconds: 20, settleSeconds: null, requestedOptions: ["renderDistance:8", "simulationDistance:6"]});
   assert.equal(verdict.ok, false);
   assert.equal(verdict.detail.incomplete, "chunks-missing");
-  assert.equal(verdict.detail.expectedLoaded, 625);
+  assert.equal(verdict.detail.expectedLoaded, 637);
   assert.equal(verdict.detail.optionRenderDistance, 8);
   assert.equal(verdict.detail.renderDistanceMatchesOptions, false);
   assert.equal(optionRenderDistance(["x:1", "renderDistance:8"]), 8);
@@ -301,11 +307,11 @@ test("terrain stays strict about what it cannot read or what is still missing", 
   assert.equal(unreadable.complete, false);
   assert.equal(unreadable.reason, "render-distance-unreadable");
   assert.equal(terrainCompleteness({loaded: 400, dist: {effectiveRenderDistance: 8}, audit: {uncompiled: 0}}).complete, true);
-  assert.equal(terrainCompleteness({loaded: 288, dist: {effectiveRenderDistance: 8}, audit: {uncompiled: 0}}).reason, "chunks-missing");
+  assert.equal(terrainCompleteness({loaded: 328, dist: {effectiveRenderDistance: 8}, audit: {uncompiled: 0}}).reason, "chunks-missing");
   assert.equal(terrainCompleteness({loaded: 329, dist: {effectiveRenderDistance: 8}, audit: {uncompiled: 3}}).reason, "sections-uncompiled");
-  assert.equal(terrainCompleteness({loaded: 289, dist: {effectiveRenderDistance: 8}, audit: {uncompiled: 0}}).complete, true);
+  assert.equal(terrainCompleteness({loaded: 329, dist: {effectiveRenderDistance: 8}, audit: {uncompiled: 0}}).complete, true);
   assert.equal(terrainCompleteness({loaded: null, dist: {effectiveRenderDistance: 8}, audit: {uncompiled: 0}}).complete, false);
-  assert.equal(terrainCompleteness({loaded: 289, dist: {effectiveRenderDistance: 8}, audit: null}).complete, true);
+  assert.equal(terrainCompleteness({loaded: 329, dist: {effectiveRenderDistance: 8}, audit: null}).complete, true);
   const noPixels = terrainVerdict({spawn: {loaded: 329, dist: {effectiveRenderDistance: 8}, audit: {uncompiled: 0}}, firstTerrainSeconds: null, settleSeconds: null});
   assert.equal(noPixels.ok, false);
   assert.equal(noPixels.detail.incomplete, "no-terrain-pixels");
@@ -343,9 +349,10 @@ test("the flying performance window is recognised by the name it is captured und
 // ---- creative flight ------------------------------------------------------------------------------
 test("flight is enabled only when the height holds after the double tap", async () => {
   let y = 70, flying = false, taps = 0, lifted = 0;
+  const sleeps = [];
   const player = {x: 0, z: 0};
   const result = await enableCreativeFlight({
-    sleep: async () => {},
+    sleep: async ms => { sleeps.push(ms); },
     tap: async () => { taps++; if (taps % 2 === 0 && taps >= 4) flying = true; },   // the first double tap is lost
     readPlayer: async () => { if (!flying) y -= 3; return {...player, y}; },
     lift: async () => { lifted++; y = 170; },
@@ -355,6 +362,7 @@ test("flight is enabled only when the height holds after the double tap", async 
   assert.equal(result.attempts[0].stable, false);
   assert.equal(result.attempts[1].stable, true);
   assert.equal(lifted, 2);
+  assert.equal(sleeps.includes(100), true, "flight double-tap starts promptly after teleport");
   assert.equal(result.attempts[1].airborne, true);
   const never = await enableCreativeFlight({sleep: async () => {}, attempts: 2, tap: async () => {}, lift: async () => {}, readPlayer: async () => ({x: 0, z: 0, y: (y -= 2)})});
   assert.equal(never.enabled, false);

@@ -29,9 +29,10 @@ const wasmFile = ["simd", "baseline"].map((v) => join(wasmDir, `gaius_worldgen_w
 assert.ok(wasmFile, `no worldgen wasm module in ${wasmDir}`);
 
 const context = vm.createContext({console, URLSearchParams, WebAssembly, BigInt, Map, Set, Promise, queueMicrotask,
-  setInterval, clearInterval, setTimeout, clearTimeout});
+  SharedArrayBuffer, setInterval, clearInterval, setTimeout, clearTimeout});
 context.globalThis = context;
 context.location = {search: ""};
+context.crossOriginIsolated = false;
 vm.runInContext(readFileSync(join(kernelsDir, "worldgen-job.js"), "utf8"), context, {filename: "worldgen-job.js"});
 context.__gaiusKernelSemantics = {schemaVersion: 1, profile: "fixture", kernels: {worldgen: {enabled: true}}};
 vm.runInContext(readFileSync(join(kernelsDir, "kernel-mirror.js"), "utf8"), context);
@@ -66,7 +67,7 @@ let mode = "ok";
 context.__gaiusKernelClient = {
   available: (kernel) => kernel === "worldgen",
   submit(kind, payload, opts) {
-    submitted.push({kind, opts});
+    submitted.push({kind, payload, opts});
     if (mode === "backpressure" || mode === "request-cap") {
       const error = new Error("kernel memory budget is full");
       error.code = mode;
@@ -134,18 +135,34 @@ for (const profile of [RENDERPEARL_PROFILE.id, CANONICAL_PROFILE.id]) {
   assert.equal(submitted[0].opts.kernel, "worldgen");
   assert.equal(submitted[0].opts.cx, 3);
   assert.equal(submitted[0].opts.cz, -2);
+  assert.equal(Object.prototype.toString.call(submitted[0].payload), "[object ArrayBuffer]",
+    "non-isolated pages use transferable ArrayBuffers");
 
   const biomes = await call((ok, err) => facade.submitBiomes(key, 3, -2, ok, err));
   assert.ok(!biomes.ok && biomes.message.startsWith("transient:worldgen-fallback:multi-noise"), biomes.message);
   assert.equal(facade.generatorUsable(key), true);
 
   // Server-side priority data (BrowserChunkTaskPriority): the job carries a distance hint.
-  context.__gaiusChunkPriorityStats = {playerChunk: "0,0", direction: "1,0"};
+  context.__gaiusChunkPriorityStats = {
+    playerChunk: "0,0", direction: "1,0", playerX: 8, playerZ: 8, yaw: 0,
+  };
   submitted.length = 0;
-  const hinted = await call((ok, err) => facade.submitBiomes(key, 4, 0, ok, err));
+  const hinted = await call((ok, err) => facade.submitBiomes(key, 5, 0, ok, err));
   assert.ok(!hinted.ok && hinted.message.startsWith("transient:worldgen-fallback:multi-noise"), hinted.message);
-  assert.ok(submitted[0].opts.distance < 4, "a chunk ahead of the player ranks closer than its distance");
+  assert.equal(submitted[0].opts.distance, 5, "worldgen jobs use geometric distance");
+  assert.equal(submitted[0].opts.visible, false, "a chunk outside the camera cone is lower priority");
+  submitted.length = 0;
+  await call((ok, err) => facade.submitTerrain(key, 0, 2, 1, new Int32Array(9), ok, err));
+  assert.equal(submitted[0].opts.visible, true, "a chunk in front of the player gets the visibility hint");
   delete context.__gaiusChunkPriorityStats;
+
+  context.crossOriginIsolated = true;
+  submitted.length = 0;
+  const shared = await call((ok, err) => facade.submitTerrain(key, 0, 0, 1, new Int32Array(9), ok, err));
+  assert.ok(shared.ok, shared.message);
+  assert.equal(Object.prototype.toString.call(submitted[0].payload), "[object SharedArrayBuffer]",
+    "cross-origin isolated pages share the encoded worldgen frame");
+  context.crossOriginIsolated = false;
 
   // Kept noise chunk + surface diff == the terrain job with surface rules.
   const keep = facade.FLAG_KEEP_NOISE;

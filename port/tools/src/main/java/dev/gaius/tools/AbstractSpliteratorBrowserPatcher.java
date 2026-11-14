@@ -97,6 +97,18 @@ public final class AbstractSpliteratorBrowserPatcher {
     }
 
     private static void patch(ClassNode node) {
+        for (var field : node.fields) {
+            if (field.name.equals("gaiusRemaining") || field.name.equals("gaiusCharacteristics")) {
+                throw new IllegalStateException("Partial spliterator transformation: " + node.name);
+            }
+        }
+        for (var method : node.methods) {
+            if (method.name.equals("trySplit") && method.desc.equals("()Ljava/util/Spliterator;")
+                    || method.name.equals("estimateSize") && method.desc.equals("()J")
+                    || method.name.equals("characteristics") && method.desc.equals("()I")) {
+                throw new IllegalStateException("Spliterator member already supplied: " + node.name + "." + method.name);
+            }
+        }
         String owner = node.name;
         node.superName = "java/lang/Object";
         node.signature = null;

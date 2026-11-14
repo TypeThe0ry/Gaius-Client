@@ -22,21 +22,30 @@
 //   {type: "init", module | bytes}                      single-kernel pool (kernel-pool.js)
 //   {type: "load", kernel, module | bytes, memory?}     multi-kernel runtime (kernel-runtime.js)
 //   {type: "unload", kernel}
-//   {type: "job", id, kernel?, kind, payload}           kernel defaults to the init module
+//   {type: "job", id, kernel?, kind, payload, tl?}      kernel defaults to the init module
 //   {type: "cancel", id}
 //   {type: "trim"}                                      call the trim exports of every instance
 // Messages out:
 //   {type: "ready", kinds}, {type: "init-error", message}
 //   {type: "loaded", kernel, kinds, memoryBytes}, {type: "load-error", kernel, message}
 //   {type: "unloaded", kernel}, {type: "trimmed", kernel, memoryBytes}
-//   {type: "result", id, result, execMs, kernel, memoryBytes}
-//   {type: "error", id, code, status?, message, execMs?, kernel}
+//   {type: "result", id, result, execMs, kernel, memoryBytes, tl?}
+//   {type: "error", id, code, status?, message, execMs?, kernel, tl?}
 //   {type: "cancelled", id}
+//
+// Job timeline (diagnostics, off unless the host asks): a job message with tl === 1 makes the
+// worker stamp its result/error with tl = [received, started, finished], wall-clock milliseconds
+// (performance.timeOrigin + performance.now()) so the host can line them up with its own
+// stamps. Jobs without tl produce exactly the messages they always did.
 (function (scope) {
   "use strict";
 
   const now = () => (scope.performance && scope.performance.now ? scope.performance.now() : Date.now());
   const LEGACY = "";
+  // Wall-clock stamp of this worker, only read for jobs that carry tl === 1.
+  const timeOrigin = scope.performance && typeof scope.performance.timeOrigin === "number"
+    ? scope.performance.timeOrigin : Date.now() - now();
+  const wall = () => timeOrigin + now();
   const queue = [];
   const kernels = new Map();  // kernel name -> {module, compiling, instance, instancing, memory}
   let draining = false;
@@ -49,8 +58,8 @@
   // trail of dead ArrayBuffers for the page's collector. New buffers are rounded up to 64 KiB so
   // later results fit; the result header names the payload length, so the decoder ignores the tail.
   const RECYCLE_KIND = "mesh_section";
-  const POOL_MAX_BUFFERS = 16;
-  const POOL_MAX_BYTES = 16 * 1024 * 1024;
+  const POOL_MAX_BUFFERS = 4;
+  const POOL_MAX_BYTES = 4 * 1024 * 1024;
   const pool = [];
   let poolBytes = 0;
 
@@ -227,7 +236,9 @@
     const exports = state.instance.exports;
     const entry = exports["run_" + job.kind];
     if (typeof entry !== "function") {
-      post({type: "error", id: job.id, code: "unknown-kind", message: `kernel module has no export run_${job.kind}`, kernel: name});
+      const failure = {type: "error", id: job.id, code: "unknown-kind", message: `kernel module has no export run_${job.kind}`, kernel: name};
+      if (job.tl === 1) failure.tl = [job.rcv, NaN, wall()];
+      post(failure);
       return;
     }
     const started = now();
@@ -257,19 +268,27 @@
       if (typeof exports.release === "function") exports.release(header);
       if (typeof exports.dealloc === "function") exports.dealloc(ptr, length);
       if (typeof exports.reset === "function") exports.reset();
-      const execMs = now() - started;
+      const finished = now();
+      const execMs = finished - started;
       const memoryBytes = memory.buffer.byteLength;
       if (status === 0) {
-        post({type: "result", id: job.id, result: bytes.buffer, execMs, kernel: name, memoryBytes}, [bytes.buffer]);
+        const done = {type: "result", id: job.id, result: bytes.buffer, execMs, kernel: name, memoryBytes};
+        if (job.tl === 1) done.tl = [job.rcv, timeOrigin + started, timeOrigin + finished];
+        post(done, [bytes.buffer]);
       } else {
         const message = decodeText(bytes) || `kernel ${job.kind} failed with status ${status}`;
-        post({type: "error", id: job.id, code: "kernel-error", status, message, execMs, kernel: name});
+        const failure = {type: "error", id: job.id, code: "kernel-error", status, message, execMs, kernel: name};
+        if (job.tl === 1) failure.tl = [job.rcv, timeOrigin + started, timeOrigin + finished];
+        post(failure);
       }
     } catch (error) {
       // A trap leaves the instance (allocator, statics) in an unknown state: drop it and
       // instantiate the same module again before the next job of this kernel.
       state.instance = null;
-      post({type: "error", id: job.id, code: "kernel-trap", message: describe(error), execMs: now() - started, kernel: name});
+      const finished = now();
+      const failure = {type: "error", id: job.id, code: "kernel-trap", message: describe(error), execMs: finished - started, kernel: name};
+      if (job.tl === 1) failure.tl = [job.rcv, timeOrigin + started, timeOrigin + finished];
+      post(failure);
     }
   }
 
@@ -298,14 +317,30 @@
     yieldTurn().then(drain);
   }
 
+  // A runtime slot may have two in-flight messages.  Message delivery is FIFO, but a
+  // lower-priority generation job can be sitting in front of a visible light job that arrived
+  // in the same turn.  Reorder only jobs that have not started; equal or legacy messages keep
+  // arrival order.  The running WebAssembly call remains synchronous and is never interrupted.
+  function nextQueuedJob() {
+    let best = 0;
+    let bestClass = Number.isInteger(queue[0]?.priorityClass) ? queue[0].priorityClass : 0;
+    for (let i = 1; i < queue.length; i++) {
+      const cls = Number.isInteger(queue[i]?.priorityClass) ? queue[i].priorityClass : 0;
+      if (cls < bestClass) { best = i; bestClass = cls; }
+    }
+    return {job: queue[best], index: best};
+  }
+
   async function drain() {
     try {
       while (queue.length > 0) {
-        const job = queue[0];
+        const selected = nextQueuedJob();
+        const job = selected.job;
         const name = job.kernel || LEGACY;
         const state = kernels.get(name);
         if (!state) {
-          queue.shift();
+          const index = queue.indexOf(job);
+          if (index >= 0) queue.splice(index, 1);
           post({type: "error", id: job.id, code: "kernel-not-loaded", message: `kernel ${name || "(init)"} is not loaded`, kernel: name});
           continue;
         }
@@ -325,8 +360,9 @@
           }
         }
         // A cancel or an unload may have arrived while the instance was being created.
-        if (queue[0] !== job) continue;
-        queue.shift();
+        const index = queue.indexOf(job);
+        if (index < 0) continue;
+        queue.splice(index, 1);
         runJob(job, state);
         if (queue.length > 0) await yieldTurn();
       }
@@ -354,6 +390,7 @@
       if (matches) failQueued(name, "kernel-unloaded", `kernel ${name} was unloaded`);
       post({type: "unloaded", kernel: name, generation});
     } else if (message.type === "job") {
+      if (message.tl === 1) message.rcv = wall();
       queue.push(message);
       scheduleDrain();
     } else if (message.type === "trim") {

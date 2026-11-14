@@ -34,7 +34,7 @@ import {homedir, tmpdir} from "node:os";
 import {delimiter, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {sourceFile} from "../tools/sourcesets/sourcesets.mjs";
-import {VERSION_PROFILES} from "./verification-profiles.mjs";
+import {RENDERPEARL_PROFILE, VERSION_PROFILES} from "./verification-profiles.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const args = process.argv.slice(2);
@@ -149,12 +149,20 @@ function semantic(profile) {
     join(sources, "dev/gaius/browser/BrowserGameRulesHandoff.java"),
     join(sources, "GameRulesHandoffCheck.java")]);
   const output = run("java", ["-Xmx3g", "-Xss16m", "-classpath", [classes, classpath].join(delimiter),
-    "GameRulesHandoffCheck"]);
+    "GameRulesHandoffCheck"], {cwd: directory});
   const facts = Object.fromEntries([...output.matchAll(/^CHECK (\w+)=(\d+)$/gm)]
     .map((match) => [match[1], Number(match[2])]));
   const total = /^CHECKS (\d+)$/m.exec(output);
   assert.ok(total && Number(total[1]) > 50, `${profile}: fixture did not finish its checks\n${output}`);
   assert.ok(facts.rulesCompared > 40, `${profile}: too few rules compared`);
+  assert.equal(facts.commandSettingsCompared, 4, `${profile}: command settings were not checked`);
+  permissionTransitions(profile);
+  if (profile === RENDERPEARL_PROFILE.id) {
+    const oracle = run("java", ["-Xmx3g", "-classpath", classpath,
+      join(repositoryRoot, "port/mc/fixtures/VanillaWorldCommandSaveCheck.java")], {cwd: directory});
+    assert.match(oracle, /VANILLA_WORLD_COMMAND_SAVE_CHECK PASS checks=9/);
+    console.log(oracle.split(/\r?\n/).filter(line => /^(VANILLA_COMMANDS|VANILLA_WORLD_COMMAND)/.test(line)).join("\n"));
+  }
   const holds = facts.levelSettingsHoldGameRules === 1;
   if (holds) {
     assert.equal(facts.levelDatCarriesRules, 1, `${profile}: LevelSettings holds the rules but level.dat lost them`);
@@ -164,7 +172,48 @@ function semantic(profile) {
     rulesCompared: facts.rulesCompared,
     encodedBytes: facts.encodedBytes,
     levelSettingsHoldGameRules: holds,
+    commandSettingsCompared: facts.commandSettingsCompared,
+    commandPermissionTransitions: 4,
   };
+}
+
+// Compile the real version-specific helper against an isolated PlayerList double.
+// This checks both the removed-setter compatibility flag and the vanilla setter
+// without starting a dedicated server. In particular true must not leak into a later world.
+function permissionTransitions(profile) {
+  const directory = join(scratch, `${profile}-permissions`);
+  const browser = join(directory, "dev/gaius/browser");
+  const players = join(directory, "net/minecraft/server/players");
+  mkdirSync(browser, {recursive: true});
+  mkdirSync(players, {recursive: true});
+  const helper = sourceFile(profile, "src", "dev/gaius/browser/BrowserPlayerListCompat.java",
+    {root: repositoryRoot});
+  assert.ok(helper, `${profile}: missing PlayerList compatibility helper`);
+  const compatFlag = helper.text.includes("boolean commandsAllowedForAllPlayers()");
+  writeFileSync(join(browser, "BrowserPlayerListCompat.java"), helper.text);
+  writeFileSync(join(players, "PlayerList.java"), `package net.minecraft.server.players;
+public final class PlayerList {
+  public boolean allowed;
+  public void setAllowCommandsForAllPlayers(boolean value) { allowed = value; }
+}`);
+  const read = compatFlag
+    ? "dev.gaius.browser.BrowserPlayerListCompat.commandsAllowedForAllPlayers()" : "players.allowed";
+  writeFileSync(join(directory, "PermissionTransitions.java"), `
+public final class PermissionTransitions {
+  public static void main(String[] args) {
+    var players = new net.minecraft.server.players.PlayerList();
+    for (boolean expected : new boolean[] {false, true, false, true}) {
+      dev.gaius.browser.BrowserPlayerListCompat.setAllowCommandsForAllPlayers(players, expected);
+      if (${read} != expected) throw new AssertionError("command permission leaked between worlds");
+    }
+    System.out.println("PERMISSION_TRANSITIONS PASS");
+  }
+}`);
+  run("javac", ["-J-Xmx1g", "-proc:none", "-d", directory,
+    join(players, "PlayerList.java"), join(browser, "BrowserPlayerListCompat.java"),
+    join(directory, "PermissionTransitions.java")]);
+  assert.match(run("java", ["-Xmx1g", "-classpath", directory, "PermissionTransitions"]),
+    /PERMISSION_TRANSITIONS PASS/);
 }
 
 function bytecode(profile) {
@@ -181,10 +230,20 @@ function bytecode(profile) {
   run("javac", ["-J-Xmx3g", "--release", "21", "-proc:none", "-classpath", asmCp,
     "-sourcepath", toolsSource, "-d", classes,
     join(toolsSource, "dev/gaius/tools/MinecraftClientPatcher.java")]);
-  // The real chain step: the patcher reads the vanilla jar and writes the rewritten classes.
-  const jar = join(workRoot, profile, "client-named.jar");
+  // Seed the real client helper exactly as the production and patchkit input preparation does.
+  // Keep the shared vanilla jar untouched and retain it as the hierarchy oracle.
+  const vanillaJar = join(workRoot, profile, "client-named.jar");
+  const jar = join(directory, "client-input.jar");
+  copyFileSync(vanillaJar, jar);
   if (!unpatchedControl) {
-    run("java", ["-Xmx3g", "-classpath", [classes, asmCp].join(delimiter),
+    const clientSources = join(directory, "client-source-classes");
+    mkdirSync(clientSources, {recursive: true});
+    run("javac", ["-J-Xmx512m", "--release", "21", "-proc:none", "-d", clientSources,
+      join(repositoryRoot, "port/src/main/java/dev/gaius/browser/BrowserClassInitialization.java")]);
+    run("jar", ["--update", "--file", jar, "-C", clientSources,
+      "dev/gaius/browser/BrowserClassInitialization.class"]);
+    run("java", ["-Xmx3g", "-Dgaius.patch.input=" + jar, "-Dgaius.patch.vanilla=" + vanillaJar,
+      "-classpath", [classes, asmCp].join(delimiter),
       "dev.gaius.tools.MinecraftClientPatcher", jar, patched, profile]);
   }
 
@@ -245,7 +304,28 @@ function bytecode(profile) {
     assert.equal(initialRules, -1,
       `${profile}: this profile's DedicatedServer takes no separate game rules`);
   }
-  return {vanillaOptionalGameRules, patchedWorkerOpen: openDescriptor, patchedServerFactory: factory.name};
+  // The browser must use the same UI state when constructing the saved level settings.
+  // Compare the actual patched bytecode, not the patcher's source text: a forced
+  // true after isAllowCommands(), or a constructor setter, must fail this stage.
+  if (profile === RENDERPEARL_PROFILE.id) {
+    const createScreen = "net.minecraft.client.gui.screens.worldselection.CreateWorldScreen";
+    const rawCreate = javapClass(createScreen, vanilla);
+    const patchedCreate = javapClass(createScreen, patchedPath);
+    const canonical = (body) => body.instructions.map(line => line.replace(/#\d+/g, "#"));
+    const rawSettings = methodBody(rawCreate, /\bcreateLevelSettings\(/);
+    const patchedSettings = methodBody(patchedCreate, /\bcreateLevelSettings\(/);
+    assert.ok(rawSettings.instructions.some(line => line.includes("WorldCreationUiState.isAllowCommands:()Z")),
+      "vanilla Create World must read Allow Commands from its UI state");
+    assert.deepEqual(canonical(patchedSettings), canonical(rawSettings),
+      "Create World must preserve vanilla allowCommands when constructing LevelSettings");
+    const constructors = methodBodies(patchedCreate, /\bCreateWorldScreen\(/);
+    assert.ok(constructors.length > 0, "Create World constructors were not inspected");
+    assert.ok(constructors.every(body => !body.instructions.some(line =>
+      line.includes("WorldCreationUiState.setAllowCommands:(Z)V"))),
+    "Create World constructors must not force Allow Commands");
+  }
+  return {vanillaOptionalGameRules, patchedWorkerOpen: openDescriptor, patchedServerFactory: factory.name,
+    vanillaCommandSettingsBytecode: profile === RENDERPEARL_PROFILE.id};
 }
 
 /** One method of javap -p -c output: signature line, instruction lines and mnemonics. */

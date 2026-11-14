@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -207,12 +208,9 @@ class PortableArtifactIdentityTest(unittest.TestCase):
             "self.onmessage = () => {};\n",
             encoding="utf-8",
         )
-        (dist / "relay-nodes.json").write_text(
-            json.dumps(
-                {"kind": "gaius-relay-registry", "protocolVersion": 1, "nodes": []}
-            ),
-            encoding="utf-8",
-        )
+        registry = (Path(__file__).resolve().parents[2] / "relay-nodes.json").read_bytes()
+        (root / "relay-nodes.json").write_bytes(registry)
+        (dist / "relay-nodes.json").write_bytes(registry)
         # A portable page embeds the notice and license texts of the project root.
         (root / "LICENSES").mkdir()
         (root / "NOTICE").write_text("Fixture notice\n", encoding="utf-8")
@@ -1173,7 +1171,91 @@ const sha = (bytes) => crypto.createHash("sha256").update(Buffer.from(bytes)).di
         (wasm_dist / "classes.wasm").write_bytes(self.WASM_CLIENT)
         for name, source in self.WASM_SCRIPTS.items():
             (wasm_dist / name).write_text(source, encoding="utf-8")
+        root = Path(directory) / "project"
+        pack = wasm_dist / "vanilla-assets.pack.gz"
+        pack.write_bytes((root / "port/web/dist/vanilla-assets.pack.gz").read_bytes())
+        PORTABLE.build_identity.write_sidecar(root, "vanilla-assets", pack)
         return wasm_dist
+
+    def test_frozen_js_portable_uses_the_current_wasm_sound_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, dist, output = self.make_fixture(directory, boot=True)
+            wasm_dist = self.make_wasm_dist(directory)
+            pack = wasm_dist / "vanilla-assets.pack.gz"
+            pack.write_bytes(compressed(b"current-ambient-sounds"))
+            PORTABLE.build_identity.write_sidecar(root, "vanilla-assets", pack)
+            with contextlib.redirect_stdout(io.StringIO()):
+                PORTABLE.build(dist, output, root=root, wasm_dist=wasm_dist, frozen_js=True)
+            decoded = PORTABLE.parse_portable_payload(output.read_text(encoding="utf-8"))
+            self.assertEqual(decoded["vanilla"], pack.read_bytes())
+            self.assertNotEqual(decoded["vanilla"], (dist / pack.name).read_bytes())
+            manifest = self.embedded_manifest(output)
+            self.assertEqual(manifest["vanillaAssetsPack"]["gzipSha256"],
+                             hashlib.sha256(pack.read_bytes()).hexdigest())
+            self.assertEqual(decoded["classes"], (dist / "classes.js.gz").read_bytes())
+
+    def test_frozen_js_portable_rejects_an_unverified_wasm_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, dist, output = self.make_fixture(directory, boot=True)
+            wasm_dist = self.make_wasm_dist(directory)
+            pack = wasm_dist / "vanilla-assets.pack.gz"
+            pack.write_bytes(compressed(b"changed-without-sidecar"))
+            with self.assertRaisesRegex(RuntimeError, "artifact"):
+                PORTABLE.build(dist, output, root=root, wasm_dist=wasm_dist, frozen_js=True)
+
+    def write_wasm_client_identity(self, root: Path, wasm_dist: Path) -> None:
+        PORTABLE.build_identity.write_sidecar(
+            root, "wasm-client", wasm_dist / "classes.wasm", wasm_build={
+                "target": "wasmgc", "role": "client", "release": True,
+                "optimization": "ADVANCED", "assertionsRemoved": True,
+                "telemetryStripped": True, "wasmOpt": {"applied": False},
+                "symbols": {},
+            },
+        )
+
+    def test_frozen_js_portable_binds_pack_to_selected_wasm_build(self) -> None:
+        for changed_input in ("source", "overlay"):
+            with self.subTest(changed_input=changed_input), tempfile.TemporaryDirectory() as directory:
+                root, dist, output = self.make_fixture(directory, boot=True)
+                wasm_dist = self.make_wasm_dist(directory)
+                self.write_wasm_client_identity(root, wasm_dist)
+                # Existing compiler POMs retain their real fixture profiles.
+                # Later staging source/overlay changes do not rewrite those inputs.
+                if changed_input == "source":
+                    (root / "port/src/main/java/dev/gaius/browser/Fixture.java").write_text(
+                        "final class Fixture { int changed; }\n", encoding="utf-8")
+                else:
+                    overlay = root / "port/work/overlays/teavm-core-0.15.0-gaius.jar"
+                    overlay.write_bytes(b"later-staging-overlay")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    PORTABLE.build(dist, output, root=root, wasm_dist=wasm_dist, frozen_js=True)
+                decoded = PORTABLE.parse_portable_payload(output.read_text(encoding="utf-8"))
+                self.assertEqual(decoded["vanilla"], (wasm_dist / "vanilla-assets.pack.gz").read_bytes())
+
+    def test_frozen_js_portable_rejects_pack_from_a_different_wasm_build(self) -> None:
+        for field in ("source", "overlay"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root, dist, output = self.make_fixture(directory, boot=True)
+                wasm_dist = self.make_wasm_dist(directory)
+                self.write_wasm_client_identity(root, wasm_dist)
+                sidecar = PORTABLE.build_identity.sidecar_path(wasm_dist / "vanilla-assets.pack.gz")
+                record = json.loads(sidecar.read_text(encoding="utf-8"))
+                record[field]["sha256"] = "0" * 64
+                record.pop("identitySha256")
+                record["identitySha256"] = PORTABLE.sha256_bytes(
+                    PORTABLE.build_identity.canonical_json(record).encode("ascii"))
+                sidecar.write_text(json.dumps(record), encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, field):
+                    PORTABLE.build(dist, output, root=root, wasm_dist=wasm_dist, frozen_js=True)
+
+    def test_frozen_js_portable_rejects_a_changed_selected_wasm_module(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, dist, output = self.make_fixture(directory, boot=True)
+            wasm_dist = self.make_wasm_dist(directory)
+            self.write_wasm_client_identity(root, wasm_dist)
+            (wasm_dist / "classes.wasm").write_bytes(self.WASM_CLIENT + b"changed")
+            with self.assertRaisesRegex(RuntimeError, "artifact"):
+                PORTABLE.build(dist, output, root=root, wasm_dist=wasm_dist, frozen_js=True)
 
     def test_wasm_client_is_embedded_beside_the_javascript_client(self) -> None:
         """--wasm-dist: one more payload, its runtime scripts as inert text, the manifest entry."""
@@ -1214,7 +1296,7 @@ const sha = (bytes) => crypto.createHash("sha256").update(Buffer.from(bytes)).di
             self.assertNotIn("wasmClient", self.embedded_manifest(plain_output))
 
     def test_portable_bootstrap_starts_the_selected_client(self) -> None:
-        """Runs the portable bootstrap and verifies that WasmGC is its only client runtime."""
+        """Exercise embedded Wasm startup, usable JS fallback and acknowledged late release."""
         node = shutil.which("node")
         if node is None:
             self.skipTest("node is not installed")
@@ -1222,12 +1304,18 @@ const sha = (bytes) => crypto.createHash("sha256").update(Buffer.from(bytes)).di
 const fs = require("fs");
 const crypto = require("crypto");
 const vm = require("vm");
+const assert = require("assert/strict");
 const html = fs.readFileSync(process.argv[2], "utf8");
-const selected = process.argv[3];
+function page() {
 const parts = new Map();
+let classesReads = 0, networkCalls = 0;
 for (const match of html.matchAll(/<script type="text\/x-gaius-b64" data-gaius-asset="([A-Za-z0-9_-]+)" data-part="(\d+)">([^<]*)<\/script>/g)) {
   if (!parts.has(match[1])) parts.set(match[1], []);
-  parts.get(match[1]).push({textContent: match[3], parentNode: {removeChild() {}}});
+  let text = match[3];
+  parts.get(match[1]).push({
+    get textContent() { if (match[1] === "classes") classesReads++; return text; },
+    set textContent(value) { text = value; }, parentNode: {removeChild() {}},
+  });
 }
 const inert = new Map();
 for (const match of html.matchAll(/<script type="text\/plain" data-gaius-wasm-script="([^"]+)">\n([^<]*)  <\/script>/g)) {
@@ -1236,6 +1324,7 @@ for (const match of html.matchAll(/<script type="text\/plain" data-gaius-wasm-sc
 const start = html.indexOf('<script data-gaius-portable="1">') + '<script data-gaius-portable="1">'.length;
 const bootstrap = html.slice(start, html.indexOf("</script>", start));
 const blobs = new Map();
+const revoked = [];
 const window = {
   document: {
     querySelectorAll: (selector) => parts.get(/data-gaius-asset="([^"]+)"/.exec(selector)[1]) || [],
@@ -1243,28 +1332,97 @@ const window = {
   },
   Blob, Response, DecompressionStream, Uint8Array, ArrayBuffer, Promise, Map, Object, Array, JSON, String, Math, Error, Date,
   setTimeout, setInterval: () => 0,
-  URL: {createObjectURL: (blob) => { const id = "blob:" + blobs.size; blobs.set(id, blob); return id; }},
+  URL: {
+    createObjectURL: (blob) => { const id = "blob:" + blobs.size; blobs.set(id, blob); return id; },
+    revokeObjectURL: (url) => { revoked.push(url); },
+  },
+  fetch: () => { networkCalls++; throw Error("portable fixture must not fetch siblings or dependencies"); },
   atob: (text) => Buffer.from(text, "base64").toString("binary"), crypto: crypto.webcrypto,
-  // The WasmGC release runtime is fixed before the portable bootstrap runs.
+  // Boot selects the runtime after the portable bootstrap has published these payloads.
   __gaiusPortableRuntimes: {wasm: {client: "classes.wasm"}},
-  __gaiusRuntimeSelection: {selected},
 };
 window.window = window;
 const context = vm.createContext(window);
 vm.runInContext(bootstrap, context);
+return {context, parts, blobs, revoked, reads: () => classesReads, network: () => networkCalls};
+}
 const sha = (bytes) => crypto.createHash("sha256").update(Buffer.from(bytes)).digest("hex");
+const untouched = (parts, name) => parts.get(name).every((element) => element.textContent !== "");
 (async () => {
+  const wasmPage = page();
+  const {context, parts, blobs} = wasmPage;
   await context.__gaiusPortableAssetsReady;
-  const report = {selected};
+  const report = {};
   report.client = await blobs.get(context.__gaiusClassesUrl).text();
-  report.jsClientLoader = typeof context.__gaiusPortableLoadJsClient;
-  report.wasmClientRemoved = (parts.get("wasmclient") || []).every((element) => element.textContent === "");
-  report.classesUntouched = (parts.get("classes") || []).every((element) => element.textContent !== "");
-  if (selected === "wasm") {
-    report.module = sha(await context.__gaiusWasmSource);
-    report.runtime = await blobs.get(context.__gaiusWasmRuntimeUrl).text();
-    report.jspi = await blobs.get(context.__gaiusJspiUrl).text();
+  report.module = sha(await context.__gaiusWasmSource);
+  report.runtime = await blobs.get(context.__gaiusWasmRuntimeUrl).text();
+  report.jspi = await blobs.get(context.__gaiusJspiUrl).text();
+  assert.equal(wasmPage.reads(), 0, "Wasm bootstrap must not read compressed JS classes");
+  assert.equal(typeof context.__gaiusPortableLoadJsClient, "function");
+  assert.ok(untouched(parts, "classes") && untouched(parts, "server"));
+  const assetsBefore = Object.keys(context.__gaiusPortablePayload.assets).sort();
+  const selectionCases = [
+    [undefined, undefined],
+    [{selected: "js", mainStarted: true}, {serverRuntime: "wasm"}],
+    [{selected: "wasm", mainStarted: false}, {serverRuntime: "wasm"}],
+    [{selected: "wasm", mainStarted: true}, undefined],
+    [{selected: "wasm", mainStarted: true}, {serverRuntime: "js"}],
+  ];
+  for (const [selection, boot] of selectionCases) {
+    context.__gaiusRuntimeSelection = selection;
+    context.__gaiusBoot = boot;
+    assert.equal(context.__gaiusPortableReleaseJsFallback(), false, "premature release must fail");
+    assert.equal(typeof context.__gaiusPortableLoadJsClient, "function");
+    assert.deepEqual(Object.keys(context.__gaiusPortablePayload.assets).sort(), assetsBefore);
+    assert.ok(untouched(parts, "classes") && untouched(parts, "server"));
   }
+  context.__gaiusRuntimeSelection = {selected: "wasm", mainStarted: true};
+  context.__gaiusBoot = {serverRuntime: "wasm"};
+  assert.equal(context.__gaiusPortableReleaseJsFallback(), true);
+  assert.equal(typeof context.__gaiusPortableLoadJsClient, "undefined");
+  assert.equal(context.__gaiusPortableJsFallbackReleased, true);
+  assert.equal(context.__gaiusSingleplayerServerGzipDataPromise, null);
+  assert.ok(["classes", "server"].every(name => parts.get(name).every(e => e.textContent === "")));
+  assert.deepEqual(Object.keys(context.__gaiusPortablePayload.assets).sort(),
+    assetsBefore.filter(name => !["classes", "server"].includes(name)), "only unused JS fallback assets released");
+
+  const jsPage = page();
+  const js = jsPage.context;
+  await js.__gaiusPortableAssetsReady;
+  js.__gaiusRuntimeSelection = {selected: "js", mainStarted: true};
+  js.__gaiusBoot = {serverRuntime: "js"};
+  const readsBefore = jsPage.reads();
+  const loads = [1, 2, 3].map(() => js.__gaiusPortableLoadJsClient());
+  assert.ok(loads.every(promise => promise === loads[0]), "concurrent callers share one decode promise");
+  const urls = await Promise.all(loads);
+  assert.ok(urls.every(url => url === urls[0]));
+  assert.equal(jsPage.reads() - readsBefore, jsPage.parts.get("classes").length, "decode reads each part exactly once");
+  report.jsClient = sha(await jsPage.blobs.get(urls[0]).arrayBuffer());
+  const readsAfter = jsPage.reads();
+  assert.equal(js.__gaiusPortableLoadJsClient(), loads[0], "completed calls reuse the same promise");
+  assert.equal(jsPage.reads(), readsAfter);
+  const server = js.__gaiusSingleplayerServerGzipDataPromise;
+  assert.equal(js.__gaiusSingleplayerServerGzipDataPromise, server);
+  report.jsServerGzip = sha(await server);
+  assert.equal(js.__gaiusPortableReleaseJsFallback(), false, "JS runtime must retain fallback cache");
+  assert.equal(typeof js.__gaiusPortableLoadJsClient, "function");
+  assert.ok(js.__gaiusPortablePayload.assets.classes && js.__gaiusPortablePayload.assets.server);
+  assert.deepEqual(jsPage.revoked, []);
+
+  const latePage = page();
+  const late = latePage.context;
+  await late.__gaiusPortableAssetsReady;
+  late.__gaiusRuntimeSelection = {selected: "wasm", mainStarted: true};
+  late.__gaiusBoot = {serverRuntime: "wasm"};
+  const inFlight = late.__gaiusPortableLoadJsClient();
+  assert.equal(late.__gaiusPortableReleaseJsFallback(), false, "pending decode prevents release even after both acknowledgments");
+  const discardedUrl = await inFlight;
+  assert.equal(late.__gaiusPortableReleaseJsFallback(), true);
+  await Promise.resolve();
+  assert.deepEqual(latePage.revoked, [discardedUrl], "late release revokes the cached fallback Blob");
+  assert.equal(late.__gaiusPortableLoadJsClient, undefined);
+  for (const current of [wasmPage, jsPage, latePage]) assert.equal(current.network(), 0);
+  report.contractsPassed = true;
   process.stdout.write(JSON.stringify(report));
 })().catch((error) => { console.error(error); process.exit(1); });
 """
@@ -1275,19 +1433,18 @@ const sha = (bytes) => crypto.createHash("sha256").update(Buffer.from(bytes)).di
                 PORTABLE.build(dist, output, root=root, wasm_dist=wasm_dist)
             script_path = Path(directory) / "bootstrap-runtime-check.js"
             script_path.write_text(script, encoding="utf-8")
-            reports = {}
-            result = subprocess.run([node, str(script_path), str(output), "wasm"], text=True,
+            result = subprocess.run([node, str(script_path), str(output)], text=True,
                                         capture_output=True, timeout=60, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
-            reports["wasm"] = json.loads(result.stdout)
+            wasm = json.loads(result.stdout)
             sha = lambda data: hashlib.sha256(data).hexdigest()  # noqa: E731
-            wasm = reports["wasm"]
             self.assertEqual(wasm["module"], sha(self.WASM_CLIENT), "TeaVM gets the inflated module bytes")
             self.assertEqual(wasm["client"], self.WASM_SCRIPTS["gaius-wasm-boot.js"])
             self.assertEqual(wasm["runtime"], self.WASM_SCRIPTS["gaius-wasm-gc-runtime.js"])
             self.assertEqual(wasm["jspi"], self.WASM_SCRIPTS["gaius-jspi.js"])
-            self.assertEqual(wasm["jsClientLoader"], "undefined")
-            self.assertTrue(wasm["classesUntouched"], "the internal JavaScript payload stays unread by the WasmGC bootstrap")
+            self.assertEqual(wasm["jsClient"], sha((dist / "classes.js").read_bytes()))
+            self.assertEqual(wasm["jsServerGzip"], sha((dist / "singleplayer-server.js.gz").read_bytes()))
+            self.assertTrue(wasm["contractsPassed"])
 
     def test_shader_toolchain_client_embeds_loader_and_modules(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1357,6 +1514,122 @@ const sha = (bytes) => crypto.createHash("sha256").update(Buffer.from(bytes)).di
                     toolchain["modules"][name]["gzipSha256"],
                     hashlib.sha256(compressed_bytes).hexdigest(),
                 )
+
+    def test_wasm_compiler_is_embedded_without_a_javascript_loader_tag(self) -> None:
+        for profile in (CANONICAL_ID, LEGACY_ID, RENDERPEARL_ID):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
+                root, dist, output = self.make_fixture(directory, version=profile, boot=True)
+                wasm_dist = self.make_wasm_dist(directory)
+                (wasm_dist / "index.html").write_text("<!doctype html>\n")
+                token = self.add_shader_toolchain(root, wasm_dist)
+                self.assertNotIn("data-gaius-shader-toolchain", (dist / "index.html").read_text())
+                with contextlib.redirect_stdout(io.StringIO()):
+                    PORTABLE.build(dist, output, root=root, wasm_dist=wasm_dist)
+                html = output.read_text()
+                manifest = self.embedded_manifest(output)
+                self.assertEqual(manifest["shaderToolchain"]["version"], token)
+                self.assertEqual(html.count("data-gaius-shader-toolchain"), 1)
+                loader = html.index('<script data-gaius-shader-toolchain')
+                self.assertLess(html.index('<script data-gaius-portable="1">'), loader)
+                self.assertLess(loader, html.index("const clientRuntime = selectRuntime"))
+                assets = self.embedded_assets(output)
+                for key, name, _mime in PORTABLE.SHADER_TOOLCHAIN_MODULES:
+                    self.assertEqual(gzip.decompress(assets[PORTABLE.shader_toolchain_asset(key)]),
+                                     (wasm_dist / name).read_bytes())
+
+    def test_wasm_compiler_dependency_rejects_missing_or_stale_inputs(self) -> None:
+        for failure in ("loader", "module", "identity"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root, dist, output = self.make_fixture(directory, boot=True)
+                wasm_dist = self.make_wasm_dist(directory)
+                # The Wasm client's JSBody dependency remains even if its loader was lost.
+                (wasm_dist / "classes.wasm").write_bytes(self.WASM_CLIENT + PORTABLE.SHADER_TOOLCHAIN_CLASSES_MARKER)
+                (wasm_dist / "index.html").write_text("<!doctype html>\n")
+                self.add_shader_toolchain(root, wasm_dist)
+                if failure == "loader":
+                    (wasm_dist / PORTABLE.SHADER_TOOLCHAIN_LOADER).unlink()
+                elif failure == "module":
+                    (wasm_dist / "gaius-shaderc.wasm").unlink()
+                else:
+                    manifest = wasm_dist / PORTABLE.SHADER_TOOLCHAIN_MANIFEST
+                    manifest.write_text(manifest.read_text() + "\n")
+                message = {"loader": "gaius-shader-toolchain.js", "module": "gaius-shaderc.wasm",
+                           "identity": "artifact hash does not match"}[failure]
+                with self.assertRaisesRegex((FileNotFoundError, RuntimeError), message):
+                    PORTABLE.build(dist, output, root=root, wasm_dist=wasm_dist)
+                self.assertFalse(output.exists())
+
+    def produce_wasm_toolchain_identity(self, root: Path, wasm_dist: Path, role="client") -> None:
+        # Execute the exact normal build's final publication block and real identity CLI;
+        # do not create the component receipt through the fixture's sidecar helper.
+        script = (SCRIPT.parent / "build-wasmgc.sh").read_text()
+        start = script.index("# Record the shader toolchain staged by this client build")
+        block = script[start:script.index('echo "BUILD_EXIT=0"', start)]
+        scripts = root / "port/scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        for name in ("run-python.sh", "gaius_build_identity.py"):
+            shutil.copy2(SCRIPT.parent / name, scripts / name)
+        result = subprocess.run(["bash", "-c", 'set -euo pipefail\nroot=$1; dist=$2; role=$3\n' + block,
+                                 "wasm-component-fixture", str(root), str(wasm_dist), role],
+                                text=True, capture_output=True, env={**os.environ, "PYTHON": sys.executable})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def make_unidentified_wasm_toolchain(self, directory: str, profile: str):
+        root, dist, _output = self.make_fixture(directory, version=profile, boot=True)
+        wasm_dist = self.make_wasm_dist(directory)
+        (wasm_dist / "index.html").write_text("<!doctype html>\n")
+        self.add_shader_toolchain(root, wasm_dist)
+        for name in ("gaius-shaderc.wasm", "gaius-spvc.wasm"):
+            (wasm_dist / name).write_bytes(b"\0asm\1\0\0\0")
+        self.add_shader_toolchain_records(root, wasm_dist)
+        manifest = wasm_dist / PORTABLE.SHADER_TOOLCHAIN_MANIFEST
+        PORTABLE.build_identity.sidecar_path(manifest).unlink()
+        return root, dist, wasm_dist, manifest
+
+    def read_wasm_toolchain(self, root: Path, dist: Path, wasm_dist: Path):
+        return PORTABLE.load_shader_toolchain(
+            dist, (dist / "index.html").read_text(), PORTABLE.load_version_profile(root)[0],
+            dist / "classes.js", root, PORTABLE.build_identity.current_build_identity(root),
+            wasm_dist=wasm_dist)
+
+    def test_normal_wasm_build_publishes_its_compiler_component_identity(self) -> None:
+        for profile in (CANONICAL_ID, LEGACY_ID, RENDERPEARL_ID):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
+                root, dist, wasm_dist, manifest = self.make_unidentified_wasm_toolchain(directory, profile)
+                # This is the real old producer's missing output, not a pre-seeded positive fixture.
+                with self.assertRaisesRegex(RuntimeError, "sidecar is missing or invalid"):
+                    self.read_wasm_toolchain(root, dist, wasm_dist)
+                self.produce_wasm_toolchain_identity(root, wasm_dist, role="singleplayer-worker")
+                self.assertFalse(PORTABLE.build_identity.sidecar_path(manifest).exists())
+                self.produce_wasm_toolchain_identity(root, wasm_dist)
+                toolchain = self.read_wasm_toolchain(root, dist, wasm_dist)
+                receipt = json.loads(PORTABLE.build_identity.sidecar_path(manifest).read_text())
+                self.assertEqual(receipt["role"], "shader-toolchain")
+                self.assertEqual(receipt["profile"]["id"], profile)
+                self.assertEqual(toolchain["manifest"]["build"]["identitySha256"], receipt["identitySha256"])
+                for key, name, _mime in PORTABLE.SHADER_TOOLCHAIN_MODULES:
+                    self.assertEqual(gzip.decompress(toolchain["payload"][key]), (wasm_dist / name).read_bytes())
+
+    def test_normal_wasm_compiler_receipt_rejects_missing_tampered_and_stale_inputs(self) -> None:
+        for failure in ("missing", "module", "manifest", "source"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root, dist, wasm_dist, manifest = self.make_unidentified_wasm_toolchain(directory, CANONICAL_ID)
+                self.produce_wasm_toolchain_identity(root, wasm_dist)
+                self.assertIsNotNone(self.read_wasm_toolchain(root, dist, wasm_dist))
+                if failure == "missing":
+                    PORTABLE.build_identity.sidecar_path(manifest).unlink()
+                elif failure == "module":
+                    module = wasm_dist / "gaius-shaderc.wasm"
+                    module.write_bytes(module.read_bytes() + b"tampered")
+                elif failure == "manifest":
+                    manifest.write_text(manifest.read_text() + "\n")
+                else:
+                    boot = root / PORTABLE.BOOT_SOURCE
+                    boot.write_text(boot.read_text() + "\n// changed source\n")
+                message = {"missing": "sidecar is missing or invalid", "module": "does not match",
+                           "manifest": "artifact hash does not match", "source": "source"}[failure]
+                with self.assertRaisesRegex(RuntimeError, message):
+                    self.read_wasm_toolchain(root, dist, wasm_dist)
 
     def test_shader_toolchain_client_without_loader_tag_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1443,5 +1716,39 @@ const sha = (bytes) => crypto.createHash("sha256").update(Buffer.from(bytes)).di
         index.write_text(text.replace("<!doctype html>\n", "<!doctype html>\n" + tag, 1), encoding="utf-8")
 
 
+def emitted_shader_fixture() -> str:
+    """A real portable page with controlled factories and valid tiny compiler Wasm modules."""
+    fixture = PortableArtifactIdentityTest()
+    with hermetic_gaius_environment(), tempfile.TemporaryDirectory() as directory:
+        root, dist, output = fixture.make_fixture(directory, boot=True)
+        wasm_dist = fixture.make_wasm_dist(directory)
+        (wasm_dist / "index.html").write_text("<!doctype html>\n")
+        fixture.add_shader_toolchain(root, wasm_dist)
+        (wasm_dist / PORTABLE.SHADER_TOOLCHAIN_LOADER).write_bytes(
+            (SCRIPT.parent.parent / "wasm/shader-toolchain/loader/gaius-shader-toolchain.js").read_bytes())
+        for key, name, _mime in PORTABLE.SHADER_TOOLCHAIN_MODULES:
+            if key.endswith("Wasm"):
+                (wasm_dist / name).write_bytes(b"\0asm\1\0\0\0")
+            else:
+                factory = "GaiusShadercModule" if key == "shadercJs" else "GaiusSpvcModule"
+                (wasm_dist / name).write_text(f"""
+globalThis.{factory} = function(options) {{
+  return globalThis.__testCompilerReady.then(() => new Promise(resolve => {{
+    options.instantiateWasm({{}}, () => resolve({{
+      HEAPU8: new Uint8Array(65536), _malloc() {{return 16;}},
+      addFunction() {{return 1;}}, _shaderc_compiler_initialize() {{return 1;}}
+    }}));
+  }}));
+}};
+""")
+        fixture.add_shader_toolchain_records(root, wasm_dist)
+        with contextlib.redirect_stdout(io.StringIO()):
+            PORTABLE.build(dist, output, root=root, wasm_dist=wasm_dist)
+        return output.read_text()
+
+
 if __name__ == "__main__":
-    unittest.main()
+    if sys.argv[1:] == ["--emitted-shader-fixture"]:
+        print(emitted_shader_fixture())
+    else:
+        unittest.main()

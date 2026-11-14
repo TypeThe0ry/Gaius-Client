@@ -1017,12 +1017,14 @@ public final class BrowserGlfw {
             const pushEvent = event => {
               if (!window.__gaiusGlfwEvents) window.__gaiusGlfwEvents = [];
               window.__gaiusGlfwEvents.push(event);
+              window.__gaiusGlfwPendingMouseMove = -1;
             };
             const pushMouseMove = event => {
               const events = window.__gaiusGlfwEvents || (window.__gaiusGlfwEvents = []);
               const head = window.__gaiusGlfwEventHead | 0;
               const pending = window.__gaiusGlfwPendingMouseMove | 0;
-              if (pending >= head && pending < events.length && events[pending] && events[pending][0] === 4) {
+              // Only adjacent motion may merge; input and lock transitions are barriers.
+              if (pending >= head && pending === events.length - 1 && events[pending] && events[pending][0] === 4) {
                 events[pending] = event;
                 return;
               }
@@ -1158,6 +1160,7 @@ public final class BrowserGlfw {
             };
             if (typeof document.addEventListener === 'function') {
               document.addEventListener('pointerlockchange', () => {
+                window.__gaiusGlfwPendingMouseMove = -1;
                 const c = canvas();
                 const locked = !!c && document.pointerLockElement === c;
                 const lost = escape.lockHeld && !locked;
@@ -1292,17 +1295,27 @@ public final class BrowserGlfw {
             addEventListener('mousedown', e => {
               const c = canvas();
               if (c) c.focus();
+              const previousX = window.__gaiusCursorX || 0;
+              const previousY = window.__gaiusCursorY || 0;
               const p = updateCursorFromMouseEvent(e);
               const button = glfwMouseButton(e.button);
-              pushMouseMove([4,0,0,0,0,p[0],p[1]]);
+              // A stationary button event must not consume MouseHandler's first real move.
+              if (p[0] !== previousX || p[1] !== previousY) {
+                pushMouseMove([4,0,0,0,0,p[0],p[1]]);
+              }
               window.__gaiusGlfwButtons[button]=true;
               pushEvent([3,button,1,mods(e),0,p[0],p[1]]);
               if (e.target === c) requestGameFullscreen();
             });
             addEventListener('mouseup', e => {
+              const previousX = window.__gaiusCursorX || 0;
+              const previousY = window.__gaiusCursorY || 0;
               const p = updateCursorFromMouseEvent(e);
               const button = glfwMouseButton(e.button);
-              pushMouseMove([4,0,0,0,0,p[0],p[1]]);
+              // A stationary button event must not consume MouseHandler's first real move.
+              if (p[0] !== previousX || p[1] !== previousY) {
+                pushMouseMove([4,0,0,0,0,p[0],p[1]]);
+              }
               window.__gaiusGlfwButtons[button]=false;
               pushEvent([3,button,0,mods(e),0,p[0],p[1]]);
             });
@@ -1732,6 +1745,9 @@ public final class BrowserGlfw {
     private static native int inputMode(int mode);
 
     @JSBody(params = {"mode", "value"}, script = """
+            if (mode===0x00033001 && window.__gaiusGlfwInputModes[mode]!==value) {
+              window.__gaiusGlfwPendingMouseMove = -1;
+            }
             window.__gaiusGlfwInputModes[mode]=value;
             if (mode===0x00033001) {
               const canvasElement=document.getElementById('mc-canvas');

@@ -438,18 +438,12 @@ def run(overlay_dir: Path, overlay_262_dir: Path | None = None,
           and render.count(f"{quality_frame}.worldFrameDone:") == 1
           and "shouldSkipWorldRenderForScreen" not in render)
 
-    # Graphics preset startup replay (Minecraft262BrowserPatcher
-    # .patchGraphicsPresetStartupReplay, shared with 26.2).
     minecraft_init = method_section(
         classes.text("net/minecraft/client/Minecraft"),
         "net.minecraft.client.Minecraft(net.minecraft.client.main.GameConfig)")
-    startup = method_section(classes.text("net/minecraft/client/Options"),
-                             " gaius$applyStartupGraphicsPreset(")
-    check("Minecraft.<init> replays the graphics preset only through the startup gate",
-          minecraft_init.count("Options.gaius$applyStartupGraphicsPreset:") == 1
-          and "Options.applyGraphicsPreset:" not in minecraft_init
-          and "BrowserQualityOptions.replayGraphicsPresetAtStartup:()Z" in startup
-          and "Method applyGraphicsPreset:" in startup)
+    check("Minecraft.<init> keeps vanilla graphics preset startup application",
+          minecraft_init.count("Options.applyGraphicsPreset:") == 1
+          and "Options.gaius$applyStartupGraphicsPreset:" not in minecraft_init)
 
     # Wireframe stays available (vanilla iconst_1): glPolygonMode is a browser no-op and the two
     # optional wireframe pipelines are only used behind the dev-only F3+W toggle; reporting the

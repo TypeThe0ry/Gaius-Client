@@ -2,7 +2,6 @@ package dev.gaius.tools.patches.audio;
 
 import static dev.gaius.tools.patches.support.RenderpearlPatchSupport.find;
 import static dev.gaius.tools.patches.support.RenderpearlPatchSupport.read;
-import static dev.gaius.tools.patches.support.RenderpearlPatchSupport.write;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -18,13 +17,14 @@ import org.objectweb.asm.tree.MethodNode;
  * renderpearl render seam ({@code patches/audio}), work package P8.
  *
  * <ul>
- *   <li>{@link #patchClientLevelBreakingSoundVolume}: the browser mining hit sound volume
- *       ({@code (volume + 1) / 8} to {@code / 4}). 26.3 moved it from
+ *   <li>{@link #patchClientLevelBreakingSoundVolume}: the browser mining hit sound volume shape.
+ *       26.3 moved it from
  *       {@code MultiPlayerGameMode.continueDestroyBlock} (where MinecraftClientPatcher changes it
  *       on 26.2, and registers the patch as dropped on 26.3) to
  *       {@code ClientLevel.playBreakingSound}, which plays both the first hit and the server's
  *       periodic level event 2020. This reads the ClientLevel that MinecraftClientPatcher's
- *       patchClientLevelBrowserBlockBreakEffects already wrote, so the two patches compose.</li>
+ *       patchClientLevelBrowserBlockBreakEffects already wrote, so the two patches compose while
+ *       retaining vanilla volume and pitch.</li>
  * </ul>
  *
  * <p>{@code Minecraft263BrowserPatcher} registers it under its historical id
@@ -38,13 +38,13 @@ public final class RenderpearlAudioPatches {
     private RenderpearlAudioPatches() {
     }
 
-    /** {@code ClientLevel.playBreakingSound}: {@code ldc 8.0f; fdiv} after getHitSound becomes 4.0f. */
+    /** Validates {@code ClientLevel.playBreakingSound}'s vanilla {@code ldc 8.0f; fdiv} shape. */
     public static void patchClientLevelBreakingSoundVolume(String jar, Path root) throws IOException {
         ClassNode node = read(jar, root, CLIENT_LEVEL);
         MethodNode method = find(node, "playBreakingSound",
                 "(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;)V");
         boolean hitSound = false;
-        int divisors = 0;
+        int vanillaVolumeDivisors = 0;
         for (AbstractInsnNode instruction = method.instructions.getFirst();
                 instruction != null;
                 instruction = instruction.getNext()) {
@@ -60,16 +60,15 @@ public final class RenderpearlAudioPatches {
                     && Float.valueOf(8.0f).equals(constant.cst)
                     && nextOpcode(instruction) != null
                     && nextOpcode(instruction).getOpcode() == Opcodes.FDIV) {
-                constant.cst = Float.valueOf(4.0f);
-                divisors++;
+                vanillaVolumeDivisors++;
             }
         }
-        if (!hitSound || divisors != 1) {
+        if (!hitSound || vanillaVolumeDivisors != 1) {
             throw new IllegalStateException("ClientLevel.playBreakingSound hit sound volume"
-                    + " patch point was not found (getHitSound=" + hitSound + ", 8.0f divisors="
-                    + divisors + ")");
+                    + " shape was not found (getHitSound=" + hitSound + ", 8.0f divisors="
+                    + vanillaVolumeDivisors + ")");
         }
-        write(node, root);
+        // The historical registration now validates shape without rewriting vanilla bytes.
     }
 
     private static AbstractInsnNode nextOpcode(AbstractInsnNode instruction) {

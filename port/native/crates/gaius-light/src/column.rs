@@ -159,6 +159,10 @@ pub struct LightColumn {
     ring_sources: [[i32; 16]; 4],
     increase: [Vec<u64>; 16],
     fifo_increase: Option<Vec<u64>>,
+    /// Opt-in class-pair occlusion cache. The direct face matrix remains the
+    /// default until the browser A/B proves the fast path on the shipped
+    /// profiles.
+    fast_occlusion: bool,
     decrease: Vec<u64>,
     outgoing: Vec<Outgoing>,
     palette_scratch: Vec<Props>,
@@ -262,6 +266,7 @@ impl LightColumn {
             ring_sources: [[i32::MIN; 16]; 4],
             increase: Default::default(),
             fifo_increase: None,
+            fast_occlusion: false,
             decrease: Vec::new(),
             outgoing: Vec::new(),
             palette_scratch: Vec::new(),
@@ -318,6 +323,13 @@ impl LightColumn {
     #[doc(hidden)]
     pub fn set_vanilla_increase_order(&mut self, fifo: bool) {
         self.fifo_increase = if fifo { Some(Vec::new()) } else { None };
+    }
+
+    /// Selects the precomputed class-pair occlusion cache for propagation.
+    /// Kept as an explicit job switch so parity can compare the exact same
+    /// payload through both implementations.
+    pub fn set_fast_occlusion(&mut self, enabled: bool) {
+        self.fast_occlusion = enabled;
     }
 
     pub fn spec(&self) -> &ColumnSpec {
@@ -1075,7 +1087,12 @@ impl LightColumn {
             if new_level <= to_level as i32 {
                 continue;
             }
-            if table.occludes(from_class, shape_class(to_props), d) {
+            let occluded = if self.fast_occlusion {
+                table.occludes_fast(from_class, shape_class(to_props), d)
+            } else {
+                table.occludes(from_class, shape_class(to_props), d)
+            };
+            if occluded {
                 continue;
             }
             let new_level = new_level as u32;
