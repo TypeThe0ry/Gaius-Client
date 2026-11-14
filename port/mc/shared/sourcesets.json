@@ -23,7 +23,10 @@
     },
     {
       "selects": {"patchSet": ["legacy-12111"]},
-      "paths": ["dev/gaius/browser/BrowserRenderCollections.java"]
+      "paths": [
+        "dev/gaius/browser/BrowserRenderCollections.java",
+        "dev/gaius/browser/BrowserSectionVisibilityFastPath.java"
+      ]
     }
   ],
   "profileFields": [

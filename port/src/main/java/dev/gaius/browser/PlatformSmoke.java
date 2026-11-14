@@ -8,6 +8,7 @@ import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.opengl.GlBackend;
 import com.mojang.blaze3d.shaders.GpuDebugOptions;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.serialization.JsonOps;
 import com.google.gson.JsonParser;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -40,6 +41,9 @@ import javax.sound.sampled.AudioFormat;
 import net.minecraft.client.sounds.JOrbisAudioStream;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.Identifier;
+import net.minecraft.server.packs.OverlayMetadataSection;
+import net.minecraft.server.packs.PackType;
+import net.minecraft.server.packs.metadata.pack.PackFormat;
 import net.minecraft.util.Mth;
 import net.minecraft.util.SimpleBitStorage;
 import net.minecraft.util.LinearCongruentialGenerator;
@@ -387,23 +391,47 @@ public final class PlatformSmoke {
 
     private static void testBrowserAtlasOverlayCompatibility() throws Exception {
         Path path = Path.of("/gaius-smoke/atlas-overlay-pack.zip");
-        String metadata = """
-                {"pack":{"pack_format":88,"description":"Gaius smoke"},"overlays":{"entries":[
-                  {"directory":"safe_future","formats":[88,88]},
-                  {"directory":"unsafe_future","formats":[88,88]}
-                ]}}
+        String overlayMetadata = """
+                {"entries":[
+                  {"directory":"selected","formats":[84,99]},
+                  {"directory":"future","formats":[102,110]},
+                  {"directory":"older","formats":[75,88]}
+                ]}
                 """;
+        OverlayMetadataSection metadata = OverlayMetadataSection.codecForPackType(PackType.CLIENT_RESOURCES)
+                .parse(JsonOps.INSTANCE, JsonParser.parseString(overlayMetadata)).getOrThrow();
+        List<String> vanillaSelected = metadata.overlaysForVersion(PackFormat.of(97, 1));
+        if (!vanillaSelected.equals(List.of("selected"))) {
+            throw new AssertionError("Vanilla resource overlay version selection changed: " + vanillaSelected);
+        }
         try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(path))) {
-            writeZipEntry(output, "pack.mcmeta", metadata.getBytes(StandardCharsets.UTF_8));
-            writeZipEntry(output, "safe_future/assets/minecraft/atlases/items.json",
-                    "{\"sources\":[]}".getBytes(StandardCharsets.UTF_8));
-            writeZipEntry(output, "unsafe_future/assets/minecraft/shaders/core/entity.fsh",
-                    "#version 150".getBytes(StandardCharsets.UTF_8));
+            writeZipEntry(output, "pack.mcmeta", ("{\"pack\":{\"pack_format\":97,\"description\":\"smoke\"},"
+                    + "\"overlays\":" + overlayMetadata + "}").getBytes(StandardCharsets.UTF_8));
+            writeZipEntry(output, "assets/minecraft/blockstates/smoke.json", new byte[] {1});
+            writeZipEntry(output, "assets/minecraft/models/block/smoke.json", new byte[] {2});
+            writeZipEntry(output, "selected/assets/minecraft/blockstates/smoke.json", new byte[] {3});
+            writeZipEntry(output, "selected/assets/minecraft/models/block/smoke.json", new byte[] {4});
+            writeZipEntry(output, "future/assets/minecraft/blockstates/smoke.json", new byte[] {5});
+            writeZipEntry(output, "future/assets/minecraft/models/block/smoke.json", new byte[] {6});
         }
         List<String> selected = BrowserPackOverlayCompat.mergeSafeAtlasOverlays(
-                path.toFile(), List.of("already_selected"));
-        if (!selected.equals(List.of("already_selected", "safe_future"))) {
-            throw new AssertionError("Browser atlas overlay selection was unsafe: " + selected);
+                path.toFile(), vanillaSelected);
+        if (!selected.equals(vanillaSelected)) {
+            throw new AssertionError("Browser overlay selection changed: " + selected);
+        }
+        try (ZipFile archive = new ZipFile(path.toFile())) {
+            for (String name : List.of("assets/minecraft/blockstates/smoke.json",
+                    "assets/minecraft/models/block/smoke.json",
+                    "selected/assets/minecraft/blockstates/smoke.json",
+                    "selected/assets/minecraft/models/block/smoke.json")) {
+                if (archive.getEntry(name) == null) throw new AssertionError("Synthetic pack missing " + name);
+            }
+            for (String name : List.of("future/assets/minecraft/blockstates/smoke.json",
+                    "future/assets/minecraft/models/block/smoke.json")) {
+                if (archive.getEntry(name) == null || selected.contains("future")) {
+                    throw new AssertionError("Synthetic future overlay was applied: " + name);
+                }
+            }
         }
     }
 
@@ -1250,6 +1278,33 @@ public final class PlatformSmoke {
                 throw new AssertionError(
                         "Browser biome nearest corner changed at " + index + ": "
                                 + actual + " != " + expected);
+            }
+        }
+        // One seed, neighbouring and extreme positions, twice over: the WebAssembly GC build
+        // answers the second pass from its corner cache and must give the same corners.
+        long seed = 0x5DEECE66DL ^ state;
+        int[] anchors = {Integer.MIN_VALUE, -(1 << 28), -5, -1, 0, 3, 1 << 28, Integer.MAX_VALUE - 5};
+        for (int pass = 0; pass < 2; pass++) {
+            for (int anchor : anchors) {
+                for (int dx = 0; dx < 6; dx++) {
+                    for (int dy = 0; dy < 6; dy++) {
+                        for (int dz = 0; dz < 6; dz++) {
+                            int shiftedX = anchor + dx;
+                            int shiftedY = anchor / 2 + dy;
+                            int shiftedZ = -anchor + dz;
+                            int expected = referenceNearestBiomeCorner(
+                                    seed, shiftedX + 2, shiftedY + 2, shiftedZ + 2);
+                            int actual = BrowserBiomeManager.nearestCorner(
+                                    seed, shiftedX, shiftedY, shiftedZ);
+                            if (actual != expected) {
+                                throw new AssertionError(
+                                        "Browser biome nearest corner changed at "
+                                                + shiftedX + "," + shiftedY + "," + shiftedZ
+                                                + " pass " + pass + ": " + actual + " != " + expected);
+                            }
+                        }
+                    }
+                }
             }
         }
     }

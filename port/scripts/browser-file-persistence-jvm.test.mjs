@@ -42,6 +42,8 @@ const extracted = [
   "private static String normalize(String path) {",
   "private static String parent(String path) {",
   "private static String name(String path) {",
+  "private static void writeVirtualFile(String path, byte[] bytes) throws IOException {",
+  "private static void ensureParentDirectories(VirtualFileSystem fileSystem, String path) {",
 ].map(method).join("\n\n");
 
 const fixture = `
@@ -53,33 +55,54 @@ public final class BrowserFilePersistenceJvmTest {
   static final Map<String,byte[]> files = new LinkedHashMap<>();
   static final Set<String> LAZY_CHUNK_FILE_PLACEHOLDERS = new HashSet<>();
   static final List<String> calls = new ArrayList<>();
-  static boolean quota, patch; static int screenshot; static String activeWorld;
+  static boolean quota, patch, closeFails, writeFails; static int screenshot, virtualWriteSequence; static String activeWorld;
+  static final class VirtualFileAccessor {
+    final VirtualFile file; VirtualFileAccessor(VirtualFile file){this.file=file;}
+    void resize(int size) throws IOException { file.bytes=Arrays.copyOf(file.bytes,size); }
+    void write(byte[] value,int offset,int length) throws IOException {
+      if(writeFails) throw new IOException("injected write failure");
+      int start=file.bytes.length; file.bytes=Arrays.copyOf(file.bytes,start+length);
+      System.arraycopy(value,offset,file.bytes,start,length);
+    }
+    void flush(){}
+    void close() throws IOException { if(closeFails) throw new IOException("injected close failure"); }
+  }
   static final class VirtualFile {
-    final String name; final boolean directory; VirtualFile parent;
+    String name; final boolean directory; final boolean present; VirtualFile parent; byte[] bytes=new byte[0];
     final LinkedHashMap<String,VirtualFile> children = new LinkedHashMap<>();
-    VirtualFile(String name, boolean directory){this.name=name;this.directory=directory;}
-    boolean isDirectory(){return directory;} boolean isFile(){return !directory;}
+    VirtualFile(String name, boolean directory){this(name,directory,true);}
+    VirtualFile(String name, boolean directory, boolean present){this.name=name;this.directory=directory;this.present=present;}
+    boolean isDirectory(){return present && directory;} boolean isFile(){return present && !directory;}
+    boolean exists(){return present;}
     String[] listFiles(){return directory?children.keySet().toArray(String[]::new):null;}
     VirtualFile getChildFile(String name){return children.get(name);}
+    boolean createFile(String child){if(!directory||children.containsKey(child))return false; VirtualFile f=new VirtualFile(child,false);f.parent=this;children.put(child,f);return true;}
+    boolean createDirectory(String child){if(!directory||children.containsKey(child))return false; VirtualFile f=new VirtualFile(child,true);f.parent=this;children.put(child,f);return true;}
+    VirtualFileAccessor createAccessor(boolean read,boolean write,boolean append){return isFile()?new VirtualFileAccessor(this):null;}
+    boolean adopt(VirtualFile child,String target){if(!directory)return false;VirtualFile previous=children.put(target,child);if(previous!=null)previous.parent=null;child.name=target;child.parent=this;return true;}
     boolean delete(){
       if(parent==null || (directory && !children.isEmpty())) return false;
       parent.children.remove(name); parent=null; return true;
     }
   }
-  static final class VirtualFileSystemProvider {
+  static final class VirtualFileSystemProvider implements VirtualFileSystem {
     static final VirtualFile ROOT = new VirtualFile("", true);
+    static boolean missingViews;
     static VirtualFileSystemProvider getInstance(){return Holder.INSTANCE;}
     static final class Holder { static final VirtualFileSystemProvider INSTANCE = new VirtualFileSystemProvider(); }
-    VirtualFile getFile(String path){
+    public VirtualFile getFile(String path){
       String normalized=path.replace('\\\\','/');
       if(normalized.equals("/")) return ROOT;
       VirtualFile current=ROOT;
       for(String part:normalized.split("/")) if(!part.isEmpty()){
-        current=current.children.get(part); if(current==null)return null;
+        current=current.children.get(part); if(current==null){
+          return missingViews ? new VirtualFile(part,false,false) : null;
+        }
       }
       return current;
     }
   }
+  interface VirtualFileSystem { VirtualFile getFile(String path); }
   static VirtualFile addVirtual(String path, boolean directory){
     String[] parts=path.split("/"); VirtualFile current=VirtualFileSystemProvider.ROOT;
     for(int i=1;i<parts.length;i++) if(!parts[i].isEmpty()){
@@ -123,6 +146,7 @@ public final class BrowserFilePersistenceJvmTest {
     expect(delete("/saves/old/level.dat"),"world delete is accepted");
     eq(calls,List.of("delete:gaius.test:/saves/old/level.dat"),"delete ordering");
     expect(!shouldRestoreAtStartup("/gaius/screenshots/a.png"),"screenshots are never restored");
+    expect(!shouldRestoreAtStartup("/gaius/storage/atomic-temp/1/level.dat"),"atomic temp records are never restored");
     expect(shouldRestoreAtStartup("/gaius/options.txt"),"options are restored");
     expect(shouldRestoreAtStartup("/gaius/saves/W/level.dat"),"world summary is restored");
     expect(!shouldRestoreAtStartup("/gaius/saves/W/region/r.0.0.mca"),"regions are on demand");
@@ -141,6 +165,40 @@ public final class BrowserFilePersistenceJvmTest {
     expect(VirtualFileSystemProvider.getInstance().getFile("/gaius/saves/W/region") == null, "VFS empty region directory removed");
     expect(VirtualFileSystemProvider.getInstance().getFile("/gaius/saves/W/data") == null, "VFS empty data directory removed");
     expect(VirtualFileSystemProvider.getInstance().getFile("/gaius/saves/W/session.lock") != null, "VFS session lock preserved");
+
+    clearVirtual();
+    VirtualFileSystemProvider.missingViews=true;
+    writeVirtualFile("/gaius/options.txt", new byte[]{8, 9});
+    VirtualFile firstRun=VirtualFileSystemProvider.getInstance().getFile("/gaius/options.txt");
+    expect(firstRun != null && firstRun.isFile() && firstRun.exists(),
+      "missing VFS view blocked first-run file creation");
+    VirtualFileSystemProvider.missingViews=false;
+
+    clearVirtual();
+    String replacePath="/gaius/saves/W/level.dat";
+    VirtualFile target=addVirtual(replacePath,false); target.bytes=new byte[]{10,20,30};
+    writeFails=true;
+    try { writeVirtualFile(replacePath,new byte[]{1,2}); throw new AssertionError("write failure not injected"); }
+    catch(IOException expected){}
+    writeFails=false;
+    expect(Arrays.equals(target.bytes,new byte[]{10,20,30}),"failed VFS replacement changed old bytes");
+    VirtualFile parent=VirtualFileSystemProvider.getInstance().getFile("/gaius/saves/W");
+    eq(Arrays.asList(parent.listFiles()),List.of("level.dat"),"failed VFS replacement leaked sibling temp");
+
+    closeFails=true;
+    try { writeVirtualFile(replacePath,new byte[]{4,5}); throw new AssertionError("close failure not injected"); }
+    catch(IOException expected){}
+    closeFails=false;
+    expect(Arrays.equals(target.bytes,new byte[]{10,20,30}),"close failure changed old bytes");
+    eq(Arrays.asList(parent.listFiles()),List.of("level.dat"),"close failure leaked sibling temp");
+
+    VirtualFile directory=addVirtual("/gaius/saves/W/options.txt",true);
+    VirtualFile child=directory;
+    child.createFile("keep");
+    try { writeVirtualFile("/gaius/saves/W/options.txt",new byte[]{7}); throw new AssertionError("directory replacement accepted"); }
+    catch(IOException expected){}
+    expect(VirtualFileSystemProvider.getInstance().getFile("/gaius/saves/W/options.txt") == directory,"directory target was replaced");
+    expect(directory.getChildFile("keep") != null,"directory target child was removed");
   }
 }
 `;

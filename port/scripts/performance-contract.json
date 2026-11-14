@@ -298,7 +298,7 @@
     "maxFps": 260,
     "maxFpsLabel": "Unlimited",
     "unlimitedSentinel": 260,
-    "graphicsPreset": "fancy",
+    "graphicsPreset": "custom",
     "autoDpr": false,
     "uncappedEvidence": {
       "requiredSwapInterval": 0,

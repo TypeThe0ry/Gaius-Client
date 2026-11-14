@@ -19,16 +19,28 @@ import {CANONICAL_PROFILE, RENDERPEARL_PROFILE} from "./verification-profiles.mj
 import assert from "node:assert/strict";
 import {readFile, readdir} from "node:fs/promises";
 import vm from "node:vm";
+import {execFile} from "node:child_process";
+import {promisify} from "node:util";
+import {webcrypto} from "node:crypto";
+import {fileURLToPath} from "node:url";
 
 const source = await readFile(new URL("../web/boot/gaius-boot.js", import.meta.url), "utf8");
+const runFile = promisify(execFile);
+const {stdout: readyGate} = await runFile(process.env.PYTHON || "python3", [
+  fileURLToPath(new URL("./test-shader-toolchain-injection.py", import.meta.url)), "--ready-gate",
+], {encoding: "utf8", env: {...process.env, PYTHONDONTWRITEBYTECODE: "1"}});
 const GLUE = "runtime/webgpu/gpu-glue.js";
 const JOB = "runtime/webgpu/shaderxlat-job.js";
 const POST = "runtime/webgpu/quality-post.js";
+const PACK_MODULES = ["runtime/webgpu/shader-pack-store.js", "runtime/webgpu/shader-pack-compat.js",
+  "runtime/webgpu/shader-pack.js"];
+const GPU_MODULES = [GLUE, JOB, POST, ...PACK_MODULES];
+const PORTABLE_GPU_EXTRAS = Object.fromEntries([POST, ...PACK_MODULES].map(name => [name, "/* fixture module */"]));
 const TRANSLATOR = "runtime/webgpu/gaius-shaderxlat.wasm";
 
 // A WebGPU glue double: init answers as told (one promise for every call, like the glue) and
 // records what the boot asked for.
-function fakeGlue({ready = true, hang = false, failure = "navigator.gpu is not available", adapter = null} = {}) {
+function fakeGlue({ready = true, hang = false, failure = "navigator.gpu is not available", adapter = null, cacheReady = null} = {}) {
   const calls = {init: [], abandon: [], install: [], taint: 0};
   const glue = {
     status: 0, failure: "", requested: false, translateError: "",
@@ -54,6 +66,7 @@ function fakeGlue({ready = true, hang = false, failure = "navigator.gpu is not a
     },
     installTranslator(module, jobSource) {
       calls.install.push({module, jobSource});
+      if (cacheReady) this.translationCacheReady = cacheReady;
       return module && module.kind === "translator";
     },
     taintCanvas() {
@@ -136,7 +149,7 @@ function createPage({search = "", site = null, portable = false, protocol = "htt
     context.GaiusShaderXlatJob = {instantiateSync() { return {}; }};
     for (const node of appended) {
       const name = node.attributes["data-gaius-boot-module"];
-      if ((name === GLUE || name === JOB || name === POST) && node.onload) node.onload();
+      if (GPU_MODULES.includes(name) && node.onload) node.onload();
     }
   };
   return {window: context, appended, fetched, canvas, loadWebGpu};
@@ -164,7 +177,7 @@ check("the default renders with WebGL 2 and loads nothing of WebGPU", async () =
 check("?gpu=webgpu waits for the device and installs the translator (dev)", async () => {
   const {glue, calls} = fakeGlue();
   const page = createPage({search: "?gpu=webgpu", glue});
-  assert.deepEqual(modules(page).filter((name) => name.startsWith("runtime/webgpu/")), [GLUE, JOB, POST]);
+  assert.deepEqual(modules(page).filter((name) => name.startsWith("runtime/webgpu/")), GPU_MODULES);
   assert.deepEqual(page.fetched, ["https://example.invalid/Gaius/26.3/classes.wasm",
     "https://example.invalid/Gaius/26.3/" + TRANSLATOR],
     "translator compilation must start while the document is parsing");
@@ -193,6 +206,19 @@ check("?gpu=webgpu waits for the device and installs the translator (dev)", asyn
   assert.ok(page.window.__gaiusBoot.events.some((e) => e.event === "webgpu-ready"));
 });
 
+check("a WGSL translation cache that never answers holds the boot for its head start only", async () => {
+  const {glue, calls} = fakeGlue({cacheReady: new Promise(() => {})});
+  const page = createPage({search: "?gpu=webgpu", glue});
+  const started = Date.now();
+  page.loadWebGpu();
+  await page.window.__gaiusBoot.beforeMain();
+  const waited = Date.now() - started;
+  // The test page caps its timers at 15 ms; the real head start is 200 ms.
+  assert.ok(waited >= 10 && waited < 500, "the head start ends the wait, took " + waited);
+  assert.equal(calls.abandon.length, 0);
+  assert.equal(page.window.__gaiusGpuSelection.selected, "webgpu");
+});
+
 check("no WebGPU device: the reason is kept and the game starts on WebGL 2", async () => {
   const {glue, calls} = fakeGlue({ready: false});
   const page = createPage({search: "?gpu=webgpu", glue});
@@ -212,9 +238,9 @@ check("an init past its budget is abandoned", async () => {
   const page = createPage({search: "?gpu=webgpu", glue});
   page.loadWebGpu();
   await page.window.__gaiusBoot.beforeMain();
-  assert.deepEqual(calls.abandon, ["init timed out after 5000 ms"]);
+  assert.deepEqual(calls.abandon, ["init timed out after 15000 ms"]);
   assert.equal(page.window.__gaiusGpuSelection.selected, "webgl2");
-  assert.equal(page.window.__gaiusGpuSelection.reason, "init timed out after 5000 ms");
+  assert.equal(page.window.__gaiusGpuSelection.reason, "init timed out after 15000 ms");
 });
 
 check("a missing translator abandons WebGPU", async () => {
@@ -280,6 +306,7 @@ check("site: the hashed translator, or its gzip copy when the host does not comp
       "gaius-wasm-gc-runtime.js": "gaius-wasm-gc-runtime.aaaaaaaaaaaaaaae.js",
       "gaius-jspi.js": "gaius-jspi.aaaaaaaaaaaaaaaf.js",
       [GLUE]: "runtime/webgpu/gpu-glue.1111111111111111.js",
+      ...Object.fromEntries([POST, ...PACK_MODULES].map(name => [name, name.replace(/\.js$/, ".0123456789abcdef.js")])),
       [JOB]: "runtime/webgpu/shaderxlat-job.2222222222222222.js",
       [TRANSLATOR]: "runtime/webgpu/gaius-shaderxlat.3333333333333333.wasm",
       [TRANSLATOR + ".gz"]: "runtime/webgpu/gaius-shaderxlat.wasm.4444444444444444.gz",
@@ -290,7 +317,7 @@ check("site: the hashed translator, or its gzip copy when the host does not comp
   assert.ok(page.appended.some((node) => node.src === site.assets[GLUE]));
   page.loadWebGpu();
   await page.window.__gaiusBoot.beforeMain();
-  assert.deepEqual(page.fetched, ["https://example.invalid/Gaius/" + RENDERPEARL_PROFILE.id + "/" + site.assets["classes.wasm"],
+  assert.deepEqual(page.fetched, ["https://example.invalid/Gaius/" + RENDERPEARL_PROFILE.id + "/" + site.assets["classes.wasm"] + "?gaiusWasmHttp=1",
     "https://example.invalid/Gaius/" + RENDERPEARL_PROFILE.id + "/" + site.assets[TRANSLATOR]]);
   assert.equal(plain.calls.install[0].jobSource.jobUrl, "https://example.invalid/Gaius/" + RENDERPEARL_PROFILE.id + "/" + site.assets[JOB]);
 
@@ -299,7 +326,7 @@ check("site: the hashed translator, or its gzip copy when the host does not comp
     globals: {localStorage: {getItem: (key) => (key === "gaius.site.gzip.v1" ? "1" : null), setItem() {}}}});
   gzipPage.loadWebGpu();
   await gzipPage.window.__gaiusBoot.beforeMain();
-  assert.deepEqual(gzipPage.fetched, ["https://example.invalid/Gaius/" + RENDERPEARL_PROFILE.id + "/" + site.assets["classes.wasm"],
+  assert.deepEqual(gzipPage.fetched, ["https://example.invalid/Gaius/" + RENDERPEARL_PROFILE.id + "/" + site.assets["classes.wasm"] + "?gaiusWasmHttp=1",
     "https://example.invalid/Gaius/" + RENDERPEARL_PROFILE.id + "/" + site.assets[TRANSLATOR + ".gz"]]);
   assert.equal(gzipPage.window.__gaiusGpuSelection.selected, "webgpu");
 });
@@ -308,7 +335,7 @@ check("portable: inline scripts and the embedded translator", async () => {
   const {glue, calls} = fakeGlue();
   let loads = 0;
   const page = createPage({search: "?gpu=webgpu", portable: true, glue,
-    inline: {[GLUE]: "/* glue */", [JOB]: "/* job codec */"},
+    inline: {...PORTABLE_GPU_EXTRAS, [GLUE]: "/* glue */", [JOB]: "/* job codec */"},
     globals: {__gaiusPortableWebGpu: {translator: {load: () => { loads++; return new Uint8Array([0, 97, 115, 109]); }}}}});
   assert.ok(!modules(page).includes(GLUE), "inline scripts are not fetched");
   page.loadWebGpu();
@@ -326,7 +353,7 @@ check("portable: a translator announced after boot parsed is not cached as unava
   const {glue, calls} = fakeGlue();
   let loads = 0;
   const page = createPage({search: "?gpu=webgpu", portable: true, glue,
-    inline: {[GLUE]: "/* glue */", [JOB]: "/* job codec */"}});
+    inline: {...PORTABLE_GPU_EXTRAS, [GLUE]: "/* glue */", [JOB]: "/* job codec */"}});
   page.window.__gaiusPortableWebGpu = {translator: {load: () => { loads++; return new Uint8Array([0, 97, 115, 109]); }}};
   page.loadWebGpu();
   await page.window.__gaiusBoot.beforeMain();
@@ -370,12 +397,75 @@ check("a WasmGC GLSL front-end page loads the shader toolchain for WebGL2 and We
   assert.ok(page.window.__gaiusBoot.events.some((e) => e.event === "webgpu-shader-toolchain" && e.detail === "loaded"));
 });
 
-check("a shader toolchain that cannot load abandons WebGPU", async () => {
+check("a frozen JavaScript fallback waits for its deferred WebGL2 shader compiler", async () => {
+  const globals = {...toolchainConfig,
+    __gaiusWebGpuShaderToolchain: {...toolchainConfig.__gaiusWebGpuShaderToolchain, requiredForJs: true},
+    __gaiusRuntimes: {wasm: {client: "classes.wasm"}, js: {client: "classes.js"}},
+    WebAssembly: {validate: () => false},
+  };
+  const page = createPage({search: "?gpu=webgl2", globals});
+  assert.equal(page.window.__gaiusRuntimeSelection.selected, "js");
+  assert.equal(toolchainTags(page).length, 1);
+  let settled = false;
+  const before = page.window.__gaiusBoot.beforeMain().then(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(settled, false, "a delayed loader cannot start main early");
+  let resolveCompiler;
+  loadToolchain(page, new Promise(resolve => { resolveCompiler = resolve; }));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(settled, false, "script load is not compiler readiness");
+  resolveCompiler({shadercBegin() {}});
+  await before;
+  assert.equal(settled, true);
+  assert.equal(toolchainTags(page).length, 1, "one owner loads the compiler");
+
+  const broken = createPage({search: "?gpu=webgl2", globals});
+  const failed = broken.window.__gaiusBoot.beforeMain();
+  toolchainTags(broken)[0].onerror();
+  await assert.rejects(failed, /could not load/);
+
+  const plain = createPage({search: "?gpu=webgl2", globals: {...globals,
+    __gaiusWebGpuShaderToolchain: toolchainConfig.__gaiusWebGpuShaderToolchain}});
+  assert.equal(plain.window.__gaiusRuntimeSelection.selected, "js");
+  assert.equal(toolchainTags(plain).length, 0, "an undeclared JS dependency adds no compiler");
+  await plain.window.__gaiusBoot.beforeMain();
+});
+
+check("mandatory shader loading survives configured-device failure through the generated main gate", async () => {
+  for (const runtime of ["wasm", "js"]) {
+    const {glue} = fakeGlue({ready: false, failure: "configured device loss"});
+    const globals = {...toolchainConfig,
+      __gaiusWebGpuShaderToolchain: {...toolchainConfig.__gaiusWebGpuShaderToolchain, requiredForJs: true},
+      __gaiusRuntimes: {wasm: {client: "classes.wasm"}, js: {client: "classes.js"}},
+      ...(runtime === "js" ? {WebAssembly: {validate: () => false}} : {}),
+    };
+    const page = createPage({search: "?gpu=webgpu&gpuInject=after-configure", glue, globals});
+    assert.equal(page.window.__gaiusRuntimeSelection.selected, runtime);
+    assert.equal(toolchainTags(page).length, 1, "mandatory dependencies load independently of GPU injection");
+    page.loadWebGpu();
+    let mainCalls = 0;
+    Object.assign(page.window, {main: () => { mainCalls++; }, bootTimings: {},
+      bootProgressValue: 0, setBootProgress() {}, __gaiusDefaultArgs: []});
+    const start = vm.runInContext(`(async () => {${readyGate}})()`, page.window);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(mainCalls, 0, "the generated gate waits for a delayed loader");
+    let ready;
+    loadToolchain(page, new Promise(resolve => { ready = resolve; }));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(mainCalls, 0, "the generated gate waits for compiler readiness");
+    ready({shadercBegin() {}});
+    await start;
+    assert.equal(mainCalls, 1);
+    assert.equal(page.window.__gaiusGpuSelection.selected, "webgl2");
+  }
+});
+
+check("a mandatory shader failure stops main after WebGPU is abandoned", async () => {
   const missing = fakeGlue();
   const page = createPage({search: "?gpu=webgpu", glue: missing.glue, globals: toolchainConfig});
   page.loadWebGpu();
   toolchainTags(page)[0].onerror();
-  await page.window.__gaiusBoot.beforeMain();
+  await assert.rejects(page.window.__gaiusBoot.beforeMain(), /could not load/);
   assert.equal(missing.calls.abandon.length, 1);
   assert.match(missing.calls.abandon[0], /^shader toolchain: could not load gaius-shader-toolchain\.js/);
   assert.equal(page.window.__gaiusGpuSelection.selected, "webgl2");
@@ -384,27 +474,135 @@ check("a shader toolchain that cannot load abandons WebGPU", async () => {
   const brokenPage = createPage({search: "?gpu=webgpu", glue: broken.glue, globals: toolchainConfig});
   brokenPage.loadWebGpu();
   loadToolchain(brokenPage, Promise.reject(new Error("The Gaius shader compiler could not be loaded: trap")));
-  await brokenPage.window.__gaiusBoot.beforeMain();
+  await assert.rejects(brokenPage.window.__gaiusBoot.beforeMain(), /could not be loaded: trap/);
   assert.deepEqual(broken.calls.abandon, ["shader toolchain: The Gaius shader compiler could not be loaded: trap"]);
 
   const portable = fakeGlue();
   const portablePage = createPage({search: "?gpu=webgpu", portable: true, glue: portable.glue,
-    inline: {[GLUE]: "/* glue */", [JOB]: "/* job codec */"},
+    inline: {...PORTABLE_GPU_EXTRAS, [GLUE]: "/* glue */", [JOB]: "/* job codec */"},
     globals: {...toolchainConfig, __gaiusPortableWebGpu: {translator: {load: () => new Uint8Array([0, 97, 115, 109])}}}});
   portablePage.loadWebGpu();
-  await portablePage.window.__gaiusBoot.beforeMain();
+  await assert.rejects(portablePage.window.__gaiusBoot.beforeMain(), /carries no shader toolchain/);
   assert.deepEqual(portable.calls.abandon, ["shader toolchain: this page form carries no shader toolchain"]);
 });
 
 check("a page that loads the toolchain itself gets no second loader", async () => {
   const {glue, calls} = fakeGlue();
+  let ready;
   const page = createPage({search: "?gpu=webgpu", glue,
-    globals: {...toolchainConfig, __gaiusShaderToolchainReady: new Promise(() => {})}});
+    globals: {...toolchainConfig, __gaiusShaderToolchainReady: new Promise(resolve => { ready = resolve; })}});
   assert.equal(toolchainTags(page).length, 0);
   page.loadWebGpu();
-  await page.window.__gaiusBoot.beforeMain();
+  let settled = false;
+  const before = page.window.__gaiusBoot.beforeMain().then(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(settled, false, "an existing promise must actually resolve before main");
+  ready({shadercBegin() {}});
+  await before;
   assert.equal(calls.abandon.length, 0);
   assert.equal(page.window.__gaiusGpuSelection.selected, "webgpu");
+});
+
+// Execute the production portable bootstrap and its emitted compiler loader.
+// Only the Emscripten factories are controlled; compilation and instantiation
+// use real, valid tiny WebAssembly modules and every URL resolves from a Blob.
+let emittedShaderHtml;
+async function portableCompiler() {
+  emittedShaderHtml ??= (await runFile(process.env.PYTHON || "python3", [
+    fileURLToPath(new URL("./test-portable-artifact-identity.py", import.meta.url)), "--emitted-shader-fixture",
+  ], {encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
+    env: {...process.env, PYTHONDONTWRITEBYTECODE: "1"}})).stdout;
+  const scripts = [...emittedShaderHtml.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+  const payloads = new Map(), inert = new Map(), blobs = new Map(), requests = [];
+  for (const [, attrs, textContent] of scripts) {
+    const asset = /data-gaius-asset="([^"]+)"/.exec(attrs);
+    const runtime = /data-gaius-wasm-script="([^"]+)"/.exec(attrs);
+    if (asset) {
+      if (!payloads.has(asset[1])) payloads.set(asset[1], []);
+      payloads.get(asset[1]).push({textContent, parentNode: {removeChild() {}}});
+    }
+    if (runtime) inert.set(runtime[1], {textContent});
+  }
+  let resolveCompiler, rejectCompiler;
+  const compilerReady = new Promise((resolve, reject) => { resolveCompiler = resolve; rejectCompiler = reject; });
+  compilerReady.catch(() => {});
+  class BlobURL extends URL {
+    static createObjectURL(blob) { const url = "blob:fixture/" + blobs.size; blobs.set(url, blob); return url; }
+  }
+  const window = {
+    Blob, Response, DecompressionStream, WebAssembly, Uint8Array, ArrayBuffer, TextEncoder, TextDecoder,
+    URL: BlobURL, crypto: webcrypto, atob, performance, console,
+    setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; },
+    clearTimeout, setInterval: () => 0, clearInterval() {},
+    location: {href: "file:///portable.html"},
+    __gaiusPortableRuntimes: {wasm: {client: "classes.wasm"}}, __testCompilerReady: compilerReady,
+    fetch: async url => { requests.push(url); assert.ok(blobs.has(url), "compiler fetch must use an embedded Blob");
+      return new Response(blobs.get(url)); },
+    document: {
+      currentScript: {getAttribute: () => CANONICAL_PROFILE.id},
+      querySelectorAll: query => payloads.get(/data-gaius-asset="([^"]+)"/.exec(query)[1]) || [],
+      querySelector: query => inert.get(/data-gaius-wasm-script="([^"]+)"/.exec(query)[1]) || null,
+      createElement: () => ({}),
+      head: {appendChild(node) {
+        requests.push(node.src);
+        assert.ok(blobs.has(node.src), "compiler script must use an embedded Blob");
+        blobs.get(node.src).text().then(text => { vm.runInContext(text, context); node.onload(); }, node.onerror);
+      }},
+    },
+  };
+  window.window = window;
+  const context = vm.createContext(window);
+  vm.runInContext(scripts.find(([, attrs]) => attrs.includes('data-gaius-portable="1"'))[2], context);
+  vm.runInContext(scripts.find(([, attrs]) => attrs.includes("data-gaius-shader-toolchain"))[2], context);
+  return {context, ready: context.__gaiusShaderToolchainReady, resolveCompiler, rejectCompiler, requests};
+}
+
+check("portable emitted compiler: slow readiness, concurrent main gates, WebGL2 and device fallback", async () => {
+  for (const mode of ["webgpu", "webgl2", "unsupported-device"]) {
+    const compiler = await portableCompiler();
+    const {glue, calls} = fakeGlue({ready: mode !== "unsupported-device"});
+    const page = createPage({search: mode === "webgl2" ? "?gpu=webgl2" : "?gpu=webgpu", portable: true, glue,
+      inline: {...PORTABLE_GPU_EXTRAS, [GLUE]: "/* glue */", [JOB]: "/* codec */"},
+      globals: {__gaiusShaderToolchainReady: compiler.ready,
+        __gaiusPortableWebGpu: {translator: {load: () => new Uint8Array([0, 97, 115, 109])}}}});
+    page.loadWebGpu();
+    let mainCalls = 0;
+    const start = () => page.window.__gaiusBoot.beforeMain().then(() => {
+      assert.equal(typeof compiler.context.__gaiusShaderToolchain.shadercBegin, "function"); mainCalls++;
+    });
+    const starts = [start(), start()];
+    await new Promise(resolve => setTimeout(resolve, 40)); // past the test page's GPU deadline
+    assert.equal(mainCalls, 0, "main cannot race the inline compiler");
+    if (mode === "webgpu") assert.equal(page.window.__gaiusGpuSelection.selected, "pending");
+    compiler.resolveCompiler();
+    await Promise.all(starts);
+    assert.equal(mainCalls, 2);
+    assert.equal(page.window.__gaiusGpuSelection.selected, mode === "webgpu" ? "webgpu" : "webgl2");
+    assert.equal(calls.abandon.length, mode === "unsupported-device" ? 1 : 0);
+    assert.equal(toolchainTags(page).length, 0, "boot cannot append a second compiler loader");
+    assert.equal(compiler.requests.length, 4, "one embedded request per module");
+    await compiler.context.__gaiusShaderToolchain.settled();
+    assert.ok(compiler.context.__gaiusShaderToolchain.stats().shaderc.instantiations >= 1);
+    assert.ok(compiler.context.__gaiusShaderToolchain.stats().spvc.instantiations >= 1);
+  }
+});
+
+check("portable emitted compiler: failure stops main, a fresh-page retry succeeds", async () => {
+  const broken = await portableCompiler();
+  const page = createPage({search: "?gpu=webgl2", portable: true,
+    globals: {__gaiusShaderToolchainReady: broken.ready}});
+  let mainCalls = 0;
+  const starts = [1, 2].map(() => page.window.__gaiusBoot.beforeMain().then(() => { mainCalls++; }));
+  broken.rejectCompiler(new Error("controlled compiler startup failure"));
+  for (const start of starts) await assert.rejects(start, /controlled compiler startup failure/);
+  assert.equal(mainCalls, 0);
+  const retry = await portableCompiler();
+  const retried = createPage({search: "?gpu=webgl2", portable: true,
+    globals: {__gaiusShaderToolchainReady: retry.ready}});
+  retry.resolveCompiler();
+  await retried.window.__gaiusBoot.beforeMain();
+  assert.equal(typeof retry.context.__gaiusShaderToolchain.shadercBegin, "function");
+  await retry.context.__gaiusShaderToolchain.settled();
 });
 
 check("site: the hashed shader toolchain and its module URLs", async () => {
@@ -416,6 +614,7 @@ check("site: the hashed shader toolchain and its module URLs", async () => {
       "gaius-wasm-gc-runtime.js": "gaius-wasm-gc-runtime.aaaaaaaaaaaaaaae.js",
       "gaius-jspi.js": "gaius-jspi.aaaaaaaaaaaaaaaf.js",
       [GLUE]: "runtime/webgpu/gpu-glue.1111111111111111.js",
+      ...Object.fromEntries([POST, ...PACK_MODULES].map(name => [name, name.replace(/\.js$/, ".0123456789abcdef.js")])),
       [JOB]: "runtime/webgpu/shaderxlat-job.2222222222222222.js",
       [TRANSLATOR]: "runtime/webgpu/gaius-shaderxlat.3333333333333333.wasm",
       [TOOLCHAIN]: "gaius-shader-toolchain.5555555555555555.js",
@@ -452,7 +651,7 @@ assert.ok(pagesProfiles.length > 0);
 function automaticSite(profile) {
   const names = ["classes.wasm.gz", "singleplayer-server.wasm.gz",
     "gaius-wasm-boot.js", "gaius-jspi.js", "gaius-wasm-worker.js", "gaius-wasm-gc-runtime.js",
-    GLUE, JOB, POST, TRANSLATOR];
+    ...GPU_MODULES, TRANSLATOR];
   return {id: "0011223344556677", profile, runtimePolicy: "wasm-only", modules: [], kernels: {},
     assets: Object.fromEntries(names.map((name) => [name, name])),
     inflate: {"classes.wasm": "classes.aaaaaaaaaaaaaaaa.wasm",
@@ -556,7 +755,7 @@ function portablePage({gpu = true, wasm = true, search = "", translator = true} 
   const {glue, calls} = fakeGlue({adapter: requestAdapter});
   const logs = [];
   const page = createPage({search, portable: true, protocol: "file:", glue,
-    inline: {[GLUE]: "/* glue */", [JOB]: "/* job codec */", [POST]: "/* post */"},
+    inline: {...PORTABLE_GPU_EXTRAS, [GLUE]: "/* glue */", [JOB]: "/* job codec */", [POST]: "/* post */"},
     globals: {
       __gaiusRuntimeDefault: "wasm", __gaiusPortableRuntimes: {wasm: {}},
       navigator: {hardwareConcurrency: 8, gpu: gpu ? {requestAdapter} : undefined},
@@ -586,6 +785,33 @@ check("portable: no ?gpu tries WebGPU where the browser offers it", async () => 
   assert.ok(graphicsLogs(page).some(([, text]) => /WebGPU ready/.test(text)), JSON.stringify(page.logs));
 });
 
+// A single file served over http(s) (https://gaius.fun/...) carries the same payloads as one opened
+// from disk: its translator is a file payload, never the relative runtime/webgpu/ URL (404 on a
+// host that serves only the one file, which silently put every online player on WebGL 2).
+check("portable over https: the embedded translator is used, no relative fetch", async () => {
+  let adapterRequests = 0;
+  const requestAdapter = async () => { adapterRequests++; return {}; };
+  const {glue} = fakeGlue({adapter: requestAdapter});
+  const page = createPage({portable: true, protocol: "https:", glue,
+    inline: {...PORTABLE_GPU_EXTRAS, [GLUE]: "/* glue */", [JOB]: "/* job codec */", [POST]: "/* post */"},
+    fetchOk: false,
+    globals: {
+      __gaiusRuntimeDefault: "wasm", __gaiusPortableRuntimes: {wasm: {}},
+      __gaiusFilePayloads: {[TRANSLATOR]: {script: "data:,", gzip: false}},
+      __gaiusFilePayloadData: {[TRANSLATOR]: "AGFzbQ=="}, atob,
+      navigator: {hardwareConcurrency: 8, gpu: {requestAdapter}},
+      WebAssembly: {validate: () => true, Suspending: function Suspending() {}, promising: function promising() {},
+        compileStreaming: async () => ({kind: "translator"}), compile: async () => ({kind: "translator"})},
+      console: {info() {}, warn() {}, log() {}, error() {}},
+    }});
+  page.loadWebGpu();
+  await page.window.__gaiusBoot.beforeMain();
+  const selection = page.window.__gaiusGpuSelection;
+  assert.equal(selection.selected, "webgpu", JSON.stringify(selection));
+  assert.equal(adapterRequests, 1);
+  assert.deepEqual(page.fetched, []);
+});
+
 check("portable: without navigator.gpu it stays on WebGL 2 and says why", async () => {
   const page = portablePage({gpu: false});
   const selection = page.window.__gaiusGpuSelection;
@@ -607,7 +833,7 @@ check("portable: a GLSL front-end page without its toolchain stays on WebGL 2 an
   // Rebuilt with the toolchain config of a blaze3d (26.2, 1.21.11) page.
   const {glue} = fakeGlue();
   const glsl = createPage({portable: true, protocol: "file:", glue,
-    inline: {[GLUE]: "/* glue */", [JOB]: "/* job codec */", [POST]: "/* post */"},
+    inline: {...PORTABLE_GPU_EXTRAS, [GLUE]: "/* glue */", [JOB]: "/* job codec */", [POST]: "/* post */"},
     globals: {...toolchainConfig, __gaiusRuntimeDefault: "wasm", __gaiusPortableRuntimes: {wasm: {}},
       navigator: {hardwareConcurrency: 8, gpu: {requestAdapter: async () => ({})}},
       WebAssembly: {validate: () => true, Suspending: function Suspending() {}, promising: function promising() {}},
@@ -640,7 +866,7 @@ check("portable: a device failure falls back with the glue's reason on the conso
   const {glue} = fakeGlue({ready: false, failure: "requestAdapter returned null"});
   const logs = [];
   const page = createPage({portable: true, protocol: "file:", glue,
-    inline: {[GLUE]: "/* glue */", [JOB]: "/* job codec */", [POST]: "/* post */"},
+    inline: {...PORTABLE_GPU_EXTRAS, [GLUE]: "/* glue */", [JOB]: "/* job codec */", [POST]: "/* post */"},
     globals: {
       __gaiusRuntimeDefault: "wasm", __gaiusPortableRuntimes: {wasm: {}},
       navigator: {hardwareConcurrency: 8, gpu: {requestAdapter: async () => null}},

@@ -35,6 +35,8 @@ public final class PatchTargetsTest {
         Path root = Path.of(args[0]);
         Files.createDirectories(root);
         archivePathValidation(root);
+        try { checks += OverlayValidationTest.run(root); }
+        catch (Exception failure) { throw new IllegalStateException(failure); }
         byte[] vanilla = fixture(1, false);
         byte[] noise = fixture(1, true);
         MethodNode original = method(PatchTargets.read(vanilla), "value");
@@ -99,6 +101,7 @@ public final class PatchTargetsTest {
         check(PatchRegistry.Spec.parse("REQUIRED OVERRIDE").wholeClass(), "override spec");
         lazyConditionFailureState(root);
         try {
+            checks += BreakingSoundBytecodeTest.run(root);
             checks += LoadingPresentationPatchesTest.run(root);
             checks += TitleScreenIconRowPatchTest.run();
         } catch (IOException | RuntimeException | Error failure) {

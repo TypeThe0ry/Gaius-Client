@@ -371,8 +371,50 @@ for (const work of [0.5, 3]) {
   assert.ok(scheduler.stats.hops >= 100, "scheduler waited for explicit suspension");
 }
 
-// A long JSPI activation is counted always but logged once per session, or every time with a
-// debug switch (frame telemetry enabled, __gaiusDebug, or the gaiusDebug / diag query).
+{
+  const b = browser();
+  const scheduler = b.context.GaiusJspi.createScheduler();
+  const order = [];
+  scheduler.post(() => {
+    order.push("long-start");
+    b.context.setTimeout(() => {
+      order.push("host-task");
+      scheduler.turn.running = false;
+    }, 0);
+    return true;
+  });
+  scheduler.post(() => { order.push("next"); return false; });
+  await b.runAsync(1000, () => order.includes("next"));
+  assert.deepEqual(order, ["long-start", "host-task", "next"],
+    "long JSPI activation yielded to the host without allowing FIFO work to overtake it");
+  assert.ok(scheduler.stats.hostYields >= 1,
+    `long activation did not use bounded host yields: ${JSON.stringify(scheduler.stats)}`);
+}
+
+{
+  const b = browser();
+  const warnings = [];
+  b.context.__gaiusFrameTelemetry = {enabled: true};
+  b.context.console = {warn: (...args) => warnings.push(args), error: console.error};
+  const scheduler = b.context.GaiusJspi.createScheduler();
+  let completed = 0;
+  for (let i = 0; i < 1024; i++) {
+    scheduler.post(() => {
+      Promise.resolve().then(() => { completed++; scheduler.turn.running = false; });
+      return true;
+    });
+  }
+  await b.runAsync(2000, () => completed === 1024);
+  assert.equal(completed, 1024, "short activations drained across multiple task slices");
+  assert.equal(scheduler.stats.hops, 1024, "all short activations contributed to cumulative telemetry");
+  assert.equal(scheduler.stats.slowActivations || 0, 0,
+    "cumulative scheduler hops do not classify a short activation as slow");
+  assert.equal(warnings.length, 0, "short activations do not produce false slow-suspension warnings");
+}
+
+// A long Promise chain yields to the host in bounded batches.  Its contiguous scheduler work
+// stays below the diagnostic threshold, so normal cooperative work does not produce a false
+// warning.
 async function slowActivations(setup, count) {
   const b = browser();
   const warnings = [];
@@ -399,23 +441,70 @@ async function slowActivations(setup, count) {
 
 {
   const quiet = await slowActivations(() => {}, 3);
-  assert.equal(quiet.warnings.length, 1, "slow activation is logged once per session without a switch");
-  assert.match(String(quiet.warnings[0][0]), /taking unusually long to suspend/);
-  assert.equal(quiet.scheduler.stats.slowActivations, 3, "every slow activation is counted");
+  assert.equal(quiet.warnings.length, 0, "bounded host yields avoid false slow activation warnings");
+  assert.equal(quiet.scheduler.stats.slowActivations || 0, 0,
+    "cooperative Promise chains stay below the contiguous warning threshold");
+  assert.ok(quiet.scheduler.stats.hostYields >= 3, "long Promise work yielded to the host");
 
   const telemetry = {enabled: true};
   const loud = await slowActivations((context) => { context.__gaiusFrameTelemetry = telemetry; }, 3);
-  assert.equal(loud.warnings.length, 3, "telemetry switch logs every slow activation");
-  assert.equal(telemetry.jspiSlowActivationCount, 3, "telemetry carries the slow activation count");
+  assert.equal(loud.warnings.length, 0, "telemetry does not report bounded Promise work as slow");
+  assert.equal(loud.scheduler.stats.slowActivations || 0, 0, "telemetry has no false slow activation count");
 
   const debug = await slowActivations((context) => { context.__gaiusDebug = true; }, 2);
-  assert.equal(debug.warnings.length, 2, "__gaiusDebug logs every slow activation");
+  assert.equal(debug.warnings.length, 0, "debug mode has no false slow activation warning");
 
   const query = await slowActivations((context) => {
     context.URLSearchParams = URLSearchParams;
     context.location = {search: "?gaiusDebug=1"};
   }, 2);
-  assert.equal(query.warnings.length, 2, "the gaiusDebug query logs every slow activation");
+  assert.equal(query.warnings.length, 0, "the gaiusDebug query has no false slow activation warning");
+}
+
+// Force a single activation to remain live across five host-yield timers.  This keeps the
+// diagnostic path deterministic in the virtual browser and proves that separating the full
+// activation count from the per-batch budget makes the 1024-hop counter reachable.
+async function diagnosticActivation(setup) {
+  const b = browser();
+  const warnings = [];
+  b.context.console = {warn: (...args) => warnings.push(args), error: console.error, log() {}, info() {}};
+  setup(b.context);
+  const scheduler = b.context.GaiusJspi.createScheduler();
+  let zeroDelayTimers = 0;
+  const stopAfter = 5;
+  const nativeSetTimeout = b.context.setTimeout;
+  b.context.setTimeout = (callback, delay) => nativeSetTimeout(() => {
+    if (Number(delay) === 0) {
+      zeroDelayTimers++;
+      if (zeroDelayTimers === stopAfter) scheduler.turn.running = false;
+    }
+    callback();
+  }, delay);
+  scheduler.post(() => true);
+  await b.runAsync(1000, () => zeroDelayTimers >= stopAfter && !scheduler.turn.running);
+  return {warnings, scheduler, context: b.context, zeroDelayTimers};
+}
+
+{
+  const quiet = await diagnosticActivation(() => {});
+  assert.equal(quiet.warnings.length, 1, "a genuinely long activation emits one session diagnostic");
+  assert.equal(quiet.scheduler.stats.slowActivations || 0, 1,
+    "the full activation count reaches the slow-activation threshold");
+  assert.ok(quiet.scheduler.stats.hostYields >= 5, "the long activation still yielded fairly");
+
+  const telemetry = {enabled: true};
+  const loud = await diagnosticActivation((context) => { context.__gaiusFrameTelemetry = telemetry; });
+  assert.equal(loud.warnings.length, 1, "enabled telemetry logs the diagnostic activation");
+  assert.equal(telemetry.jspiSlowActivationCount, 1, "telemetry exposes the diagnostic activation");
+
+  const debug = await diagnosticActivation((context) => { context.__gaiusDebug = true; });
+  assert.equal(debug.warnings.length, 1, "debug mode logs the diagnostic activation");
+
+  const query = await diagnosticActivation((context) => {
+    context.URLSearchParams = URLSearchParams;
+    context.location = {search: "?gaiusDebug=1"};
+  });
+  assert.equal(query.warnings.length, 1, "the gaiusDebug query logs the diagnostic activation");
 }
 
 console.log("frame-pacer-test: OK (vsync, uncapped menu, uncapped world, hidden, watchdog, late frames, no telemetry,"

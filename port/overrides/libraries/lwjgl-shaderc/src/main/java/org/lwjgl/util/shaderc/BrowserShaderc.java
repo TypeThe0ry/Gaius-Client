@@ -249,13 +249,18 @@ public final class BrowserShaderc {
             return register(new Result(BrowserShadercJob.Output.internalError(
                     "Gaius shader toolchain: unknown shaderc compile options handle")));
         }
+        // Minecraft's shader sources use the vanilla #moj_import spelling.  shaderc
+        // understands the equivalent standard #include directive, so normalize only
+        // that directive while preserving all other source bytes and line structure.
+        byte[] normalizedSource = normalizeMojImports(source);
         BrowserShadercJob job = new BrowserShadercJob(
-                new ArrayList<>(settings.ops), source, kind, inputFileName, entryPointName);
+                new ArrayList<>(settings.ops), normalizedSource, kind,
+                inputFileName, entryPointName);
         List<Long> resolved = new ArrayList<>();
         BrowserShadercJob.Output output;
         try {
             if (settings.resolver != null) {
-                resolveIncludes(job, settings, source, inputFileName, 1, new HashSet<>(), resolved);
+                resolveIncludes(job, settings, normalizedSource, inputFileName, 1, new HashSet<>(), resolved);
             }
             output = toolchain().compile(job);
         } finally {
@@ -305,43 +310,75 @@ public final class BrowserShaderc {
         }
     }
 
-    /** {type, nameStart, nameEnd} of an #include directive on text[start, end), or null. */
+    /** {type, nameStart, nameEnd, keywordStart, keywordLength} for a supported directive. */
     static int[] includeDirective(byte[] text, int start, int end) {
-        int i = skipBlanks(text, start, end);
+        int i = skipDirectiveSpace(text, start, end);
         if (i >= end || text[i] != '#') {
             return null;
         }
-        i = skipBlanks(text, i + 1, end);
-        byte[] keyword = {'i', 'n', 'c', 'l', 'u', 'd', 'e'};
-        if (end - i < keyword.length) {
+        i = skipDirectiveSpace(text, i + 1, end);
+        int keywordStart = i;
+        int keywordLength;
+        if (matches(text, i, end, "include")) {
+            keywordLength = 7;
+        } else if (matches(text, i, end, "moj_import")) {
+            keywordLength = 10;
+        } else {
             return null;
         }
-        for (int k = 0; k < keyword.length; k++) {
-            if (text[i + k] != keyword[k]) {
-                return null;
-            }
-        }
-        i = skipBlanks(text, i + keyword.length, end);
+        i = skipDirectiveSpace(text, i + keywordLength, end);
         if (i >= end || (text[i] != '<' && text[i] != '"')) {
             return null;
         }
         byte close = text[i] == '<' ? (byte) '>' : (byte) '"';
         int nameStart = i + 1;
-        int nameEnd = nameStart;
-        while (nameEnd < end && text[nameEnd] != close) {
-            nameEnd++;
+        int nameEnd = end - 1;
+        while (nameEnd >= nameStart && text[nameEnd] != close) {
+            nameEnd--;
         }
-        if (nameEnd >= end || nameEnd == nameStart) {
+        if (nameEnd < nameStart) {
             return null;
         }
-        return new int[] {close == '>' ? 1 : 0, nameStart, nameEnd};
+        return new int[] {close == '>' ? 1 : 0, nameStart, nameEnd, keywordStart, keywordLength};
     }
 
-    private static int skipBlanks(byte[] text, int index, int end) {
-        while (index < end && (text[index] == ' ' || text[index] == '\t' || text[index] == '\r')) {
-            index++;
+    private static int skipDirectiveSpace(byte[] text, int index, int end) {
+        while (index < end) {
+            if (text[index] == ' ' || text[index] == '\t' || text[index] == '\f') {
+                index++;
+            } else if (index + 1 < end && text[index] == '/' && text[index + 1] == '*') {
+                int close = index + 2;
+                while (close + 1 < end && !(text[close] == '*' && text[close + 1] == '/')) close++;
+                if (close + 1 >= end) return index;
+                index = close + 2;
+            } else {
+                return index;
+            }
         }
         return index;
+    }
+
+    private static boolean matches(byte[] text, int start, int end, String keyword) {
+        if (end - start < keyword.length()) return false;
+        for (int index = 0; index < keyword.length(); index++) {
+            if (text[start + index] != (byte) keyword.charAt(index)) return false;
+        }
+        return true;
+    }
+
+    static byte[] normalizeMojImports(byte[] source) {
+        byte[] normalized = source.clone();
+        for (int line = 0; line < normalized.length;) {
+            int end = line;
+            while (end < normalized.length && normalized[end] != '\n') end++;
+            int[] directive = includeDirective(normalized, line, end);
+            if (directive != null && directive[4] == 10) {
+                byte[] include = "include   ".getBytes(StandardCharsets.US_ASCII);
+                System.arraycopy(include, 0, normalized, directive[3], include.length);
+            }
+            line = end + 1;
+        }
+        return normalized;
     }
 
     private static BrowserShadercJob.Include resolveOne(
@@ -365,7 +402,8 @@ public final class BrowserShaderc {
                 ShadercIncludeResult.nsource_name_length(result));
         byte[] content = bytes(MemoryUtil.memGetAddress(result + ShadercIncludeResult.CONTENT),
                 ShadercIncludeResult.ncontent_length(result));
-        return new BrowserShadercJob.Include(type, requested, requesting, sourceName, content);
+        return new BrowserShadercJob.Include(
+                type, requested, requesting, sourceName, normalizeMojImports(content));
     }
 
     // ---- results ----------------------------------------------------------------------------

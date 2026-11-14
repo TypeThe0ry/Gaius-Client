@@ -26,6 +26,21 @@ public interface BrowserMeshInstall {
     /** Bytes this install writes to the GPU (vertex plus index data), for the frame budget. */
     int byteSize();
 
+    /** Relative install urgency; lower values are installed first in priority mode. */
+    default int priority() {
+        return 0;
+    }
+
+    /** Optional causal telemetry ticket; zero means this producer is not instrumented. */
+    default int telemetryTicket() {
+        return 0;
+    }
+
+    /** Whether a successful queue install published a mesh result rather than vanilla fallback. */
+    default boolean telemetryMeshInstalled() {
+        return true;
+    }
+
     /**
      * Installs the mesh (allocate heap ranges, write the bytes straight into them, publish the
      * section mesh). Returns false when it cannot be installed yet (for example the heaps are

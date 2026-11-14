@@ -338,12 +338,8 @@ assert.match(patcherSource, /Opcodes\.GETFIELD, CHUNK_POS, "z", "I"/,
   "" + LEGACY_PROFILE.id + " cursor must read public ChunkPos.z");
 assert.match(patcherSource, /Platform/,
   "" + LEGACY_PROFILE.id + " cursor must schedule a browser-turn continuation");
-assert.match(patcherSource, /patchGraphicsPresetBrowserDistances\(jar, root\)/,
-  "" + LEGACY_PROFILE.id + " dedicated patcher must invoke its FAST graphics overlay");
-assert.match(patcherSource, /findGraphicsPresetDistanceConstant/,
-  "" + LEGACY_PROFILE.id + " graphics overlay must retain the render-distance shape guard");
-assert.match(patcherSource, /GraphicsPreset\.apply FAST .*getter/,
-  "" + LEGACY_PROFILE.id + " graphics overlay must retain the per-getter shape guard");
+assert.doesNotMatch(patcherSource, /patchGraphicsPresetBrowserDistances|patchGraphicsPresetStartupReplay/,
+  "" + LEGACY_PROFILE.id + " dedicated patcher must leave graphics preset startup vanilla");
 
 const root = await mkdtemp(join(tmpdir(), "gaius-mc12111-cursor-"));
 try {
@@ -375,12 +371,6 @@ try {
     "dedicated patcher did not emit ChunkGenerationTask.class");
   assert.ok(patchNames.includes("dev/gaius/browser/BrowserChunkGenerationYield.class"),
     "dedicated patcher did not emit BrowserChunkGenerationYield.class");
-  assert.ok(patchNames.includes("net/minecraft/client/GraphicsPreset.class"),
-    "dedicated patcher did not emit GraphicsPreset.class");
-  for (const name of ["net/minecraft/client/Options.class", "net/minecraft/client/Minecraft.class"]) {
-    assert.ok(patchNames.includes(name),
-      `dedicated patcher did not emit ${name} (graphics preset startup replay)`);
-  }
 
   const rawGraphics = execFileSync(javap, ["-classpath", rawClientJar, "-p", "-c",
     "net.minecraft.client.GraphicsPreset"], {
@@ -403,11 +393,11 @@ try {
     ["bipush 6", "bipush 12", "bipush 12"],
     "" + LEGACY_PROFILE.id + " raw FAST simulation distance shape changed");
   assert.deepEqual(graphicsPresetDistanceConstants(patchedGraphicsApply, "renderDistance"),
-    ["bipush 8", "bipush 16", "bipush 32"],
-    "" + LEGACY_PROFILE.id + " FAST render distance was reduced from vanilla 8");
+    graphicsPresetDistanceConstants(rawGraphicsApply, "renderDistance"),
+    "" + LEGACY_PROFILE.id + " graphics preset render distances changed");
   assert.deepEqual(graphicsPresetDistanceConstants(patchedGraphicsApply, "simulationDistance"),
-    ["bipush 6", "bipush 12", "bipush 12"],
-    "" + LEGACY_PROFILE.id + " FAST simulation distance was reduced from vanilla 6");
+    graphicsPresetDistanceConstants(rawGraphicsApply, "simulationDistance"),
+    "" + LEGACY_PROFILE.id + " graphics preset simulation distances changed");
   assert.equal(graphicsPresetCustomReturn(patchedGraphicsApply),
     graphicsPresetCustomReturn(rawGraphicsApply),
     "" + LEGACY_PROFILE.id + " CUSTOM graphics preset arm changed");
@@ -417,10 +407,10 @@ try {
     });
   const minecraftInit = method(patchedMinecraft,
     "public net.minecraft.client.Minecraft(net.minecraft.client.main.GameConfig);");
-  assert.equal(occurrences(minecraftInit, "Options.gaius$applyStartupGraphicsPreset"), 1,
-    "" + LEGACY_PROFILE.id + " Minecraft.<init> must replay the graphics preset through the startup gate once");
-  assert.equal(occurrences(minecraftInit, "Options.applyGraphicsPreset"), 0,
-    "" + LEGACY_PROFILE.id + " Minecraft.<init> still re-applies the saved graphics preset unconditionally");
+  assert.equal(occurrences(minecraftInit, "Options.gaius$applyStartupGraphicsPreset"), 0,
+    "" + LEGACY_PROFILE.id + " Minecraft.<init> must not use the removed startup replay patch");
+  assert.equal(occurrences(minecraftInit, "Options.applyGraphicsPreset"), 1,
+    "" + LEGACY_PROFILE.id + " Minecraft.<init> must retain vanilla preset application");
 
   const verifierClasspath = [asm, asmTree, asmAnalysis].join(delimiter);
   execFileSync(javac, [

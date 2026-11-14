@@ -44,6 +44,11 @@ public final class GaiusLightColumnAccess {
         return engine.storage.getDataLayer(sectionKey, true);
     }
 
+    /** The renderer-visible layer; unlike getDataLayerData this never returns a queued update. */
+    public static DataLayer visibleLayer(LightEngine<?, ?> engine, long sectionKey) {
+        return engine.storage.getDataLayer(sectionKey, false);
+    }
+
     /** Copies a layer's 2048 nibble bytes into {@code out} without materializing it. */
     public static void copyLayer(DataLayer layer, byte[] out, int offset) {
         if (layer.isDefinitelyHomogenous()) {

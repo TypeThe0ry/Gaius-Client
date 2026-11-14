@@ -36,7 +36,7 @@ public final class RenderpearlPatchSupport {
         if (Files.isRegularFile(written)) {
             ClassNode node = new ClassNode();
             new ClassReader(Files.readAllBytes(written)).accept(node, 0);
-            return node;
+            return dev.gaius.tools.HierarchyClassWriter.source(node, jar);
         }
         try (ZipFile zip = new ZipFile(jar)) {
             var entry = zip.getEntry(owner + ".class");
@@ -46,7 +46,7 @@ public final class RenderpearlPatchSupport {
             try (var stream = zip.getInputStream(entry)) {
                 ClassNode node = new ClassNode();
                 new ClassReader(stream.readAllBytes()).accept(node, 0);
-                return node;
+                return dev.gaius.tools.HierarchyClassWriter.source(node, jar);
             }
         }
     }
@@ -75,7 +75,7 @@ public final class RenderpearlPatchSupport {
         }
         ClassNode node = new ClassNode();
         new ClassReader(bytes).accept(node, 0);
-        return node;
+        return dev.gaius.tools.HierarchyClassWriter.source(node, jar);
     }
 
     public static MethodNode find(ClassNode node, String name, String desc) {
@@ -142,22 +142,20 @@ public final class RenderpearlPatchSupport {
     }
 
     /**
-     * Writes recomputing the maxima, and the frames too when {@code computeFrames} (with
-     * {@code java/lang/Object} as every common superclass).
+     * Writes recomputing maxima and, when requested, frames against the actual class hierarchy.
      */
     public static void writeClass(ClassNode node, Path root, boolean computeFrames) throws IOException {
-        ClassWriter writer = computeFrames
-                ? new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS) {
-                    @Override
-                    protected String getCommonSuperClass(String type1, String type2) {
-                        return "java/lang/Object";
-                    }
-                }
-                : new ClassWriter(ClassWriter.COMPUTE_MAXS);
-        node.accept(writer);
         Path output = root.resolve(node.name + ".class");
-        Files.createDirectories(output.getParent());
-        Files.write(output, writer.toByteArray());
+        if (computeFrames) {
+            try (var writer = dev.gaius.tools.HierarchyClassWriter.create(node, output)) {
+                node.accept(writer);
+                store(node, root, writer.toByteArray());
+            }
+        } else {
+            ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            node.accept(writer);
+            store(node, root, writer.toByteArray());
+        }
     }
 
     /** Stores the bytes of {@code node} under {@code root}. */

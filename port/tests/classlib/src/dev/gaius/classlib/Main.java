@@ -39,6 +39,7 @@ public final class Main {
         SECTIONS.put("sort", Sorting::run);
         SECTIONS.put("character", Characters::run);
         SECTIONS.put("strings", Strings::run);
+        SECTIONS.put("regex-replacements", RegexReplacements::run);
         SECTIONS.put("date", Dates::run);
         SECTIONS.put("misc", Misc::run);
         SECTIONS.put("streams", Streams::run);

@@ -154,6 +154,10 @@ const random = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
 const noisy = scene(random);
 const first = runs.map(([, run]) => new Uint8Array(run(codec.lightColumn(noisy, 1))));
 assert.deepEqual(first[0], first[1]);
+const fastOcclusion = runs.map(([, run]) => new Uint8Array(run(codec.lightColumn(
+  Object.assign({}, noisy, {fastOcclusion: true}), 3))));
+assert.deepEqual(fastOcclusion[0].subarray(16), first[0].subarray(16), "fast occlusion cache changed the SIMD result");
+assert.deepEqual(fastOcclusion[1].subarray(16), first[1].subarray(16), "fast occlusion cache changed the baseline result");
 const checks = Object.assign({}, noisy, {ops: 0, checks: [8, 3, 8, 1, 5, 1], skyLightOn: true, blockLightOn: true});
 const second = runs.map(([, run]) => new Uint8Array(run(codec.lightColumn(checks, 2))));
 assert.deepEqual(second[0], second[1]);

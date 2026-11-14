@@ -1,14 +1,15 @@
 gaius-source-patch 2
 base 336ad3003ada73d4d2032bd735e5b145f6477ff4d4da5d924a7dc2bb7927c27c
-result 3e6268670764ecfaae97ca97d23e06a868fe90d1586546490cef2fe0f1a95721
+result b2660c03964c1c90de73627877f83815a524ee95be12d0539a43992ae6c0d061
 @@ 2 1
++import dev.gaius.browser.ArchivedStreams;
 +import dev.gaius.browser.AssetArchive;
++import dev.gaius.browser.BrowserResourceList;
 +import java.io.ByteArrayInputStream;
 @@ 5 1
 +import java.nio.charset.StandardCharsets;
 @@ 7 0
 +import java.util.ArrayList;
-+import java.util.Arrays;
 @@ 8 0
 +import java.util.HashSet;
 @@ 12 1
@@ -153,7 +154,7 @@ result 3e6268670764ecfaae97ca97d23e06a868fe90d1586546490cef2fe0f1a95721
 +        return () -> {
 +            byte[] external = archive.read(resource);
 +            if (external != null) {
-+                return new ByteArrayInputStream(external);
++                return ArchivedStreams.track(resource, new ByteArrayInputStream(external));
 =47 1
 +            InputStream input = openResourceStream(resource);
 +            if (input == null) {
@@ -189,25 +190,14 @@ result 3e6268670764ecfaae97ca97d23e06a868fe90d1586546490cef2fe0f1a95721
 +            if (input == null) {
 +                return new String[0];
 =47 1
-+            String text = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-+            String[] lines = text.split("\\r?\\n");
-+            List<String> resources = new ArrayList<>(lines.length);
-+            for (String line : lines) {
-+                String trimmed = line.trim();
-+                if (!trimmed.isEmpty()) {
-+                    resources.add(trimmed);
-=75 1
-=47 1
-+            return resources.toArray(String[]::new);
-+        } catch (IOException e) {
++            return BrowserResourceList.parse(new String(input.readAllBytes(), StandardCharsets.UTF_8));
++        } catch (IOException ignored) {
 +            return new String[0];
 =48 1
 =37 1
 =1 1
 +    private static String[] sortedResourceCopy(String[] values) {
-+        String[] copy = Arrays.copyOf(values, values.length);
-+        Arrays.sort(copy);
-+        return copy;
++        return BrowserResourceList.sortedCopy(values);
 =37 1
 =1 1
 +    private static final class ListedResource {

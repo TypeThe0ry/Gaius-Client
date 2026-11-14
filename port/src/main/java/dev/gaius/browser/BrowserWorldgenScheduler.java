@@ -12,7 +12,11 @@ public final class BrowserWorldgenScheduler {
     private static final double MODERATE_YIELD_DELAY_MILLIS = 4.0;
     private static final double BUSY_YIELD_DELAY_MILLIS = 8.0;
     // A pulse may include synchronous chunk work. Check every pulse so one slice cannot
-    // accumulate several heavy pulses after its cooperative deadline.
+    // accumulate several heavy pulses after its cooperative deadline. This is the interval
+    // whenever nothing is known about the cost of a pulse (the start of a slice, after a yield);
+    // between two reads of the clock ClockStride lets pulses pass while the time they are
+    // expected to use stays well inside what the slice has left, and asks for a read on every
+    // pulse again as the deadline gets close.
     private static final int CLOCK_CHECK_INTERVAL = 1;
     // Queue depth is maintained in Java, so checking it each pulse also preserves packet
     // fairness without crossing the Worker/page boundary.
@@ -37,8 +41,12 @@ public final class BrowserWorldgenScheduler {
     // checks see the vanilla holder count and only their check granularity (at most N holders)
     // changes.  The broadcast is not inside a task scope, so no deadline reads its holders.
     private static final int CHUNK_BROADCAST_PULSE_STRIDE = 16;
-    private static final int DEFAULT_DISTANCE_MANAGER_UPDATE_BUDGET = 64;
-    private static final int MIN_DISTANCE_MANAGER_UPDATE_BUDGET = 8;
+    // RD32 evidence showed the vanilla ticket tracker repeatedly hitting the 64-entry
+    // cooperative cap while kernel workers were idle.  A larger bounded pass keeps the
+    // tracker FIFO and tick order intact, but avoids resuming the same ordered queue over
+    // hundreds of extra server turns.
+    private static final int DEFAULT_DISTANCE_MANAGER_UPDATE_BUDGET = 256;
+    private static final int MIN_DISTANCE_MANAGER_UPDATE_BUDGET = 16;
     private static final int MAX_DISTANCE_MANAGER_UPDATE_BUDGET = 512;
 
     private static final int YIELD_DEADLINE = 0;
@@ -76,6 +84,7 @@ public final class BrowserWorldgenScheduler {
     private static double previousYieldDelayMillis;
     private static double previousOverrunMillis;
     private static int pulsesUntilClockCheck = 1;
+    private static final ClockStride PULSE_STRIDE = new ClockStride();
     private static int pulsesUntilNetworkCheck = 1;
     private static int pulsesInTurn;
     private static int maxPulsesInTurn;
@@ -93,6 +102,8 @@ public final class BrowserWorldgenScheduler {
     // Mob AI is not wrapped in a worldgen task scope, so its CPU time cannot use
     // the task active-work clock.  Keep a separate monotonic hook window instead.
     private static double mobAiNextYieldAtMillis;
+    private static int mobAiPulsesUntilClockCheck;
+    private static final ClockStride MOB_AI_STRIDE = new ClockStride();
     private static boolean networkPreemptionPending;
     private static int lastNetworkPreemptionDepth;
     private static double lastNetworkPreemptionInputEpoch = -1.0;
@@ -115,6 +126,8 @@ public final class BrowserWorldgenScheduler {
     private static double concurrentWindowBudgetMillis;
     private static double concurrentWindowLengthMillis;
     private static double concurrentWindowInputEpoch;
+    private static int windowPulsesUntilClockCheck;
+    private static final ClockStride WINDOW_STRIDE = new ClockStride();
     private static int concurrentWindowPulses;
     private static int concurrentWindowContinuedPulses;
     private static int concurrentWindowParks;
@@ -359,7 +372,7 @@ public final class BrowserWorldgenScheduler {
         // pulses.  Sample once at the vanilla batch boundary before the caller starts its next
         // work unit; this keeps the fast path bounded without restoring per-holder clock reads.
         if (!yieldActive && isWorkerRuntime() && deadlineMillis > 0.0
-                && activeSliceElapsedMillis(nowMillis()) >= currentBudgetMillis) {
+                && activeSliceElapsedMillisNow() >= currentBudgetMillis) {
             requestYield(YIELD_DEADLINE, networkQueueDepth());
         }
         if (worldgenStatusTelemetryEnabled()) {
@@ -438,7 +451,12 @@ public final class BrowserWorldgenScheduler {
             activeWorkStartedAtMillis = -1.0;
             deadlineMillis = now + currentBudgetMillis;
             pulsesUntilClockCheck = CLOCK_CHECK_INTERVAL;
+            PULSE_STRIDE.reset();
         }
+        // The Mob AI window runs on the wall clock and the tick starts after an idle gap
+        // that the stride knows nothing about: the first Mob pulse of a turn reads the clock.
+        mobAiPulsesUntilClockCheck = 1;
+        MOB_AI_STRIDE.reset();
         recordSchedulerMarker(
                 "server-work-turn-start",
                 0,
@@ -840,16 +858,37 @@ public final class BrowserWorldgenScheduler {
             requestYield(YIELD_HARD_CAP, networkQueueDepth());
             return;
         }
-        if (--pulsesUntilClockCheck > 0) {
-            return;
+        if (deadlineMillis != 0.0) {
+            if (taskWorkDepth <= 0) {
+                // No task segment is running, so the elapsed time of the slice is the work the
+                // finished segments added up to: it does not move with the clock, and reading
+                // the clock could not change this decision.
+                if (activeWorkElapsedMillis >= currentBudgetMillis) {
+                    pulsesUntilClockCheck = CLOCK_CHECK_INTERVAL;
+                    requestYield(YIELD_DEADLINE, networkQueueDepth());
+                }
+                return;
+            }
+            if (--pulsesUntilClockCheck > 0) {
+                return;
+            }
         }
-        pulsesUntilClockCheck = CLOCK_CHECK_INTERVAL;
 
         double now = nowMillis();
         if (deadlineMillis == 0.0) {
+            pulsesUntilClockCheck = CLOCK_CHECK_INTERVAL;
             beginSlice(now, networkQueueDepth());
-        } else if (activeSliceElapsedMillis(now) >= currentBudgetMillis) {
+            return;
+        }
+        // The position on the slice's own axis (work done, the pauses between task segments
+        // left out) and what is left of the budget: the stride reads again after as many
+        // pulses as are expected to use a quarter of that, one pulse near the deadline.
+        double elapsed = activeSliceElapsedMillis(now);
+        if (elapsed >= currentBudgetMillis) {
+            pulsesUntilClockCheck = CLOCK_CHECK_INTERVAL;
             requestYield(YIELD_DEADLINE, networkQueueDepth());
+        } else {
+            pulsesUntilClockCheck = PULSE_STRIDE.observe(elapsed, currentBudgetMillis - elapsed);
         }
     }
 
@@ -906,8 +945,15 @@ public final class BrowserWorldgenScheduler {
         if (mobAiTelemetryEnabled()) {
             recordMobAiPulse();
         }
+        // Most calls only find the window still open. Which calls read the clock follows the
+        // time the window has left (ClockStride): every call near its end, and only one in up to
+        // eight while it is far away.
+        if (--mobAiPulsesUntilClockCheck > 0) {
+            return;
+        }
         double now = nowMillis();
         if (now < mobAiNextYieldAtMillis) {
+            mobAiPulsesUntilClockCheck = MOB_AI_STRIDE.observe(now, mobAiNextYieldAtMillis - now);
             return;
         }
         mobAiNextYieldAtMillis = now + DEFAULT_SLICE_MILLIS;
@@ -915,6 +961,8 @@ public final class BrowserWorldgenScheduler {
         // requestYield resumes the same continuation after the event-loop turn.
         // Start the next Mob window from the actual resume time, not the old call time.
         mobAiNextYieldAtMillis = nowMillis() + DEFAULT_SLICE_MILLIS;
+        mobAiPulsesUntilClockCheck = 1;
+        MOB_AI_STRIDE.reset();
     }
 
     /**
@@ -1093,6 +1141,7 @@ public final class BrowserWorldgenScheduler {
                     : -1.0;
             deadlineMillis = nextSliceStartedAt + currentBudgetMillis;
             pulsesUntilClockCheck = CLOCK_CHECK_INTERVAL;
+            PULSE_STRIDE.reset();
             pulsesUntilNetworkCheck = NETWORK_CHECK_INTERVAL;
             pulsesInTurn = 0;
             maxPulsesInTurn = 0;
@@ -1140,6 +1189,7 @@ public final class BrowserWorldgenScheduler {
                         currentBudgetMillis);
                 deadlineMillis = sliceStartedAtMillis;
                 pulsesUntilClockCheck = 1;
+                PULSE_STRIDE.reset();
             }
         }
     }
@@ -1156,6 +1206,8 @@ public final class BrowserWorldgenScheduler {
         activeWorkElapsedMillis = 0.0;
         activeWorkStartedAtMillis = taskWorkDepth > 0 ? now : -1.0;
         deadlineMillis = now + currentBudgetMillis;
+        // A new slice starts a new axis for the pulse stride.
+        PULSE_STRIDE.reset();
     }
 
     private static double activeSegmentElapsedMillis(double now) {
@@ -1168,6 +1220,14 @@ public final class BrowserWorldgenScheduler {
     private static double activeSliceElapsedMillis(double now) {
         return activeWorkElapsedMillis
                 + (taskWorkDepth > 0 ? activeSegmentElapsedMillis(now) : 0.0);
+    }
+
+    /**
+     * {@link #activeSliceElapsedMillis} of this moment. Without a running task segment the
+     * result does not depend on the clock, which is then not read.
+     */
+    private static double activeSliceElapsedMillisNow() {
+        return taskWorkDepth > 0 ? activeSliceElapsedMillis(nowMillis()) : activeWorkElapsedMillis;
     }
 
     private static double adaptiveBudgetMillis(
@@ -1252,6 +1312,10 @@ public final class BrowserWorldgenScheduler {
             return;
         }
         concurrentWindowStartedAtMillis = startedAtMillis;
+        // The first concurrent pulse reads the clock; what lies between the start of the yield
+        // and that pulse is the event-loop turn, not the cost of a pulse.
+        windowPulsesUntilClockCheck = 1;
+        WINDOW_STRIDE.reset();
         concurrentWindowBudgetMillis = Math.max(MIN_ADAPTIVE_SLICE_MILLIS, budgetMillis);
         concurrentWindowLengthMillis = concurrentWindowBudgetMillis;
         concurrentWindowInputEpoch = networkInputEpoch();
@@ -1284,12 +1348,29 @@ public final class BrowserWorldgenScheduler {
             return false;
         }
         if (concurrentWindowPulses >= MAX_PULSES_PER_TURN
-                || nowMillis() - concurrentWindowStartedAtMillis >= concurrentWindowBudgetMillis
+                || concurrentWindowTimeUsedUp()
                 || networkInputEpoch() != concurrentWindowInputEpoch) {
             concurrentWindowBudgetMillis = 0.0;
             return false;
         }
         return true;
+    }
+
+    /**
+     * Whether the window's time budget is used up. The clock is read on the pulses
+     * ClockStride picks, every pulse as the end of the window gets close.
+     */
+    private static boolean concurrentWindowTimeUsedUp() {
+        if (--windowPulsesUntilClockCheck > 0) {
+            return false;
+        }
+        double elapsed = nowMillis() - concurrentWindowStartedAtMillis;
+        if (elapsed >= concurrentWindowBudgetMillis) {
+            return true;
+        }
+        windowPulsesUntilClockCheck =
+                WINDOW_STRIDE.observe(elapsed, concurrentWindowBudgetMillis - elapsed);
+        return false;
     }
 
     @JSBody(script = """
@@ -1345,7 +1426,7 @@ public final class BrowserWorldgenScheduler {
     @JSBody(params = "fallback", script = """
             const configured = Number(globalThis.__gaiusDistanceManagerUpdateBudget);
             if (!Number.isFinite(configured)) return fallback;
-            return Math.max(8, Math.min(512, Math.floor(configured)));
+            return Math.max(16, Math.min(512, Math.floor(configured)));
             """)
     private static native int configuredDistanceManagerUpdateBudget(int fallback);
 
@@ -1410,12 +1491,9 @@ public final class BrowserWorldgenScheduler {
             """)
     private static native void recordChunkBroadcastFinishJs(int entries);
 
-    @JSBody(script = """
-            return typeof performance !== 'undefined' && performance.now
-              ? performance.now()
-              : Date.now();
-            """)
-    private static native double nowMillis();
+    private static double nowMillis() {
+        return HostClock.nowMillis();
+    }
 
     /** Stores one bounded label for the immediately following task-start marker. */
     @JSBody(params = {"taskLabel"}, script = """

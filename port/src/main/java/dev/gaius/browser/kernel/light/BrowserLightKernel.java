@@ -3,6 +3,7 @@ package dev.gaius.browser.kernel.light;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.ArrayDeque;
 import java.util.concurrent.CompletableFuture;
 import java.util.Map;
@@ -72,6 +73,7 @@ public final class BrowserLightKernel {
     private static final int FLAG_BLOCK = 2;
     private static final int FLAG_EMIT_OUTGOING = 32;
     private static final int FLAG_OMIT_UNCHANGED = 64;
+    private static final int FLAG_FAST_OCCLUSION = 128;
     private static final int SKY_STORING = 1;
     private static final int BLOCK_STORING = 2;
     private static final int SKY_DATA = 4;
@@ -142,6 +144,7 @@ public final class BrowserLightKernel {
         /** SKY_STORING/BLOCK_STORING per light section of the column (slot 0) and each side. */
         final byte[] storing;
         long[] recheck;
+        final LongOpenHashSet recheckSeen = new LongOpenHashSet();
         CompletionFrontier.Ticket completion;
         volatile boolean terminal;
         final InFlightReleaseGate released = new InFlightReleaseGate();
@@ -170,6 +173,9 @@ public final class BrowserLightKernel {
         }
 
         void addRecheck(long pos) {
+            if (!recheckSeen.add(pos)) {
+                return;
+            }
             if (recheck == null) {
                 recheck = new long[16];
             } else if (recheckCount == recheck.length) {
@@ -604,7 +610,8 @@ public final class BrowserLightKernel {
         int payloadStart = length;
         putByte(JOB_VERSION);
         putByte(OPS_INITIAL);
-        putShort(FLAG_BLOCK | (sky != null ? FLAG_SKY : 0) | FLAG_EMIT_OUTGOING | FLAG_OMIT_UNCHANGED);
+        putShort(FLAG_BLOCK | (sky != null ? FLAG_SKY : 0) | FLAG_EMIT_OUTGOING | FLAG_OMIT_UNCHANGED
+                | (LightKernelHost.fastOcclusion() ? FLAG_FAST_OCCLUSION : 0));
         putInt(job.chunkX);
         putInt(job.chunkZ);
         putInt(job.minSection);

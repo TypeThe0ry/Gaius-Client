@@ -116,6 +116,13 @@ public final class MinecraftChunkDrawTelemetryPatcher {
         register.add(new MethodInsnNode(
                 Opcodes.INVOKEVIRTUAL,
                 "net/minecraft/core/BlockPos",
+                "getY",
+                "()I",
+                false));
+        register.add(new VarInsnNode(Opcodes.ALOAD, shape.blockPosLocal));
+        register.add(new MethodInsnNode(
+                Opcodes.INVOKEVIRTUAL,
+                "net/minecraft/core/BlockPos",
                 "getZ",
                 "()I",
                 false));
@@ -123,7 +130,7 @@ public final class MinecraftChunkDrawTelemetryPatcher {
                 Opcodes.INVOKESTATIC,
                 TELEMETRY_OWNER,
                 "registerSection",
-                "(III)V",
+                "(IIII)V",
                 false));
         prepare.instructions.insert(uniformStore, register);
 

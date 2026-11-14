@@ -3,7 +3,7 @@
 // (MinecraftClientPatcher.patchClimateRTreeBrowserFlatIndex -> GaiusClimateIndex).
 //
 //   node port/scripts/climate-rtree-parity.mjs [--profile 26.3] [--patched <patched client jar>]
-//        [--scale N] [--bench-rounds N] [--out <dir>]
+//        [--scale N] [--bench-rounds N] [--survey CHUNKS_PER_SEED] [--out <dir>]
 //
 // Without --patched the real patch chain runs first (patchkit check, wasmgc target, kept scratch
 // directory) and its patched client.jar is used. The patched Climate$RTree, Climate$RTree$SubTree
@@ -13,7 +13,13 @@
 // an isolated vanilla class loader and in the patched one and requires every lookup to return the
 // same list entry (per leaf, including ties decided by the per-thread lastResult history). It
 // also times the overworld chunk-fill workload in both and counts the distance evaluations of
-// both searches. Exit status: 0 parity, 1 mismatch, 2 environment.
+// both searches. Besides the synthetic cases it replays real overworld climate (the vanilla
+// sampler, three seeds, generation order) against the real preset ("overworld-real", also timed
+// as CLIMATE_RTREE_BENCH_REAL), and cases that wrap 64-bit squared distances around, which the
+// early exit of GaiusClimateIndex must not take. --survey N adds brute-force statistics of N
+// chunks per seed of real lookups: how often the previous result is still nearest and how many
+// lookups have equally near leaves (CLIMATE_RTREE_SURVEY; slow, about half a second per chunk and seed).
+// Exit status: 0 parity, 1 mismatch, 2 environment.
 
 import {spawnSync} from "node:child_process";
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
@@ -27,7 +33,7 @@ const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const nativePath = (value) => process.platform === "win32" && /^\/[A-Za-z]\//.test(value)
   ? `${value[1].toUpperCase()}:${value.slice(2)}` : value;
 
-const options = {profile: RENDERPEARL_PROFILE.id, patched: null, scale: "1", benchRounds: "7", out: null};
+const options = {profile: RENDERPEARL_PROFILE.id, patched: null, scale: "1", benchRounds: "7", survey: "0", out: null};
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   const value = () => {
@@ -39,6 +45,7 @@ for (let i = 0; i < argv.length; i++) {
     case "--patched": options.patched = resolve(nativePath(value())); break;
     case "--scale": options.scale = value(); break;
     case "--bench-rounds": options.benchRounds = value(); break;
+    case "--survey": options.survey = value(); break;
     case "--out": options.out = resolve(nativePath(value())); break;
     default: usage(`unknown argument ${argv[i]}`);
   }
@@ -131,7 +138,8 @@ try {
     "--harness", quote(harness),
     "--vanilla", quote(vanillaPath.join(delimiter)),
     "--patched", quote([overlay, helpers, ...vanillaPath].join(delimiter)),
-    "--scale", options.scale, "--bench-rounds", options.benchRounds].join("\n"));
+    "--scale", options.scale, "--bench-rounds", options.benchRounds,
+    "--survey", options.survey].join("\n"));
   const result = spawnSync("java", [`@${argfile}`],
     {encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "inherit"]});
   if (result.error) usage(`java: ${result.error.message}`);

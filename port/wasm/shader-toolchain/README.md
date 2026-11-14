@@ -66,6 +66,27 @@ coherent release).  A release build of a profile that needs the toolchain runs
 the script with `--dist <profile dist>`; the files then travel with that
 release like `gaius-hotpath.wasm`.
 
+## Baked results and the pipeline warm-up (26.3+)
+
+**Baked shaderc results.** A cold start compiles ~240 distinct stages with shaderc (0.8 s of main
+thread on the reference machine). `port/scripts/bake-shader-cache.mjs <page> <out.bin>` opens a page,
+waits for the title screen and the end of the warm-up and writes `api.exportCache()` (gzip). A page
+that carries the file as the payload `gaius-shader-prebake.bin` (portable pages: next to the other
+payloads, `build-portable-html.py`; sites: `__gaiusShaderToolchainUrls.prebake`) primes the loader's
+cache with it (`api.primeCache`): keys hash every job input and the toolchain version, so a hit is
+what shaderc would have produced, a set for another version is ignored and any changed input
+compiles. The set must be baked on the page form it ships with (the version token differs between a
+portable page, `dev`, and a site, the content hash of the toolchain files) and re-baked when the
+toolchain or the shaders change; a stale set costs nothing but the misses.
+`check-prebake.mjs --toolchain DIR` checks the round trip. The loader also names its persistent
+IndexedDB cache from `window.__gaiusProfileId` when it is inlined without `data-profile`.
+
+**Pipeline warm-up.** `RenderPatches263.patchShaderPipelineWarmup` + `BrowserPipelineWarmup` keep
+only the pipelines of the title screen in `ShaderManager`'s reload and compile the others through
+`PipelineCache.get` in the frames after it (see the class comment). Control: `?gaiusPipelineWarmup=0`
+restores the vanilla order in the same build; `window.__gaiusPipelineWarmup` holds the counters and
+the on-demand misses; `port/scripts/shader-pipeline-warmup-smoke.mjs` is the offline check.
+
 ## The blaze3d front-end (26.2, 1.21.11)
 
 The WebGPU backends of 26.2 and 1.21.11 receive GLSL and compile it the way the

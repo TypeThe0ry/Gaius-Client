@@ -1,7 +1,11 @@
 package dev.gaius.browser;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.net.URL;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -15,6 +19,114 @@ public final class BrowserHttpProxy {
 
     public static URL proxyResourcePack(URL target) {
         return proxy(target, "resource-pack");
+    }
+
+    /**
+     * Selects the original pack URL for the first download attempt.  A page served over HTTPS
+     * cannot issue a direct HTTP request, so the caller must immediately use the relay there.
+     */
+    public static URL directResourcePack(URL target) throws IOException {
+        if (target == null) {
+            throw new IOException("HTTP resource-pack target is missing");
+        }
+        String protocol = target.getProtocol();
+        boolean httpsPage;
+        try {
+            httpsPage = pageIsHttps();
+        } catch (UnsatisfiedLinkError ignored) {
+            httpsPage = false;
+        }
+        if ("http".equalsIgnoreCase(protocol) && httpsPage) {
+            throw new IOException("HTTP resource-pack blocked as mixed content");
+        }
+        if (!"http".equalsIgnoreCase(protocol) && !"https".equalsIgnoreCase(protocol)) {
+            throw new IOException("Unsupported resource-pack protocol: " + protocol);
+        }
+        reportResourcePackDirect();
+        return target;
+    }
+
+    /** Direct fetches deliberately carry no request headers, avoiding a CORS preflight. */
+    public static Map<String, String> directResourcePackHeaders() {
+        return Map.of();
+    }
+
+    /** Remove a partially written direct attempt before starting a relay attempt. */
+    public static void resetResourcePackFile(Path target) {
+        if (target == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(target);
+        } catch (IOException ignored) {
+            // Vanilla's second attempt will report the underlying file error if it cannot reset.
+        }
+    }
+
+    @JSBody(script = "return location.protocol === 'https:';")
+    private static native boolean pageIsHttps();
+
+    /** Returns a stream that rejects an unusable CORS/HTTP response before hashing it. */
+    public static InputStream validateResourcePackResponse(
+            HttpURLConnection connection, InputStream input, long declaredLength) throws IOException {
+        if (connection == null || input == null) {
+            throw new IOException("Resource-pack response is unavailable");
+        }
+        int status;
+        try {
+            status = connection.getResponseCode();
+        } catch (IOException exception) {
+            throw new IOException("Resource-pack response status is unavailable", exception);
+        }
+        if (status < 200 || status >= 300) {
+            throw new IOException("Resource-pack HTTP status " + status);
+        }
+        if (declaredLength == 0) {
+            throw new IOException("Resource-pack response is empty");
+        }
+        return new ResourcePackInputStream(input, declaredLength);
+    }
+
+    private static final class ResourcePackInputStream extends InputStream {
+        private final InputStream delegate;
+        private final long declaredLength;
+        private long bytesRead;
+
+        ResourcePackInputStream(InputStream delegate, long declaredLength) {
+            this.delegate = delegate;
+            this.declaredLength = declaredLength;
+        }
+
+        @Override
+        public int read() throws IOException {
+            int value = delegate.read();
+            if (value < 0) checkEnd();
+            else bytesRead++;
+            return value;
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            int count = delegate.read(buffer, offset, length);
+            if (count < 0) checkEnd();
+            else bytesRead += count;
+            return count;
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
+
+        private void checkEnd() throws IOException {
+            if (bytesRead == 0) {
+                throw new IOException("Resource-pack response is empty");
+            }
+            if (declaredLength >= 0 && bytesRead != declaredLength) {
+                throw new IOException("Resource-pack response ended after " + bytesRead
+                        + " bytes; expected " + declaredLength);
+            }
+        }
     }
 
     public static URL proxyAuthentication(URL target) {
@@ -159,12 +271,29 @@ public final class BrowserHttpProxy {
               pageHost === '[::1]' || pageHost === '::1';
             let registryRelay = null;
             const registryNodes = globalThis.__gaiusBridgeUrls;
+            const disabledRelays = new Set();
+            try {
+              if (globalThis.__gaiusRelays && typeof globalThis.__gaiusRelays.list === 'function') {
+                const listed = JSON.parse(globalThis.__gaiusRelays.list());
+                if (Array.isArray(listed)) {
+                  for (let index = 0; index < listed.length; index++) {
+                    const entry = listed[index];
+                    if (entry && entry.source === 'builtin' && entry.enabled === false && entry.url) {
+                      disabledRelays.add(String(entry.url));
+                    }
+                  }
+                }
+              }
+            } catch (ignored) {
+              // Ignore malformed settings and retain the normal bridge fallback.
+            }
             if (!localDevelopmentHost && Array.isArray(registryNodes)) {
               let bestPriority = -Infinity;
               for (let index = 0; index < registryNodes.length; index++) {
                 const node = registryNodes[index];
                 const url = typeof node === 'string' ? node : node && node.url;
                 if (typeof url !== 'string' || !url.trim()) continue;
+                if (disabledRelays.has(url.trim())) continue;
                 const rawPriority = node && typeof node === 'object' ? Number(node.priority) : 0;
                 const priority = Number.isFinite(rawPriority) ? rawPriority : 0;
                 if (priority > bestPriority) {
@@ -237,10 +366,53 @@ public final class BrowserHttpProxy {
         }
     }
 
+    private static void reportResourcePackDirect() {
+        try {
+            reportResourcePackMetric("direct");
+        } catch (UnsatisfiedLinkError ignored) {
+            // JVM-side bytecode checks do not install TeaVM JS bodies.
+        }
+    }
+
+    private static void reportResourcePackFallback() {
+        try {
+            reportResourcePackMetric("directFallback");
+        } catch (UnsatisfiedLinkError ignored) {
+            // JVM-side bytecode checks do not install TeaVM JS bodies.
+        }
+    }
+
+    /** Called by the generated HttpUtil wrapper after a direct attempt fails. */
+    public static void resourcePackDirectFallback() {
+        reportResourcePackFallback();
+    }
+
+    /** Hash failures are final; only transport/CORS/status failures may restart through relay. */
+    public static boolean shouldFallbackResourcePack(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase(Locale.ROOT);
+                if (lower.contains("hash") || lower.contains("sha-1")
+                        || lower.contains("sha1") || lower.contains("checksum")) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     @JSBody(params = {"kind"}, script = """
             const counters = globalThis.__gaiusMinecraftCounters || (globalThis.__gaiusMinecraftCounters = {});
             const name = 'network.httpProxy.' + String(kind);
             counters[name] = (counters[name] || 0) + 1;
             """)
     private static native void reportBrowser(String kind);
+
+    @JSBody(params = {"kind"}, script = """
+            const counters = globalThis.__gaiusMinecraftCounters || (globalThis.__gaiusMinecraftCounters = {});
+            const name = 'network.resourcePack.' + String(kind);
+            counters[name] = (counters[name] || 0) + 1;
+            """)
+    private static native void reportResourcePackMetric(String kind);
 }

@@ -4,6 +4,9 @@ import {join} from "node:path";
 import {decodePng} from "./capture-pixel-diff.mjs";
 import {waitForCaptureQuiescence} from "./capture-quiescence.mjs";
 
+// Scale only diagnostic deadlines, never the number of frames or the quiescence criteria.
+const captureTimeoutMs = 120000 * Math.max(1, Number(process.env.CAPTURE_TIMEOUT_SCALE || 1));
+
 export const CAPTURE_OPTIONS = Object.freeze([
   "renderDistance:8", "simulationDistance:6", "renderClouds:true", "particles:2",
   "enableVsync:true", "maxFps:60", "bobView:false", "fov:0.0", "guiScale:2",
@@ -95,7 +98,7 @@ if(frame!==previous?.frame){observed++;streak=ready&&loaded===previous?.loaded?s
 previous={frame,loaded};}
 if(streak>=${frames})return resolve({ok:true,consecutive:streak,observed,loaded,frame,elapsedMs:performance.now()-started,
 compile:p.compileBacklog,upload:p.uploadBacklog,audit:globalThis.__gaiusSectionAudit||null});
-if(performance.now()-started>120000)return resolve({ok:false,consecutive:streak,observed,loaded,frame,pipeline:p});
+if(performance.now()-started>${captureTimeoutMs})return resolve({ok:false,consecutive:streak,observed,loaded,frame,pipeline:p});
 requestAnimationFrame(sample);};requestAnimationFrame(sample);})`;
 }
 
@@ -120,7 +123,7 @@ export async function alignCaptureGameTime(command, sleep, target = 600) {
   let step=null;
   if(before.value<target){step=await command(`/tick step ${target-before.value}`,/(?:Stepp|tick)/i);
     if(!step?.ok)throw new Error("capture tick step was not acknowledged");}
-  const deadline=Date.now()+120000;let after=before;
+  const deadline=Date.now()+captureTimeoutMs;let after=before;
   while(after.value<target&&Date.now()<deadline){await sleep(500);after=await query();}
   if(after.value!==target)throw new Error(`capture game time is ${after.value}, expected ${target}`);
   await sleep(500);const confirmed=await query();
@@ -253,7 +256,7 @@ export async function captureDeterministicWorld({command, evaluate, waitFor, key
       await key("F1", "F1", 112); hidden = true;
       await sleep(500);
       const quiescence = await waitForCaptureQuiescence({evaluate, sleep, camera, radius: 8,
-        stableFrames: 4, minStableMs: 1000, timeoutMs: 120000, drawFrames: false});
+        stableFrames: 4, minStableMs: 1000, timeoutMs: captureTimeoutMs, drawFrames: false});
       const stability = await evaluate(captureStableFramesExpression(camera, stableFrames));
       if (!stability?.ok) throw new Error(`camera did not stabilize: ${name}: ${JSON.stringify(stability)}`);
       const loadedChunks = quiescence.receipt?.loadedChunks || quiescence.loadedChunks;
@@ -269,7 +272,7 @@ export async function captureDeterministicWorld({command, evaluate, waitFor, key
       await writeFile(join(outputPath, `world-content-${name}.json`), JSON.stringify(content, null, 2));
       const temporalAttempts = [];
       let accepted = null;
-      const temporalDeadline = Date.now() + 120000;
+      const temporalDeadline = Date.now() + captureTimeoutMs;
       for (let attempt = 0; Date.now() < temporalDeadline; attempt++) {
         const files = [];
         const states = [];

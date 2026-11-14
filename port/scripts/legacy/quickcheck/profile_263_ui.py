@@ -203,7 +203,7 @@ def checks(jar: Path, vanilla: Path, javap_path: Path) -> list[tuple[str, bool, 
     # --- Resource packs ---------------------------------------------------------------------
     supplier = method(patched("net.minecraft.server.packs.FilePackResources$FileResourcesSupplier"),
                       "openResources(")
-    check("FilePackResources openResources merges safe atlas overlays",
+    check("FilePackResources openResources retains selected overlays",
           ordered(supplier, "Pack$Metadata.overlays:",
                   "dev/gaius/browser/BrowserPackOverlayCompat.mergeSafeAtlasOverlays"))
     fixed = patched("net.minecraft.server.packs.FixedPathPackResources")
@@ -253,8 +253,9 @@ def checks(jar: Path, vanilla: Path, javap_path: Path) -> list[tuple[str, bool, 
 
     # --- Verified-only patches (M262 / MCP) ----------------------------------------------------
     distances = preset_distances(method(patched("net.minecraft.client.GraphicsPreset"), "void apply("))
-    check("GraphicsPreset FAST and FANCY pin browser distances render=8 simulation=6",
-          distances["renderDistance"][:2] == [8, 8] and distances["simulationDistance"][:2] == [6, 6],
+    check("GraphicsPreset keeps vanilla FAST/FANCY/FABULOUS distances",
+          distances["renderDistance"][:3] == [8, 16, 32]
+          and distances["simulationDistance"][:3] == [6, 12, 12],
           str(distances))
     identifier = method(patched("net.minecraft.resources.Identifier"), "resolveAgainst(")
     check("Identifier.resolveAgainst avoids Path.resolve(String, String[])",

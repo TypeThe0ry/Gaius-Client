@@ -1,6 +1,7 @@
 package dev.gaius.browser.kernel.mesh;
 
 import dev.gaius.browser.HostLoop;
+import dev.gaius.browser.BrowserChunkPipelineTelemetry;
 import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.VertexSorting;
@@ -32,6 +33,7 @@ import net.minecraft.server.packs.PackResources;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.Vec3;
 import org.lwjgl.system.BrowserMemory;
+import org.teavm.jso.JSBody;
 import org.teavm.classlib.java.lang.TModernRuntimeSupport;
 import org.teavm.jso.JSObject;
 
@@ -79,6 +81,9 @@ public final class MeshKernelHooks {
     static final Object VANILLA = new Object();
 
     private static final int VANILLA_VERTEX_BYTES = 28;
+    /** Keep one worker-result transfer bounded so a burst cannot monopolize one JSPI activation. */
+    private static final int MAX_RESULT_DRAIN = 16;
+    private static final long RESULT_DRAIN_NANOS = 1_000_000L;
     private static final int NEARBY_BLOCKS = 32;
     private static final long EXPORT_SLICE_NANOS = 8_000_000L;
     /**
@@ -108,6 +113,40 @@ public final class MeshKernelHooks {
     private static int exporterResourceEpoch;
     private static int exporterLevelEpoch;
 
+    private static boolean sectionInCameraFrustum(SectionRenderDispatcher.RenderSection section) {
+        try {
+            Minecraft client = Minecraft.getInstance();
+            if (client == null || client.gameRenderer == null || client.gameRenderer.mainCamera() == null
+                    || client.gameRenderer.mainCamera().getCullFrustum() == null) {
+                return true;
+            }
+            return client.gameRenderer.mainCamera().getCullFrustum().isVisible(section.getBoundingBox());
+        } catch (RuntimeException ignored) {
+            // A compile can race camera setup/reset. Keeping the section eligible preserves the
+            // vanilla-visible result; the value is only a queue hint.
+            return true;
+        }
+    }
+
+    private static boolean installPriorityEnabled() {
+        return installPriorityFlag();
+    }
+
+    private static boolean installPriority;
+    private static boolean installPriorityInitialized;
+
+    private static boolean installPriorityFlag() {
+        if (!installPriorityInitialized) {
+            installPriority = installPriorityFlagJs();
+            installPriorityInitialized = true;
+        }
+        return installPriority;
+    }
+
+    @JSBody(script = "var g=typeof globalThis!=='undefined'?globalThis:self;"
+            + "var f=g.__gaiusLauncherFlags;return !!(f&&f.meshInstallPriority===true);")
+    private static native boolean installPriorityFlagJs();
+
     private MeshKernelHooks() {
     }
 
@@ -129,6 +168,8 @@ public final class MeshKernelHooks {
         final int levelEpoch;
         final int resourceEpoch;
         final int ticket;
+        int installPriority;
+        final boolean recompile;
         final long submittedNanos;
         final List<BlockEntity> blockEntities;
         /** Point of view of the camera the kernel sorted the translucent quads for. */
@@ -137,7 +178,8 @@ public final class MeshKernelHooks {
         boolean answered;
 
         InFlight(MeshKernelAccess.Task task, SectionRenderDispatcher.RenderSection section, long node,
-                int requestSeq, int ticket, List<BlockEntity> blockEntities, Vec3 camera) {
+                int requestSeq, int ticket, boolean recompile,
+                List<BlockEntity> blockEntities, Vec3 camera) {
             this.task = task;
             this.section = section;
             this.node = node;
@@ -145,9 +187,34 @@ public final class MeshKernelHooks {
             this.levelEpoch = BrowserMeshInstallQueue.levelEpoch();
             this.resourceEpoch = BrowserMeshInstallQueue.resourceEpoch();
             this.ticket = ticket;
+            this.recompile = recompile;
+            this.installPriority = 0;
             this.submittedNanos = System.nanoTime();
             this.blockEntities = blockEntities;
             this.pointOfView = TranslucencyPointOfView.of(camera, node);
+        }
+
+        void refreshInstallPriority() {
+            if (!installPriorityEnabled()) {
+                installPriority = 0;
+                return;
+            }
+            Minecraft client = Minecraft.getInstance();
+            if (client == null || client.gameRenderer == null || client.gameRenderer.mainCamera() == null) {
+                installPriority = 0;
+                return;
+            }
+            Vec3 camera = client.gameRenderer.mainCamera().position();
+            Vec3 center = section.getBoundingBox().getCenter();
+            double dx = center.x - camera.x;
+            double dy = center.y - camera.y;
+            double dz = center.z - camera.z;
+            int distance = (int) Math.min(1.0e6, Math.sqrt(dx * dx + dy * dy + dz * dz));
+            boolean nearbyEdit = recompile && distance <= NEARBY_BLOCKS;
+            boolean inFrustum = sectionInCameraFrustum(section);
+            installPriority = inFrustum
+                    ? Math.max(0, distance >> 4)
+                    : (nearbyEdit ? 0x8000 : 0x10000) + Math.max(1, distance >> 4);
         }
 
         boolean alive() {
@@ -284,32 +351,41 @@ public final class MeshKernelHooks {
             // gets a mesh. The old result is dropped as not alive when it arrives.
             return false;
         }
-        List<BlockEntity> blockEntities = new ArrayList<>();
-        MeshJobBuffers b = BUFFERS;
-        if (!SectionSnapshot.capture(b, region, node, current, camera, blockEntities, blend)) {
-            return false;
-        }
-        MeshKernelAccess.Compiler options = (MeshKernelAccess.Compiler) (Object) compiler;
+        int ticket = nextTicket();
         int sx = SectionPos.x(node);
         int sy = SectionPos.y(node);
         int sz = SectionPos.z(node);
+        BrowserChunkPipelineTelemetry.snapshotStart(ticket, sx, sy, sz);
+        List<BlockEntity> blockEntities = new ArrayList<>();
+        MeshJobBuffers b = BUFFERS;
+        boolean captured;
+        try {
+            captured = SectionSnapshot.capture(b, region, node, current, camera, blockEntities, blend);
+        } catch (RuntimeException error) {
+            BrowserChunkPipelineTelemetry.snapshotEnd(ticket, false);
+            BrowserChunkPipelineTelemetry.discard(ticket, "snapshot-error");
+            throw error;
+        }
+        BrowserChunkPipelineTelemetry.snapshotEnd(ticket, captured);
+        if (!captured) {
+            BrowserChunkPipelineTelemetry.discard(ticket, "snapshot-fallback");
+            return false;
+        }
+        MeshKernelAccess.Compiler options = (MeshKernelAccess.Compiler) (Object) compiler;
         double cx = (sx << 4) + 8.0 - camera.x;
         double cy = (sy << 4) + 8.0 - camera.y;
         double cz = (sz << 4) + 8.0 - camera.z;
         int distance = (int) Math.min(1.0e6, Math.sqrt(cx * cx + cy * cy + cz * cz));
         boolean recompile = ((SectionRenderDispatcher.RenderSection.SectionTask) (Object) task).isRecompile();
         int requestSeq = BrowserMeshInstallQueue.beginRequest(node);
-        int ticket = nextTicket++;
-        if (nextTicket == Integer.MAX_VALUE) {
-            nextTicket = 1;
-        }
         int[] h = b.header;
         h[MeshKernelBridge.H_TICKET] = ticket;
         h[MeshKernelBridge.H_EPOCH] = current.epoch;
         h[MeshKernelBridge.H_WIDE] = b.wide ? 1 : 0;
         h[MeshKernelBridge.H_FLAGS] = (options.gaius$ambientOcclusion() ? MeshKernelBridge.FLAG_AO : 0)
                 | (options.gaius$cutoutLeaves() ? MeshKernelBridge.FLAG_CUTOUT_LEAVES : 0)
-                | (recompile && distance <= NEARBY_BLOCKS ? MeshKernelBridge.FLAG_NEARBY : 0);
+                | (recompile && distance <= NEARBY_BLOCKS ? MeshKernelBridge.FLAG_NEARBY : 0)
+                | (b.packedStateLength != 0 ? MeshKernelBridge.FLAG_PACKED_STATES : 0);
         h[MeshKernelBridge.H_SX] = sx;
         h[MeshKernelBridge.H_SY] = sy;
         h[MeshKernelBridge.H_SZ] = sz;
@@ -319,16 +395,20 @@ public final class MeshKernelHooks {
         h[MeshKernelBridge.H_BLEND] = blend;
         boolean sent;
         try {
-            sent = MeshKernelBridge.submit(h, b.ids16, b.ids32, b.light, b.quarts, b.palette, b.swamp, b.floats);
+            sent = MeshKernelBridge.submit(h, b.ids16, b.ids32, b.light, b.quarts, b.palette, b.swamp, b.floats,
+                    b.packedStates, b.packedStateLength);
         } catch (RuntimeException error) {
             BrowserMeshInstallQueue.cancel(node, requestSeq);
             throw error;
         }
         if (!sent) {
             BrowserMeshInstallQueue.cancel(node, requestSeq);
+            BrowserChunkPipelineTelemetry.discard(ticket, "worker-submit-failed");
             return false;
         }
-        InFlight job = new InFlight(task, section, node, requestSeq, ticket, blockEntities, camera);
+        BrowserChunkPipelineTelemetry.workerSubmit(ticket, requestSeq);
+        InFlight job = new InFlight(task, section, node, requestSeq, ticket,
+                recompile, blockEntities, camera);
         IN_FLIGHT.put(ticket, job);
         SUBMIT_ORDER.addLast(job);
         task.gaius$setMeshKernelState(job);
@@ -349,6 +429,7 @@ public final class MeshKernelHooks {
             long start = System.nanoTime();
             try {
                 SectionCompiler.Results results = buildResults(ready, pack, sorting);
+                BrowserChunkPipelineTelemetry.meshPublished(ready.job.ticket);
                 MeshKernelBridge.noteInstallNanos(System.nanoTime() - start);
                 return results;
             } catch (RuntimeException error) {
@@ -368,14 +449,20 @@ public final class MeshKernelHooks {
      */
     public static void drainResults() {
         JSObject record;
-        while ((record = MeshKernelBridge.poll()) != null) {
+        int drained = 0;
+        long deadline = System.nanoTime() + RESULT_DRAIN_NANOS;
+        while (drained < MAX_RESULT_DRAIN && System.nanoTime() < deadline
+                && (record = MeshKernelBridge.poll()) != null) {
+            drained++;
             InFlight job = IN_FLIGHT.remove(MeshKernelBridge.ticket(record));
             if (job == null) {
                 // Timed out before: vanilla compiled the task already.
+                MeshKernelBridge.release(record);
                 continue;
             }
             job.answered = true;
             int status = MeshKernelBridge.status(record);
+            BrowserChunkPipelineTelemetry.workerResult(job.ticket, status);
             int bytes = 0;
             if (status == MeshKernelBridge.STATUS_MESHED) {
                 int quads = MeshKernelBridge.quadCount(record, 0) + MeshKernelBridge.quadCount(record, 1)
@@ -388,25 +475,36 @@ public final class MeshKernelHooks {
                     MeshKernelBridge.noteFailure(code + ": " + MeshKernelBridge.message(record));
                 }
             }
+            job.refreshInstallPriority();
             BrowserMeshInstallQueue.enqueue(new Install(job, record, status, bytes));
         }
-        expireUnanswered();
+        boolean moreExpirations = expireUnanswered(MAX_RESULT_DRAIN - drained, deadline);
+        boolean resultBacklog = (drained == MAX_RESULT_DRAIN || System.nanoTime() >= deadline)
+                && MeshKernelBridge.hasResults();
+        if (resultBacklog || moreExpirations) {
+            // poll() removes only the records handled above; continue from a fresh host turn so
+            // the remaining queue cannot extend this activation indefinitely.
+            MeshKernelBridge.scheduleResultPump();
+        }
     }
 
     /** Oldest-first sweep; cheap while the oldest job out is young. */
-    private static void expireUnanswered() {
+    private static boolean expireUnanswered(int limit, long deadline) {
         long now = System.nanoTime();
-        while (!SUBMIT_ORDER.isEmpty()) {
+        int handled = 0;
+        while (handled < limit && System.nanoTime() < deadline && !SUBMIT_ORDER.isEmpty()) {
             InFlight job = SUBMIT_ORDER.peekFirst();
             if (job.answered) {
                 SUBMIT_ORDER.pollFirst();
+                handled++;
                 continue;
             }
             boolean kernelOff = MeshKernelBridge.disabled();
             if (!kernelOff && now - job.submittedNanos < ANSWER_TIMEOUT_NANOS) {
-                return;
+                return false;
             }
             SUBMIT_ORDER.pollFirst();
+            handled++;
             IN_FLIGHT.remove(job.ticket);
             job.answered = true;
             if (!kernelOff) {
@@ -415,13 +513,26 @@ public final class MeshKernelHooks {
                 System.out.println("[mesh-kernel] section reply timed out after "
                         + ANSWER_TIMEOUT_MILLIS + " ms; using vanilla compiler");
             }
+            BrowserChunkPipelineTelemetry.workerResult(job.ticket, MeshKernelBridge.STATUS_FAILED);
+            job.refreshInstallPriority();
             BrowserMeshInstallQueue.enqueue(new Install(job, null, MeshKernelBridge.STATUS_FAILED, 0));
         }
+        InFlight next = SUBMIT_ORDER.peekFirst();
+        return next != null && (next.answered || MeshKernelBridge.disabled()
+                || now - next.submittedNanos >= ANSWER_TIMEOUT_NANOS);
     }
 
     private static boolean schedulingOutcome(String code) {
         return "superseded".equals(code) || "stale".equals(code) || "cancelled".equals(code)
                 || "backpressure".equals(code) || "request-cap".equals(code);
+    }
+
+    private static int nextTicket() {
+        int ticket = nextTicket++;
+        if (nextTicket == Integer.MAX_VALUE) {
+            nextTicket = 1;
+        }
+        return ticket;
     }
 
     /**
@@ -710,6 +821,7 @@ public final class MeshKernelHooks {
         private final InFlight job;
         private final int status;
         private final int bytes;
+        private boolean telemetryMeshInstalled;
         private JSObject record;
 
         Install(InFlight job, JSObject record, int status, int bytes) {
@@ -745,6 +857,22 @@ public final class MeshKernelHooks {
         }
 
         @Override
+        public int priority() {
+            job.refreshInstallPriority();
+            return job.installPriority;
+        }
+
+        @Override
+        public int telemetryTicket() {
+            return job.ticket;
+        }
+
+        @Override
+        public boolean telemetryMeshInstalled() {
+            return telemetryMeshInstalled;
+        }
+
+        @Override
         public boolean install() {
             JSObject result = record;
             record = null;
@@ -756,6 +884,7 @@ public final class MeshKernelHooks {
                 return true;
             }
             if (status == MeshKernelBridge.STATUS_MESHED && result != null) {
+                telemetryMeshInstalled = true;
                 job.task.gaius$setMeshKernelState(new Ready(job, result));
             } else {
                 if (result != null) {
@@ -774,7 +903,8 @@ public final class MeshKernelHooks {
                 MeshKernelBridge.release(record);
             }
             record = null;
-            if (reason == BrowserMeshInstallQueue.DISCARD_FAILED && job.alive()) {
+            if ((reason == BrowserMeshInstallQueue.DISCARD_FAILED
+                    || reason == BrowserMeshInstallQueue.DISCARD_BUDGET) && job.alive()) {
                 job.task.gaius$setMeshKernelState(VANILLA);
                 MeshKernelBridge.noteVanillaFallback();
                 job.task.gaius$requeueForMeshKernel();

@@ -25,8 +25,8 @@ import org.objectweb.asm.tree.VarInsnNode;
 /**
  * The storage domain of the MinecraftClientPatcher step ({@code patches/storage}):
  * the browser storage mount of the client main, world stem saves, region file compression,
- * gzip structure templates and the jar file system of
- * {@code Util}.
+ * gzip structure templates, the jar file system of {@code Util} and the registration
+ * schema checks deferred until the data fixer is built.
  *
  * <p>{@code MinecraftClientPatcher.main} registers these patches in the chain order under their
  * historical ids ({@code MinecraftClientPatcher.<method>}); the ASM helpers that other domains
@@ -378,6 +378,54 @@ public final class StoragePatches {
         write(node, output);
     }
 
+    /**
+     * Chunk saving: the palette entries of a section container are encoded through the vanilla
+     * codec once per registry object ({@code BrowserPaletteEntryCodec}), and
+     * {@code PalettedContainer.reencodeContents} asks the palettes once per distinct source id
+     * ({@code BrowserPaletteRepack}). Neither changes what is written: the codec returns a copy of its
+     * own first result for the same entry and the repack hands the target palette the same values in
+     * the same order. Both hooks are in {@code PalettedContainer}, so the 26.4 shape is the same as
+     * long as that class keeps the two method signatures.
+     */
+    public static void patchPalettedContainerBrowserEncode(String jar, Path output) throws IOException {
+        String owner = "net/minecraft/world/level/chunk/PalettedContainer";
+        String codec = "com/mojang/serialization/Codec";
+        ClassNode node = read(jar, owner + ".class");
+
+        String strategy = "net/minecraft/world/level/chunk/Strategy";
+        MethodNode codecFactory = find(node, "codec",
+                "(L" + codec + ";L" + strategy + ";Ljava/lang/Object;L" + owner + "RO$Unpacker;)L" + codec + ";");
+        InsnList wrap = new InsnList();
+        wrap.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        wrap.add(new MethodInsnNode(
+                Opcodes.INVOKESTATIC,
+                "dev/gaius/browser/BrowserPaletteEntryCodec",
+                "wrap",
+                "(L" + codec + ";)L" + codec + ";",
+                false));
+        wrap.add(new VarInsnNode(Opcodes.ASTORE, 0));
+        codecFactory.instructions.insert(wrap);
+        codecFactory.maxStack = Math.max(codecFactory.maxStack, 1);
+
+        String bitStorage = "net/minecraft/util/BitStorage";
+        String palette = "net/minecraft/world/level/chunk/Palette";
+        String descriptor = "(L" + bitStorage + ";L" + palette + ";L" + palette + ";)[I";
+        MethodNode reencode = find(node, "reencodeContents", descriptor);
+        InsnList repack = new InsnList();
+        repack.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        repack.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        repack.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        repack.add(new MethodInsnNode(
+                Opcodes.INVOKESTATIC,
+                "dev/gaius/browser/BrowserPaletteRepack",
+                "reencode",
+                descriptor,
+                false));
+        repack.add(new InsnNode(Opcodes.ARETURN));
+        replace(reencode, repack, 3, 3);
+        write(node, output);
+    }
+
     public static void patchStructureTemplateManagerBrowserGzip(String jar, Path outputRoot)
             throws IOException {
         String legacyOwner =
@@ -431,5 +479,106 @@ public final class StoragePatches {
         code.add(new InsnNode(Opcodes.ARETURN));
         replace(method, code, 2, 2);
         write(node, outputRoot.resolve(owner + ".class"));
+    }
+
+    private static final String UTIL = "net/minecraft/util/Util";
+    private static final String FETCH_CHOICE_TYPE = "fetchChoiceType";
+    private static final String FETCH_CHOICE_TYPE_DESCRIPTOR =
+            "(Lcom/mojang/datafixers/DSL$TypeReference;Ljava/lang/String;)"
+                    + "Lcom/mojang/datafixers/types/Type;";
+    private static final String CHOICE_TYPE_CHECKS = "dev/gaius/browser/BrowserChoiceTypeChecks";
+    private static final String CHOICE_TYPE_CHECK_DEFER = "defer";
+
+    /**
+     * Defers the data-fixer schema check of entity and block entity registration
+     * ({@code Util.fetchChoiceType}, whose first call builds the historical fixer graph) to
+     * {@code BrowserChoiceTypeChecks}, which replays the checks once the real fixer is built.
+     *
+     * <p>Shape, checked before anything is written: {@code EntityType$Builder} holds exactly one
+     * {@code fetchChoiceType} call, and the block entity registration class
+     * ({@code BlockEntityTypes}, or {@code BlockEntityType} on a generation without it) exactly
+     * one; each is directly followed by {@code POP}, so the caller drops the result and the
+     * redirect (same descriptor, returns null) leaves the stack as it was. A call already
+     * pointed at the helper counts as a site, so the patch is idempotent. Any other shape fails
+     * the patch and the vanilla checks stay.
+     */
+    public static void patchDeferredChoiceTypeChecks(String jar, Path outputRoot) throws IOException {
+        String entityBuilder = "net/minecraft/world/entity/EntityType$Builder";
+        String[] blockEntityOwners = {
+            "net/minecraft/world/level/block/entity/BlockEntityTypes",
+            "net/minecraft/world/level/block/entity/BlockEntityType",
+        };
+        ClassNode entity = readPatched(jar, outputRoot, entityBuilder);
+        if (entity == null) {
+            throw new IllegalStateException(entityBuilder + " was not found");
+        }
+        if (choiceTypeCheckSites(entity).size() != 1) {
+            throw new IllegalStateException(entityBuilder + " does not hold exactly one dropped "
+                    + "fetchChoiceType call");
+        }
+        ClassNode blockEntity = null;
+        int blockEntitySites = 0;
+        for (String owner : blockEntityOwners) {
+            ClassNode node = readPatched(jar, outputRoot, owner);
+            if (node == null) {
+                continue;
+            }
+            int sites = choiceTypeCheckSites(node).size();
+            blockEntitySites += sites;
+            if (sites > 0) {
+                blockEntity = node;
+            }
+        }
+        if (blockEntitySites != 1) {
+            throw new IllegalStateException("the block entity registration does not hold exactly one "
+                    + "dropped fetchChoiceType call (" + blockEntitySites + ")");
+        }
+        for (ClassNode node : new ClassNode[] {entity, blockEntity}) {
+            for (MethodInsnNode call : choiceTypeCheckSites(node)) {
+                call.owner = CHOICE_TYPE_CHECKS;
+                call.name = CHOICE_TYPE_CHECK_DEFER;
+            }
+            write(node, outputRoot.resolve(node.name + ".class"));
+        }
+    }
+
+    private static ClassNode readPatched(String jar, Path outputRoot, String owner) throws IOException {
+        Path patched = outputRoot.resolve(owner + ".class");
+        if (java.nio.file.Files.isRegularFile(patched)) {
+            return read(patched);
+        }
+        try (ZipFile input = new ZipFile(jar)) {
+            if (input.getEntry(owner + ".class") == null) {
+                return null;
+            }
+        }
+        return read(jar, owner + ".class");
+    }
+
+    /**
+     * The fetchChoiceType calls of a class (vanilla or already redirected), each of which must be
+     * followed by POP; a call whose result is used fails the patch.
+     */
+    private static java.util.List<MethodInsnNode> choiceTypeCheckSites(ClassNode node) {
+        java.util.List<MethodInsnNode> sites = new java.util.ArrayList<>();
+        for (MethodNode method : node.methods) {
+            for (AbstractInsnNode instruction : method.instructions.toArray()) {
+                if (!(instruction instanceof MethodInsnNode call)
+                        || call.getOpcode() != Opcodes.INVOKESTATIC
+                        || !call.desc.equals(FETCH_CHOICE_TYPE_DESCRIPTOR)
+                        || !((call.owner.equals(UTIL) && call.name.equals(FETCH_CHOICE_TYPE))
+                                || (call.owner.equals(CHOICE_TYPE_CHECKS)
+                                        && call.name.equals(CHOICE_TYPE_CHECK_DEFER)))) {
+                    continue;
+                }
+                AbstractInsnNode next = nextRealInstruction(call);
+                if (next == null || next.getOpcode() != Opcodes.POP) {
+                    throw new IllegalStateException(node.name + "." + method.name + method.desc
+                            + " uses the fetchChoiceType result");
+                }
+                sites.add(call);
+            }
+        }
+        return sites;
     }
 }

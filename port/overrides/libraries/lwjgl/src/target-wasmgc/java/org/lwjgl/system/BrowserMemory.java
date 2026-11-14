@@ -244,7 +244,8 @@ public final class BrowserMemory {
 
     @JSBody(script = """
             try {
-              const raw = new URLSearchParams(globalThis.location?.search || '').get('gaiusSectionPacks');
+              var search = globalThis.location && globalThis.location.search || '';
+              var raw = new URLSearchParams(search).get('gaiusSectionPacks');
               const value = Number(raw);
               return Number.isFinite(value) && value >= 1 ? Math.min(64, Math.floor(value)) : 1;
             } catch (ignored) { return 1; }
@@ -253,9 +254,9 @@ public final class BrowserMemory {
 
     @JSBody(params = {"count", "requested", "perPack", "maxMemory", "processors"}, script = """
             if (globalThis.__gaiusMemoryTelemetryEnabled !== true) return;
-            const root = globalThis.__gaiusMemoryTelemetry || (globalThis.__gaiusMemoryTelemetry = {});
-            root.sectionBuffers = {count, requested, perPackBytes: perPack, maxMemory, availableProcessors: processors,
-              totalBytes: count * perPack};
+            var root = globalThis.__gaiusMemoryTelemetry || (globalThis.__gaiusMemoryTelemetry = {});
+            root.sectionBuffers = {count: count, requested: requested, perPackBytes: perPack, maxMemory: maxMemory,
+              availableProcessors: processors, totalBytes: count * perPack};
             """)
     private static native void publishSectionBuilderTelemetry(int count, int requested, int perPack,
             long maxMemory, int processors);
@@ -1256,18 +1257,18 @@ public final class BrowserMemory {
             memory.reuseHits = v[20];
             memory.inPlaceReallocations = v[21];
             memory.poolLimitBytes = v[22];
-            const owners = memory.owners || (memory.owners = {});
+            var owners = memory.owners || (memory.owners = {});
             for (let index = 0; index < 5; index++) {
               const name = ['native', 'heap-buffer-copy', 'aligned', 'decoded-image', 'mapped-staging'][index];
-              const entry = owners[name] || (owners[name] = {});
-              entry.liveBytes = v[23 + index * 2];
-              entry.peakBytes = v[24 + index * 2];
+              var ownerEntry = owners[name] || (owners[name] = {});
+              ownerEntry.liveBytes = v[23 + index * 2];
+              ownerEntry.peakBytes = v[24 + index * 2];
             }
-            const sizes = memory.sizeBuckets || (memory.sizeBuckets = []);
+            var sizes = memory.sizeBuckets || (memory.sizeBuckets = []);
             for (let index = 0; index < 8; index++) {
-              const entry = sizes[index] || (sizes[index] = {});
-              entry.liveBytes = v[33 + index * 2];
-              entry.count = v[34 + index * 2];
+              var sizeEntry = sizes[index] || (sizes[index] = {});
+              sizeEntry.liveBytes = v[33 + index * 2];
+              sizeEntry.count = v[34 + index * 2];
             }
             """)
     private static native void publishTelemetryBrowser(Float64Array values);
@@ -1291,9 +1292,10 @@ public final class BrowserMemory {
 
     @JSBody(script = """
             try {
-              const params = new URLSearchParams(globalThis.location?.search || '');
+              var search = globalThis.location && globalThis.location.search || '';
+              var params = new URLSearchParams(search);
               if (params.get('gaiusMemoryReuse') === '0') return 0;
-              const low = typeof globalThis.__gaiusIsLowMemoryTier === 'function'
+              var low = typeof globalThis.__gaiusIsLowMemoryTier === 'function'
                     ? globalThis.__gaiusIsLowMemoryTier()
                     : params.get('gaiusMemoryTier') === 'low'
                       || !!(globalThis.__gaiusMemoryTier && globalThis.__gaiusMemoryTier.lowMemory);

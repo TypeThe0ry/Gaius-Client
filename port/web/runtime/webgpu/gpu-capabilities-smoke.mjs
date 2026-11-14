@@ -107,6 +107,10 @@ for (const [file, globalName] of [
   const sandbox = linkStubs(file, globalName);
   const linked = {};
   sandbox.installGpuImports(linked);
+  assert.equal(linked.gaiusGpu.gpuIndirectEncodeFrustum(1, 2, 3, 4, 1), false,
+    `${file} must return the boolean fallback when GPU glue has not loaded`);
+  assert.equal(linked.gaiusGpu.gpuIndirectEncodeHiZ(1, 2, 3, 4, 5, 6, 1), false,
+    `${file} must return the boolean fallback when GPU glue has not loaded`);
   sandbox.GaiusWebGpu = {
     importTable() {
       return { draw() {} };
@@ -114,6 +118,10 @@ for (const [file, globalName] of [
   };
   assert.doesNotThrow(() => linked.gaiusGpu.drawIndexedIndirect(1, 0, 1),
     `${file} must fail closed when an older glue has no indirect import`);
+  assert.equal(linked.gaiusGpu.gpuIndirectEncodeFrustum(1, 2, 3, 4, 1), false,
+    `${file} must fail closed when an older glue has no frustum import`);
+  assert.equal(linked.gaiusGpu.gpuIndirectEncodeHiZ(1, 2, 3, 4, 5, 6, 1), false,
+    `${file} must fail closed when an older glue has no Hi-Z import`);
 }
 
 console.log("WebGPU capability smoke passed: with/without indirect-first-instance, missing imports, fallback imports");

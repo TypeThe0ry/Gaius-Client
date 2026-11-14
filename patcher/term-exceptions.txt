@@ -4,3 +4,4 @@ port/scripts/generate-pom.sh 0e89820860c342f2c7ec694d144023b10301c2accdd078cb516
 port/src/main/java/dev/gaius/browser/BrowserRenderScheduler.java 0e89820860c342f2c7ec694d144023b10301c2accdd078cb5167a06d0c3d5bcc
 port/web/runtime/quality/gpu-caps.js 0e89820860c342f2c7ec694d144023b10301c2accdd078cb5167a06d0c3d5bcc
 port/web/singleplayer/server-worker-bootstrap.js 0e89820860c342f2c7ec694d144023b10301c2accdd078cb5167a06d0c3d5bcc
+port/web/boot/gaius-boot.js 0e89820860c342f2c7ec694d144023b10301c2accdd078cb5167a06d0c3d5bcc

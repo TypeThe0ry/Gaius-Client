@@ -86,9 +86,15 @@ const coverage = {hooksAvailable: true, hooks: 'all', errors: 0, jobs: {'402': 1
 check('split terrain needs actual noise and surface jobs', () => {
   assert.equal(hookCoverage(coverage, 'router-f64'), true);
   assert.equal(hookCoverage({...coverage, jobs: {'402': 1, '403': 1}}, 'router-f64'), false);
+  // multi-noise BIOMES never reach the kernel: no BIOMES job is needed for coverage
+  assert.equal(hookCoverage({...coverage, jobs: {'403': 1, '404': 1}}, 'router-f64'), true);
+  assert.equal(hookCoverage({...coverage, jobs: {'402': 1}}, 'router-f64'), false);
 });
 check('combined terrain has no separate surface job', () => {
   assert.equal(hookCoverage({...coverage, jobs: {'402': 1, '403': 1}}, 'sampler-f32'), true);
+  assert.equal(hookCoverage({...coverage, jobs: {'403': 36}}, 'sampler-f32'), true);
+  assert.equal(hookCoverage({...coverage, jobs: {'402': 36}}, 'sampler-f32'), false);
+  assert.equal(hookCoverage({...coverage, jobs: {}}, 'sampler-f32'), false);
 });
 check('isolated noise cannot silently run surface or biomes', () => {
   assert.equal(hookCoverage({...coverage, hooks: 'noise', jobs: {'403': 1}}, 'router-f64'), true);

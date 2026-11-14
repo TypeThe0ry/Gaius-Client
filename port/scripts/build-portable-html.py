@@ -12,9 +12,15 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from pathlib import Path
+
+# make-wasm-page.py loads this file with spec_from_file_location, which does not put the script
+# directory on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from relay_artifact_gate import load_nodes  # noqa: E402
 
 
 def _native_external_path(value: str) -> Path:
@@ -129,6 +135,13 @@ def _prepare_text(target: Path, text: str) -> str:
 def drop_site_notice_link(document: str) -> str:
     """A site shell links its sibling NOTICE file; a portable page carries the text instead."""
     return document.replace('  <p><a href="NOTICE">Third-party notices and licenses</a></p>\n', "")
+
+
+def drop_site_boot_preloads(document: str) -> str:
+    """The portable shell embeds these scripts and must never fetch their site URLs."""
+    document = re.sub(r'<link\b(?=[^>]*\bdata-gaius-preload="boot")[^>]*>\n?', "", document)
+    return re.sub(r'<script\b(?=[^>]*\bdata-gaius-preload="wasm")[^>]*>.*?</script>\n?',
+                  "", document, flags=re.DOTALL)
 
 
 def license_text(root: Path) -> str:
@@ -267,7 +280,42 @@ def publish_portable_pair(
 # downloaded pages, but new pages never emit its non-ASCII U+0080..U+0083 escapes.
 PAYLOAD_ENCODING = "gaius-b64-v1"
 PAYLOAD_TYPE = "text/x-gaius-b64"
-B64_PART_CHARS = 4 * 1024 * 1024
+# Characters per payload element. Blink appends every parser chunk (~0.7 MB) of a <script> body
+# to its one growing Text node by copying the whole node (script text has no 64 Ki node-length
+# split), so a part's parse cost grows with its size: the 180 MB 26.3 page with 4 Mi-char parts
+# reached its payload bootstrap ~0.54 s later on Linux and ~65 ms later on Windows (12 pairs each,
+# WI-9) than with 64 Ki parts. GAIUS_PORTABLE_PART_CHARS (a multiple of 8, at least 4096)
+# overrides it for every single-file path; LEGACY_B64_PART_CHARS is the pre-WI-9 layout for A/B
+# runs or a rollback. The payload text, its encoding, the index hashes and the decoders do not
+# depend on the part size.
+B64_PART_CHARS = 64 * 1024
+LEGACY_B64_PART_CHARS = 4 * 1024 * 1024
+PART_CHARS_ENV = "GAIUS_PORTABLE_PART_CHARS"
+
+
+def payload_part_chars() -> int:
+    """Characters per payload element of a single-file page (B64_PART_CHARS unless overridden)."""
+    raw = os.environ.get(PART_CHARS_ENV, "").strip()
+    if not raw:
+        return B64_PART_CHARS
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{PART_CHARS_ENV} must be an integer, got {raw!r}") from exc
+    # Whole base64 quanta keep every part independently decodable (the Worker decoder decodes
+    # part by part); a multiple of 8 also keeps b7 blocks whole.
+    if value < 4096 or value % 8:
+        raise RuntimeError(f"{PART_CHARS_ENV} must be a multiple of 8 and at least 4096, got {value}")
+    return value
+
+
+def payload_part_elements(key: str, text: str, part_chars: int) -> list[str]:
+    """The inert <script> elements that carry one Wasm-only payload's base64 text, in order."""
+    return [
+        f'<script type="{PAYLOAD_TYPE}" data-gaius-asset="{key}" data-part="{part}">'
+        + text[start:start + part_chars] + "</script>"
+        for part, start in enumerate(range(0, len(text), part_chars))
+    ]
 
 
 def encode_payload(data: bytes) -> str:
@@ -365,10 +413,11 @@ class PortablePayload:
             raise RuntimeError(f"invalid or duplicate portable payload name: {name}")
         text = encode_payload(data)
         parts = 0
-        for start in range(0, len(text), B64_PART_CHARS):
+        part_chars = payload_part_chars()
+        for start in range(0, len(text), part_chars):
             self.elements.append(
                 f'  <script type="{PAYLOAD_TYPE}" data-gaius-asset="{name}" data-part="{parts}">'
-                + text[start:start + B64_PART_CHARS]
+                + text[start:start + part_chars]
                 + "</script>\n"
             )
             parts += 1
@@ -651,7 +700,8 @@ def verify_signatures(dist: Path, profile: dict, classes_hash: str) -> list[dict
 # all of them: the modules become Blob URLs published through
 # window.__gaiusShaderToolchainUrls, and the loader runs inline after the
 # portable bootstrap, so it finds the URLs once the embedded assets are ready.
-# A 26.2 page has no loader tag and its portable output is unchanged.
+# A Wasm client can also carry the compiler independently of the JavaScript
+# shell's loader tag; the portable page must embed that dependency as well.
 SHADER_TOOLCHAIN_LOADER = "gaius-shader-toolchain.js"
 SHADER_TOOLCHAIN_MANIFEST = "gaius-shader-toolchain.json"
 SHADER_TOOLCHAIN_MANIFEST_SCHEMA = 1
@@ -697,14 +747,26 @@ def load_shader_toolchain(
     common_identity: dict[str, object],
     frozen: bool = False,
     carried_from: Path | None = None,
+    wasm_dist: Path | None = None,
 ) -> dict[str, object] | None:
-    """Verify and load the shader toolchain of a page that carries its loader tag.
+    """Verify the compiler required by the page or its embedded Wasm client.
 
-    Returns None for a page without the tag (26.2).  A client whose classes.js
-    calls the toolchain but whose page does not load it can never start, so
-    that combination is an error rather than a plain portable build.
+    The JavaScript shell may not use the compiler even when the Wasm client
+    does. Follow the Wasm distribution's compiler declaration (the staged
+    loader), as make-wasm-page.py does, when the shell has no loader tag.
     """
     tags = SHADER_TOOLCHAIN_TAG.findall(index)
+    if not tags and wasm_dist is not None and (
+        (wasm_dist / SHADER_TOOLCHAIN_LOADER).is_file()
+        or contains_marker(wasm_dist / "classes.wasm", SHADER_TOOLCHAIN_CLASSES_MARKER)
+    ):
+        dist = wasm_dist
+        # These are current Wasm inputs, never frozen JavaScript sidecars.
+        frozen = False
+        carried_from = None
+        for name in SHADER_TOOLCHAIN_FILES + (SHADER_TOOLCHAIN_MANIFEST,):
+            require_nonempty(dist / name)
+        tags = [(profile["id"], shader_toolchain_token(dist))]
     if not tags:
         if contains_marker(classes_js, SHADER_TOOLCHAIN_CLASSES_MARKER):
             raise RuntimeError(
@@ -768,6 +830,7 @@ def load_shader_toolchain(
         }
     return {
         "version": token,
+        "pageLoader": bool(SHADER_TOOLCHAIN_TAG.search(index)),
         "loader": loader,
         "payload": payload,
         "manifest": {
@@ -869,6 +932,9 @@ WEBGPU_MODULES = {
     "runtime/webgpu/gpu-glue.js": Path("port/web/runtime/webgpu/gpu-glue.js"),
     "runtime/webgpu/shaderxlat-job.js": Path("port/native/golden/shaders/shaderxlat-job.js"),
     "runtime/webgpu/quality-post.js": Path("port/web/runtime/webgpu/quality-post.js"),
+    "runtime/webgpu/shader-pack-store.js": Path("port/web/runtime/webgpu/shader-pack-store.js"),
+    "runtime/webgpu/shader-pack-compat.js": Path("port/web/runtime/webgpu/shader-pack-compat.js"),
+    "runtime/webgpu/shader-pack.js": Path("port/web/runtime/webgpu/shader-pack.js"),
 }
 WEBGPU_TRANSLATOR = "runtime/webgpu/gaius-shaderxlat.wasm"
 WEBGPU_TRANSLATOR_ASSET = "webgpu-shaderxlat"
@@ -888,6 +954,82 @@ def kernel_job_modules(web: Path) -> list[str]:
     return sorted(
         f"kernels/{path.name}" for path in (web / "kernels").glob("*-job.js") if path.is_file()
     )
+
+
+def wasm_only_runtime_modules(site: Path, manifest: dict) -> tuple[list[tuple[str, str]], dict[str, str]]:
+    """The page scripts a Wasm-only single file inlines in front of its boot script.
+
+    The staged site serves the kernel runtime, the quality layer and the WebGPU glue as separate
+    assets; the single file has no sibling to load them from, and gaius-boot.js (loadScript) only
+    skips the load for a name listed in window.__gaiusBootInline. Returns the (name, source) pairs
+    in load order and their SHA-256 values; names the site does not carry are left out, exactly as
+    the multi-file site would.
+    """
+    assets = manifest.get("assets", {})
+    names = list(KERNEL_RUNTIME_MODULES) + [
+        name for name in manifest.get("modules", []) if isinstance(name, str)
+    ] + list(QUALITY_MODULES) + list(WEBGPU_MODULES)
+    modules: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name in names:
+        logical = assets.get(name)
+        if name in seen or not isinstance(logical, str) or not (site / logical).is_file():
+            continue
+        seen.add(name)
+        modules.append((name, inline_safe((site / logical).read_text(encoding="utf-8"), name)))
+    return modules, {name: sha256_bytes(source.encode("utf-8")) for name, source in modules}
+
+
+def wasm_only_kernel_index(site: Path, manifest: dict) -> tuple[dict, list[str]]:
+    """The wasm kernels a Wasm-only single file carries, as the page index plus payload names.
+
+    The staged site lists each kernel as {kinds, memory, sha256, variants: {variant: file}}; the
+    single file embeds every variant as a file payload under its logical asset name and the
+    bootstrap turns the index into window.__gaiusPortableKernels (load() reads the payload).
+    Variants whose file is missing are left out; a kernel with none is omitted, and an empty
+    result means the page keeps every vanilla path, exactly as a site without kernels does.
+    """
+    assets = manifest.get("assets", {})
+    kernels = manifest.get("kernels") if isinstance(manifest.get("kernels"), dict) else {}
+    index: dict[str, dict] = {}
+    names: list[str] = []
+    for name in sorted(kernels):
+        entry = kernels[name]
+        if not re.fullmatch(r"[a-z0-9_]+", name) or not isinstance(entry, dict):
+            raise RuntimeError(f"kernel manifest entry is invalid: {name}")
+        variants: dict[str, str] = {}
+        for variant in ("simd", "baseline"):
+            key = f"kernels/{name}.{variant}.wasm"
+            logical = assets.get(key)
+            if isinstance(logical, str) and (site / logical).is_file():
+                variants[variant] = key
+                names.append(key)
+        if not variants:
+            continue
+        index[name] = {"kinds": list(entry.get("kinds") or []), "variants": variants,
+                       "sha256": {variant: (entry.get("sha256") or {}).get(variant) for variant in variants}}
+        if isinstance(entry.get("memory"), dict):
+            index[name]["memory"] = entry["memory"]
+    return index, names
+
+
+def wasm_only_server_worker_scripts(site: Path, manifest: dict) -> str:
+    """Inert copies of the scripts the integrated server Worker imports, for a Wasm-only single file.
+
+    gaius-boot.js (serverWorkerKernelScripts) hands a portable page's Worker the text of these
+    <script type="text/plain" data-gaius-worker-script> elements; without them the Worker starts with
+    no kernel scripts and generates the world on the vanilla path (kernel-mirror, the worldgen job codec
+    and the worldgen facade, plus the policy and runtime for ?worldgenKernelHost=worker).
+    """
+    assets = manifest.get("assets", {})
+    tags = []
+    for name in SERVER_WORKER_MODULES:
+        logical = assets.get(name)
+        if not isinstance(logical, str) or not (site / logical).is_file():
+            continue
+        source = inline_safe((site / logical).read_text(encoding="utf-8"), name)
+        tags.append(f'<script type="text/plain" data-gaius-worker-script="{name}">\n{source}</script>')
+    return "".join(tags)
 
 
 def inline_safe(text: str, label: str) -> str:
@@ -1093,6 +1235,73 @@ def verified_component_identity(
     }
 
 
+def verified_pack_identity(
+    root: Path,
+    artifact: Path,
+    expected: dict[str, object],
+    wasm_dist: Path | None,
+) -> dict[str, object]:
+    if wasm_dist is not None:
+        module = wasm_dist / WASM_CLIENT_MODULE
+        sidecar = build_identity.sidecar_path(module)
+        if sidecar.is_file():
+            # Staging may use newer glue or have no original build workspace.
+            # The compiled resource list and pack must share the selected
+            # client's inputs, rather than the staging checkout's overlays.
+            verified_component_identity(root, module, "wasm-client", expected, frozen=True)
+            expected = json.loads(sidecar.read_text(encoding="utf-8"))
+    return verified_component_identity(root, artifact, "vanilla-assets", expected)
+
+
+def frozen_compiler_inputs(
+    root: Path, artifact: Path, role: str, pom: Path, resources: list[Path],
+) -> tuple[Path, list[Path], dict[str, object] | None]:
+    """Bind a staged copy to the retained compiler inputs at its POM target."""
+    configuration = compiler_profile.read_teavm_configuration(pom)
+    target = Path(configuration["targetDirectory"]).expanduser()
+    if not target.is_absolute():
+        target = pom.resolve().parent / target
+    logical = target / artifact.name
+    # Resolve dot segments without following an origin redirected into scratch.
+    if Path(os.path.abspath(logical)) == Path(os.path.abspath(artifact)):
+        return artifact, resources, None
+
+    # Only the caller's original POM selects the origin; retained paths are
+    # assertions to check, never paths from which to load arbitrary inputs.
+    if role not in compiler_profile.EXPECTED_MAIN_CLASSES:
+        raise RuntimeError(f"unsupported relocated compiler role: {role}")
+    compiler_profile.validate_artifact_target(role, logical, pom, configuration)
+    compiler_profile.validate_release_configuration(configuration)
+    sidecar = compiler_profile.default_output(artifact)
+    original_sidecar = compiler_profile.default_output(logical)
+    # A staged dist may carry the Wasm pack. The retained JS compiler profile
+    # still binds its original dist-local resources and generated resource lists.
+    original_resources = [
+        logical.parent / path.name if path.parent.absolute() == artifact.parent.absolute() else path
+        for path in resources
+    ]
+    for path in (artifact, sidecar, pom, logical, original_sidecar, *resources, *original_resources):
+        if any(part.is_symlink() for part in (path, *path.parents)):
+            raise RuntimeError(f"relocated compiler input must not use symlinks: {path}")
+    try:
+        actual = json.loads(sidecar.read_text(encoding="utf-8"))
+        if (
+            not isinstance(actual, dict)
+            or actual.get("role") != role
+            or actual.get("compiler") != configuration
+            or actual.get("pom") != compiler_profile.file_record(root, pom)
+            or not isinstance(actual.get("artifact"), dict)
+            or actual["artifact"].get("path") != compiler_profile.relative_name(root, logical)
+        ):
+            raise RuntimeError(f"compiler profile does not name the original POM target: {sidecar}")
+        original = json.loads(original_sidecar.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"retained compiler profile is missing or invalid: {sidecar}") from exc
+    if compiler_profile.canonical_json(actual) != compiler_profile.canonical_json(original):
+        raise RuntimeError(f"staged compiler profile differs from retained original: {sidecar}")
+    return logical, original_resources, actual
+
+
 def verified_compiler_profile(
     root: Path,
     artifact: Path,
@@ -1102,23 +1311,52 @@ def verified_compiler_profile(
     frozen: bool = False,
 ) -> dict[str, object]:
     sidecar = compiler_profile.default_output(artifact)
-    if frozen and (not sidecar.is_file() or not pom.is_file()):
-        # Frozen release dists may retain artifact identity sidecars without
-        # the build workspace and compiler POM used to create them.
-        return {"frozen": True, "sidecar": str(sidecar)}
+    if frozen:
+        # Inspect only explicit ancestors, before a missing leaf can mean legacy.
+        for parent in reversed(pom.absolute().parents):
+            if parent == Path(parent.anchor):
+                continue
+            try:
+                mode = parent.lstat().st_mode
+            except FileNotFoundError:
+                break
+            except (OSError, ValueError) as exc:
+                raise RuntimeError(f"compiler POM ancestor is inaccessible: {parent}") from exc
+            if stat.S_ISLNK(mode):
+                raise RuntimeError(f"compiler POM ancestors must not use symlinks: {parent}")
+            if not stat.S_ISDIR(mode):
+                raise RuntimeError(f"compiler POM ancestor is not a directory: {parent}")
+        try:
+            mode = pom.lstat().st_mode
+        except FileNotFoundError:
+            # Legacy frozen dists may outlive their compiler workspace.
+            # An existing POM, including an invalid path, must be validated.
+            return {"frozen": True, "sidecar": str(sidecar)}
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"compiler POM is inaccessible: {pom}") from exc
+        if stat.S_ISLNK(mode):
+            raise RuntimeError(f"compiler POM must not use symlinks: {pom}")
+    logical, compiler_resources, retained = (
+        frozen_compiler_inputs(root, artifact, role, pom, resources)
+        if frozen else (artifact, resources, None)
+    )
     expected = compiler_profile.create_record(
         root,
         role,
-        artifact,
+        logical,
         pom,
-        resources,
+        compiler_resources,
         True,
+        artifact_input=artifact if logical != artifact else None,
     )
     try:
-        actual = json.loads(sidecar.read_text(encoding="utf-8"))
+        actual = retained if retained is not None else json.loads(sidecar.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"compiler profile is missing or invalid: {sidecar}") from exc
-    if actual != expected:
+    if actual != expected or (
+        frozen
+        and compiler_profile.canonical_json(actual) != compiler_profile.canonical_json(expected)
+    ):
         raise RuntimeError(f"compiler profile does not match current inputs: {sidecar}")
     return {
         "profileSha256": expected["profileSha256"],
@@ -1149,10 +1387,17 @@ FILE_PAYLOAD_SUFFIX = ".payload.js"
 FILE_PAYLOAD_FILES = (
     "classes.wasm",
     "vanilla-assets.pack.gz",
+    # The unihex glyph table of that pack (UnihexGlyphTable); without it the client parses the zips.
+    "gaius-unihex.bin.gz",
     "gaius-shaderc.wasm",
     "gaius-shaderc.js",
     "gaius-spvc.wasm",
     "gaius-spvc.js",
+    # Optional: the shader results a release run recorded (bake-shader-cache.mjs); the loader primes its cache.
+    "gaius-shader-prebake.bin",
+    # Optional: the vanilla mip chains and atlas layouts BrowserAtlasPrebake replays for identical
+    # inputs (port/tools/atlasprebake, staged by stage-web-runtime.py --atlas-prebake).
+    "gaius-atlas-prebake.bin.gz",
     "gaius-hotpath.wasm",
     # ?gpu=webgpu: the SPIR-V -> WGSL translator gaius-boot.js compiles (WEBGPU_TRANSLATOR).
     "runtime/webgpu/gaius-shaderxlat.wasm",
@@ -1298,6 +1543,30 @@ def load_wasm_client(wasm_dist: Path, wasm_server_dist: Path | None = None) -> d
 # runs before boot selection and prepares only the embedded Wasm payload.
 PORTABLE_WASM_CLIENT = r'''      // Runtime selection is published by gaius-boot.js after this bootstrap runs.
       // Prepare the embedded Wasm payload first; boot performs the Wasm capability gate.
+      let frozenClientUrlPromise;
+      window.__gaiusPortableLoadJsClient = () => {
+        if (!frozenClientUrlPromise) {
+          frozenClientUrlPromise = decodeAsset("classes", {gunzip: true, blobType: "text/javascript", parallel: true})
+            .then((blob) => URL.createObjectURL(blob));
+        }
+        return frozenClientUrlPromise;
+      };
+      window.__gaiusPortableReleaseJsFallback = () => {
+        const selection = window.__gaiusRuntimeSelection;
+        if (!selection || selection.selected !== "wasm" || selection.mainStarted !== true
+            || !window.__gaiusBoot || window.__gaiusBoot.serverRuntime !== "wasm") return false;
+        if (!decoder.release(["classes", "server"])) return false;
+        const discardedUrl = frozenClientUrlPromise;
+        frozenClientUrlPromise = null;
+        if (discardedUrl) Promise.resolve(discardedUrl).then((url) => URL.revokeObjectURL(url), () => {});
+        portableServerGzipDataPromise = null;
+        Object.defineProperty(window, "__gaiusSingleplayerServerGzipDataPromise", {
+          configurable: true, enumerable: true, writable: true, value: null,
+        });
+        window.__gaiusPortableLoadJsClient = undefined;
+        window.__gaiusPortableJsFallbackReleased = true;
+        return true;
+      };
       const portableWasmClient = !!(window.__gaiusPortableRuntimes &&
         window.__gaiusPortableRuntimes.wasm);
       if (portableWasmClient) {
@@ -1539,7 +1808,7 @@ PORTABLE_BOOTSTRAP = r'''  <script data-gaius-portable="1">
           const info = portablePayload.assets[name];
           if (!info) return Promise.reject(new Error("portable asset is missing: " + name));
           const id = nextId++;
-          const result = new Promise((resolve, reject) => pending.set(id, {resolve, reject}));
+          const result = new Promise((resolve, reject) => pending.set(id, {resolve, reject, name}));
           const run = async () => {
             try {
               const messages = sent.get(id) || [];
@@ -1551,6 +1820,9 @@ PORTABLE_BOOTSTRAP = r'''  <script data-gaius-portable="1">
               // Unpacked bytes for the boot screen (boot-art.js reads window.__gaiusLoadBytes).
               const meters = window.__gaiusLoadBytes || (window.__gaiusLoadBytes = {});
               const meter = meters["portable:" + name] = {loaded: 0, total: info.bytes};
+              // Yield to the page every 16 Mi characters (four of the former 4 Mi-char parts), not
+              // every few parts, so the cadence does not depend on the part size.
+              let sinceYield = 0;
               for (let index = 0; index < parts.length; index++) {
                 const element = parts[index];
                 const text = element.textContent;
@@ -1559,7 +1831,9 @@ PORTABLE_BOOTSTRAP = r'''  <script data-gaius-portable="1">
                 if (element.parentNode) element.parentNode.removeChild(element);
                 const part = {type: "part", id, text};
                 messages.push(part); post(part);
-                if ((index & 3) === 3) {
+                sinceYield += text.length;
+                if (sinceYield >= 16 * 1024 * 1024) {
+                  sinceYield = 0;
                   await new Promise((resolve) => setTimeout(resolve, 0));
                 }
               }
@@ -1582,7 +1856,21 @@ PORTABLE_BOOTSTRAP = r'''  <script data-gaius-portable="1">
           cache.set(name, result);
           return result;
         }
-        return {decode};
+        function release(names) {
+          const selected = new Set(names);
+          if ([...pending.values()].some((entry) => selected.has(entry.name))) return false;
+          for (const name of selected) {
+            const parts = document.querySelectorAll('script[data-gaius-asset="' + name + '"]');
+            for (const element of parts) {
+              element.textContent = "";
+              if (element.parentNode) element.parentNode.removeChild(element);
+            }
+            cache.delete(name);
+            delete portablePayload.assets[name];
+          }
+          return true;
+        }
+        return {decode, release};
       })();
       const decodeAsset = (name, options) => decoder.decode(name, options || {});
 
@@ -1922,7 +2210,7 @@ def arrange_portable_boot(portable: str, marker: str, runtime_inline: str) -> st
 
 
 def build(dist: Path, output: Path, root: Path | None = None, wasm_dist: Path | None = None,
-          wasm_server_dist: Path | None = None) -> None:
+          wasm_server_dist: Path | None = None, frozen_js: bool = False) -> None:
     root = (root or Path(__file__).resolve().parents[2]).resolve()
     dist = dist.resolve()
     output = output.resolve()
@@ -1960,27 +2248,31 @@ def build(dist: Path, output: Path, root: Path | None = None, wasm_dist: Path | 
     wasm_raw = require_nonempty(dist / "gaius-hotpath.wasm")
     wasm_gzip = require_nonempty(dist / "gaius-hotpath.wasm.gz")
     wasm_hash, wasm_gzip_hash = compare_gzip_with_raw(wasm_raw, wasm_gzip)
-    vanilla_gzip = require_nonempty(dist / "vanilla-assets.pack.gz")
+    # Resource discovery is compiled into the active client.  Keep its pack
+    # even when the portable page also embeds an older JavaScript fallback.
+    pack_dist = wasm_dist.resolve() if wasm_dist is not None else dist
+    vanilla_gzip = require_nonempty(pack_dist / "vanilla-assets.pack.gz")
     worker_path = require_nonempty(dist / "singleplayer-server-worker.js")
     relay_registry_path = require_nonempty(dist / "relay-nodes.json")
+    frozen_js = bool(wasm_dist is not None and frozen_js)
     component_identities = {
         "classesJs": verified_component_identity(
-            root, classes_js, "client", common_identity
+            root, classes_js, "client", common_identity, frozen=frozen_js
         ),
         "singleplayerServerJs": verified_component_identity(
-            root, server_js, "singleplayer-worker", common_identity
+            root, server_js, "singleplayer-worker", common_identity, frozen=frozen_js
         ),
         "wasmHotpath": verified_component_identity(
-            root, wasm_raw, "wasm-hotpath", common_identity
+            root, wasm_raw, "wasm-hotpath", common_identity, frozen=frozen_js
         ),
         "singleplayerWorkerBootstrap": verified_component_identity(
-            root, worker_path, "worker-bootstrap", common_identity
+            root, worker_path, "worker-bootstrap", common_identity, frozen=frozen_js
         ),
-        "vanillaAssetsPack": verified_component_identity(
-            root, vanilla_gzip, "vanilla-assets", common_identity
+        "vanillaAssetsPack": verified_pack_identity(
+            root, vanilla_gzip, common_identity, wasm_dist
         ),
         "relayRegistry": verified_component_identity(
-            root, relay_registry_path, "relay-registry", common_identity
+            root, relay_registry_path, "relay-registry", common_identity, frozen=frozen_js
         ),
     }
     metadata = json.loads(
@@ -2004,8 +2296,8 @@ def build(dist: Path, output: Path, root: Path | None = None, wasm_dist: Path | 
             generated_resources / "assets/minecraft/sounds.json",
             generated_resources / "assets/minecraft/font/include/unifont.json",
             generated_resources / "assets/minecraft/font/include/unifont_pua.json",
-            vanilla_gzip,
-        ],
+            dist / "vanilla-assets.pack.gz",
+        ], frozen=frozen_js,
     )
     worker_compiler = verified_compiler_profile(
         root,
@@ -2016,19 +2308,16 @@ def build(dist: Path, output: Path, root: Path | None = None, wasm_dist: Path | 
             build_root
             / "server-worker"
             / "generated-resources/dev/gaius/browser/minecraft-resources.txt"
-        ],
+        ], frozen=frozen_js,
     )
     signatures = verify_signatures(dist, profile, classes_hash)
     shader_toolchain = load_shader_toolchain(
-        dist, index, profile, classes_js, root, common_identity,
+        dist, index, profile, classes_js, root, common_identity, frozen=frozen_js,
+        carried_from=wasm_dist.resolve() if frozen_js and wasm_dist is not None else None,
+        wasm_dist=wasm_dist.resolve() if wasm_dist is not None else None,
     )
     worker = worker_path.read_text(encoding="utf-8")
-    relay_registry = json.loads(relay_registry_path.read_text(encoding="utf-8"))
-    if (relay_registry.get("kind") != "gaius-relay-registry"
-            or relay_registry.get("protocolVersion") != 1
-            or not isinstance(relay_registry.get("nodes"), list)):
-        raise RuntimeError("portable relay-nodes.json is incompatible")
-    relay_nodes = relay_registry["nodes"][:64]
+    relay_nodes = load_nodes(relay_registry_path, root)
 
     # Document order is decode order: the client and its wasm first (they gate the boot), the
     # shader toolchain next, then the asset pack, the singleplayer server (only needed when a
@@ -2156,7 +2445,7 @@ def build(dist: Path, output: Path, root: Path | None = None, wasm_dist: Path | 
         # and fall back to sibling files; the inline copy after the bootstrap
         # awaits the embedded Blob URLs instead.
         index, removed = SHADER_TOOLCHAIN_TAG.subn("", index)
-        if removed != 1:
+        if removed != int(shader_toolchain["pageLoader"]):
             raise RuntimeError("shader toolchain loader tag was not replaced")
     if runtime_inline and BOOT_TAG in index:
         index = index.replace(BOOT_TAG, runtime_inline, 1)
@@ -2179,6 +2468,9 @@ def build(dist: Path, output: Path, root: Path | None = None, wasm_dist: Path | 
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
     arguments = sys.argv[1:]
+    frozen_js = "--frozen-js" in arguments
+    if frozen_js:
+        arguments.remove("--frozen-js")
     no_js_fallback = "--no-js-fallback" in arguments
     if no_js_fallback:
         arguments.remove("--no-js-fallback")
@@ -2245,7 +2537,7 @@ def main() -> int:
         # The staged site is already the complete wasm-only launcher layout.  Keep the
         # acceptance command deterministic by copying its entry page as the portable shell;
         # the site bootstrap owns runtime selection and the embedded Wasm payloads below.
-        index = (site / "index.html").read_text(encoding="utf-8").replace("\r\n", "\n")
+        index = drop_site_boot_preloads((site / "index.html").read_text(encoding="utf-8").replace("\r\n", "\n"))
         index = re.sub(r'\s*<script[^>]*data-gaius-site="v1"[^>]*>.*?</script>\s*', "\n", index, flags=re.DOTALL)
         boot_url = re.search(r'src="([^"]*gaius-boot[^\"]*)"', index)
         if boot_url is None:
@@ -2274,8 +2566,14 @@ def main() -> int:
             'const modules = [\n        filePayloadUrl("gaius-shaderc.wasm",',
             'const modules = [\n        filePayloadUrl("gaius-shaderc.js", "text/javascript").then((url) => { urls.shadercJs = url; }),\n        filePayloadUrl("gaius-spvc.js", "text/javascript").then((url) => { urls.spvcJs = url; }),\n        filePayloadUrl("gaius-shaderc.wasm",')
 
+        site_manifest = json.loads((site / "gaius-site.json").read_text(encoding="utf-8"))
+        runtime_modules, _runtime_hashes = wasm_only_runtime_modules(site, site_manifest)
+        runtime_inline_names = json.dumps({name: True for name, _source in runtime_modules}, ensure_ascii=True,
+                                          sort_keys=True, separators=(",", ":"))
+        runtime_module_tags = "".join(
+            f'<script data-gaius-boot-module="{name}">\n{source}</script>\n' for name, source in runtime_modules)
         index = index.replace(f'<script data-gaius-boot="v1" src="{boot_url.group(1)}"></script>',
-                              f'<script data-gaius-boot="v1">{boot}</script>')
+                              runtime_module_tags + f'<script data-gaius-boot="v1">{boot}</script>')
         index = index.replace('loading classes.js...', 'loading WebAssembly GC client...')
         index = index.replace('classes.js loaded; calling', 'WebAssembly GC client loaded; calling')
         index = re.sub(r'const classesUrl = window\.__gaiusClassesUrl \|\|\s*\("classes\.js\?v=" \+ encodeURIComponent\(buildToken\)\);',
@@ -2283,24 +2581,41 @@ def main() -> int:
         client = require_nonempty(wasm_dist / "classes.wasm").read_bytes()
         server_module = server / "singleplayer-server.wasm" if server.is_dir() else None
         server_bytes = server_module.read_bytes() if server_module and server_module.is_file() else b""
-        scripts = {name: require_nonempty(wasm_dist / name).read_text(encoding="utf-8")
-                   for name in WASM_CLIENT_SCRIPTS}
         server_entry = ",server:'singleplayer-server.wasm'" if server_bytes else ""
-        site_manifest = json.loads((site / "gaius-site.json").read_text(encoding="utf-8"))
         if site_manifest.get("profile") != profile:
             raise RuntimeError(
                 f"Wasm-only site profile mismatch: expected {profile}, got {site_manifest.get('profile')}"
             )
-        payload_names = list(FILE_PAYLOAD_FILES) + ["vanilla-sounds.pack"]
+        scripts = {name: require_nonempty(site / site_manifest["assets"][name]).read_text(encoding="utf-8")
+                   for name in WASM_CLIENT_SCRIPTS}
+        relay_nodes = load_nodes(site / "relay-nodes.json", root)
+        kernel_index, kernel_payload_names = wasm_only_kernel_index(site, site_manifest)
+        payload_names = list(FILE_PAYLOAD_FILES) + ["vanilla-sounds.pack"] + kernel_payload_names
+        # The PNG decoder the site ships (build-pages-site.py add_png_kernel): the same module and
+        # loader, switched on the same way, so STBImage decodes the panorama and atlases with it.
+        png_module = wasm_dist / "gaius-png.wasm"
+        png_script = wasm_dist / "png-kernel.js"
+        png_kernel = png_module.is_file() and png_script.is_file() and png_module.read_bytes()[:4] == WASM_MAGIC
+        if png_kernel:
+            payload_names.insert(payload_names.index("gaius-hotpath.wasm") + 1, "gaius-png.wasm")
         payload_scripts = []
         payload_index = {}
         payload_elements = []
+        # Experimental ordering: the page shell and boot script first, payloads after it, each
+        # asset followed by a marker script that releases its decoder.
+        payloads_last = os.environ.get("GAIUS_PORTABLE_PAYLOADS_LAST") == "1"
+        part_chars = payload_part_chars()
         embedded_files: set[Path] = set()
         for name in payload_names:
             logical = site_manifest.get("assets", {}).get(name)
             candidate = None
-            if not logical and name in {"classes.wasm", "singleplayer-server.wasm"}:
-                logical = site_manifest.get("assets", {}).get(name + ".gz")
+            if name in {"classes.wasm", "singleplayer-server.wasm"}:
+                # Embed the gzip sibling (about a quarter of the raw module): the page parses,
+                # base64-decodes and hashes far fewer bytes, and the boot loader inflates it while
+                # the module compiles.
+                gz_logical = site_manifest.get("assets", {}).get(name + ".gz")
+                if gz_logical and (site / gz_logical).is_file():
+                    logical = gz_logical
             if not logical or not (site / logical).is_file():
                 candidate = (wasm_dist / name) if (wasm_dist / name).is_file() else ((wasm_dist / (name + '.gz')) if (wasm_dist / (name + '.gz')).is_file() else ((server / name) if server and (server / name).is_file() else None))
                 if candidate is not None:
@@ -2322,12 +2637,9 @@ def main() -> int:
             stored = raw if logical.endswith(".gz") or not compressed_asset else gzip_bytes(raw)
             payload_index[key] = {"script": key + FILE_PAYLOAD_SUFFIX, "bytes": len(stored),
                                   "gzip": compressed_asset, "sha256": sha256_bytes(stored)}
-            text = encode_payload(stored)
-            for part, start in enumerate(range(0, len(text), B64_PART_CHARS)):
-                payload_elements.append(
-                    f'<script type="{PAYLOAD_TYPE}" data-gaius-asset="{key}" data-part="{part}">' +
-                    text[start:start + B64_PART_CHARS] + "</script>"
-                )
+            payload_elements.extend(payload_part_elements(key, encode_payload(stored), part_chars))
+            if payloads_last:
+                payload_elements.append(f'<script>window.__gaiusPayloadParsed("{key}")</script>')
         vanilla_url = site_manifest.get("assets", {}).get("vanilla-assets.pack.gz")
         vanilla_raw = (site / vanilla_url).read_bytes() if vanilla_url else b""
         expected_vanilla = (site / vanilla_url).read_bytes() if vanilla_url else b""
@@ -2340,34 +2652,54 @@ def main() -> int:
         # The file payload getter is the sole copy of each asset.  In particular, do
         # not also emit base64 wasm globals: that used to double the 20 MB client and
         # handed a gzip response to compileStreaming on file://.
-        prefix = ("<script>window.__gaiusPortableBuild=true;window.__gaiusPortableWasmOnly=true;"
+        prefix = ("<script>window.__gaiusPayloadsLast=" + ("true" if payloads_last else "false") + ";window.__gaiusBridgeUrls=" + json.dumps(relay_nodes, ensure_ascii=True,
+                                                                  separators=(',', ':')) + ";"
+                  "window.__gaiusPortableBuild=true;window.__gaiusPortableWasmOnly=true;"
+                  "window.__gaiusBootInline=" + runtime_inline_names + ";"
                   "window.__gaiusPortableVanillaSourceSha256=" + json.dumps(source_hash) + ";"
                   "window.__gaiusPortableRuntimes="
                   "{wasm:{client:'classes.wasm'" + server_entry + "}};window.__gaiusRuntimes="
                   "{wasm:{client:'classes.wasm'" + server_entry + "}};window.__gaiusFilePayloads="
                   + json.dumps(payload_index, separators=(',', ':')) + ";</script>"
-                  + "".join(payload_elements))
+                  + ("" if payloads_last else "".join(payload_elements)))
         prefix += r"""<script>
 try {
+  const _waits={};
+  const _wait=(n)=>_waits[n]||(_waits[n]=(()=>{let r;const p=new Promise(f=>{r=f});return {p,r}})());
+  window.__gaiusPayloadParsed=(n)=>_wait(n).r(true);
+  window.__gaiusPayloadWait=(n)=>_wait(n).p;
+  if (!window.__gaiusPayloadsLast) for (const _n of Object.keys(window.__gaiusFilePayloads)) _wait(_n).r(true);
   function _b64decode(name) {
     const info=window.__gaiusFilePayloads[name], nodes=document.querySelectorAll('script[data-gaius-asset="'+name+'"]');
     let text=''; nodes.forEach(n=>{text+=n.textContent; n.remove()});
-    let binary; try { binary=atob(text); } catch (e) { throw new Error('portable asset '+name+' is not valid ASCII base64; the HTML was re-encoded or corrupted'); }
-    if (binary.length !== info.bytes) throw new Error('portable asset '+name+' length mismatch (expected '+info.bytes+', got '+binary.length+')');
-    const out=new Uint8Array(binary.length); for(let i=0;i<binary.length;i++) out[i]=binary.charCodeAt(i); return out;
+    let out;
+    try {
+      if (typeof Uint8Array.fromBase64 === 'function') out=Uint8Array.fromBase64(text);
+      else { const binary=atob(text); out=new Uint8Array(binary.length); for(let i=0;i<binary.length;i++) out[i]=binary.charCodeAt(i); }
+    } catch (e) { throw new Error('portable asset '+name+' is not valid ASCII base64; the HTML was re-encoded or corrupted'); }
+    if (out.length !== info.bytes) throw new Error('portable asset '+name+' length mismatch (expected '+info.bytes+', got '+out.length+')');
+    return out;
   }
   async function _verify(name,b){const i=window.__gaiusFilePayloads[name]; if(!i.sha256)return b; const d=await crypto.subtle.digest('SHA-256',b), h=new Uint8Array(d); let a=''; for(const v of h)a+=v.toString(16).padStart(2,'0'); if(a!==i.sha256)throw new Error('portable asset '+name+' sha256 mismatch (expected '+i.sha256+', got '+a+')'); return b;}
-  async function _bytes(name){const i=window.__gaiusFilePayloads[name], cached=window.__gaiusPortablePayloadBytes[name], b=await _verify(name,cached||_b64decode(name)); if(!i.gzip)return b.buffer; const ds=new DecompressionStream('gzip'), w=ds.writable.getWriter(), r=new Response(ds.readable).arrayBuffer(); await w.write(b); await w.close(); return r;}
+  async function _bytes(name){const i=window.__gaiusFilePayloads[name], b=await _verify(name,await window.__gaiusPortablePayloadBytes[name]); if(!i.gzip)return b.buffer; const ds=new DecompressionStream('gzip'), w=ds.writable.getWriter(), r=new Response(ds.readable).arrayBuffer(); await w.write(b); await w.close(); return r;}
   function _blob(name,type){return _bytes(name).then(b=>{const url=URL.createObjectURL(new Blob([b],{type})); (window.__gaiusPortablePayloadUrls||(window.__gaiusPortablePayloadUrls={}))[name]=url; return url;});}
   window.__gaiusPortablePayloadBytes={};
   for (const _name of Object.keys(window.__gaiusFilePayloads)) {
     Object.defineProperty(window.__gaiusPortablePayloadBytes, _name, {configurable: true, enumerable: true,
       get() {
-         const value = _b64decode(_name);
+        const value = window.__gaiusPayloadWait(_name).then(() => _b64decode(_name));
+        value.catch(()=>{});
         Object.defineProperty(window.__gaiusPortablePayloadBytes, _name,
           {configurable: true, enumerable: true, value});
         return value;
       }});
+  }
+  // The WebGPU translator is a file payload of the single file; announce it the way the boot
+  // script reads an embedded translator, so any origin (https://gaius.fun/...) compiles it from the
+  // document instead of fetching the relative runtime/webgpu/ URL (404 on a host serving one file).
+  if (window.__gaiusFilePayloads['runtime/webgpu/gaius-shaderxlat.wasm']) {
+    window.__gaiusPortableWebGpu = {translator: {sha256: window.__gaiusFilePayloads['runtime/webgpu/gaius-shaderxlat.wasm'].sha256,
+      load: () => _bytes('runtime/webgpu/gaius-shaderxlat.wasm')}};
   }
   const _optional=(n,t)=>window.__gaiusFilePayloads[n]?_blob(n,t):Promise.resolve(null);
   function _lazyPromise(name, create) {
@@ -2377,9 +2709,139 @@ try {
       return promise;
     }});
   }
-  _lazyPromise('__gaiusWasmSource', () => _bytes('classes.wasm'));
+  window.__gaiusWasmModuleCacheKey = 'wasmgc-js-string-v1:' + window.__gaiusFilePayloads['classes.wasm'].sha256;
+  const _kernelIndex=__GAIUS_PORTABLE_KERNELS__;
+  if (_kernelIndex) {
+    const _kernels={};
+    for (const _kn of Object.keys(_kernelIndex)) {
+      const _e=_kernelIndex[_kn], _v={};
+      for (const _variant of Object.keys(_e.variants)) {
+        const _asset=_e.variants[_variant];
+        _v[_variant]={load:()=>_bytes(_asset), sha256:_e.sha256&&_e.sha256[_variant]};
+      }
+      _kernels[_kn]={kinds:_e.kinds, memory:_e.memory, variants:_v};
+    }
+    window.__gaiusPortableKernels=_kernels;
+  }
+  // The client module compiles while the page is still starting (storage, assets, GPU, the boot
+  // shim), not after it, and off the main thread: a dedicated Worker decodes the base64 text,
+  // checks the payload hash, inflates the gzip bytes straight into compileStreaming and posts the
+  // Module back. gaius-wasm-boot.js takes the Module as its source (same compile options) and
+  // does not compile again. Any Worker failure falls back to the page path below, which repeats
+  // the length and hash checks and reports their errors.
+  // ?gaiusPortableCompile=late keeps the previous order (bytes handed over when the shim asks),
+  // =main compiles early on the page thread.
+  const _compileMode = (() => { try { return new URLSearchParams(location.search).get('gaiusPortableCompile') || ''; } catch (e) { return ''; } })();
+  const _compileOptions = {builtins: ['js-string']};
+  function _streamCompile(b) {
+    const body = new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return WebAssembly.compileStreaming(new Response(body, {headers: {'Content-Type': 'application/wasm'}}), _compileOptions);
+  }
+  function _pageCompile() {
+    const raw = window.__gaiusPortablePayloadBytes['classes.wasm'];
+    const checked = raw.then(b => _verify('classes.wasm', b));
+    const module = Promise.all([checked, raw.then(_streamCompile)]).then(r => r[1]);
+    module.catch(()=>{});
+    return module;
+  }
+  // Start-function warm-up (?gaiusStartWarm=0 turns it off). Chrome compiles Wasm functions lazily,
+  // on their first call, on the calling thread, and every isolate that holds the same Module shares
+  // the compiled code. TeaVM's start function (teavm@initializer with its ~300 outlined chunks,
+  // initReflection, initStrings: ~5 MB of bytecode, ~40 MB of Liftoff code) therefore used to be
+  // compiled on the page thread inside instantiate. After posting the Module, the Worker now
+  // instantiates it once itself with the same TeaVM runtime (its own realm, its own imports; the
+  // start function calls no gaiusJspi/gaiusGpu import, those are inert stubs there), so that code
+  // is already compiled when the page instantiates. The page's instance, imports and start
+  // function are unchanged; only who compiles the code first differs. gaius-wasm-boot.js calls
+  // __gaiusStartWarmStop right before the page instantiates: the Worker is terminated then (what
+  // it compiled so far stays in the Module), so the two threads never compile the same functions
+  // at the same time, and nothing waits for the warm-up.
+  const _warmMode = (() => { try { return new URLSearchParams(location.search).get('gaiusStartWarm') || ''; } catch (e) { return ''; } })();
+  const _workerSource = "onmessage=async(e)=>{const d=e.data;" +
+    "if(d.warm!==undefined){const t=performance.now();try{importScripts(URL.createObjectURL(new Blob([d.warm],{type:'text/javascript'})));" +
+    "const m=self.__gaiusModule;await TeaVM.wasmGC.load(m,{installImports(i){for(const x of WebAssembly.Module.imports(m))" +
+    "if(x.module==='gaiusJspi'||x.module==='gaiusGpu')(i[x.module]??={})[x.name]??=()=>0;}});" +
+    "postMessage({warmed:performance.now()-t});}catch(err){postMessage({warmError:String(err&&err.message||err)});}return;}" +
+    "try{" +
+    "let b;if(typeof Uint8Array.fromBase64==='function')b=Uint8Array.fromBase64(d.text);else{const s=atob(d.text);b=new Uint8Array(s.length);for(let i=0;i<s.length;i++)b[i]=s.charCodeAt(i);}" +
+    "if(b.length!==d.bytes)throw new Error('length');const h=crypto.subtle.digest('SHA-256',b);" +
+    "const m=WebAssembly.compileStreaming(new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip')),{headers:{'Content-Type':'application/wasm'}}),{builtins:['js-string']});" +
+    "const v=new Uint8Array(await h);let a='';for(const x of v)a+=x.toString(16).padStart(2,'0');if(d.sha&&a!==d.sha)throw new Error('sha256');" +
+    "self.__gaiusModule=await m;postMessage({module:self.__gaiusModule});}catch(err){postMessage({error:String(err&&err.message||err)});}};";
+  function _workerCompile(info) {
+    return window.__gaiusPayloadWait('classes.wasm').then(() => new Promise((resolve, reject) => {
+      const nodes = document.querySelectorAll('script[data-gaius-asset="classes.wasm"]');
+      let text = ''; nodes.forEach(n => { text += n.textContent; });
+      const url = URL.createObjectURL(new Blob([_workerSource], {type: 'text/javascript'}));
+      const worker = new Worker(url);
+      URL.revokeObjectURL(url);
+      let compiled = false, stopped = false;
+      const stop = (mark) => {
+        if (stopped) return;
+        stopped = true;
+        worker.terminate();
+        window.__gaiusStartWarmStop = null;
+        if (mark) performance.mark(mark);
+      };
+      const warm = () => {
+        if (stopped) return;
+        // The inert runtime copy is complete once the parser has moved past it.
+        const runtime = document.querySelector('script[type="text/plain"][data-gaius-wasm-script="gaius-wasm-gc-runtime.js"]');
+        if (!runtime || (!runtime.nextSibling && document.readyState === 'loading')) {
+          if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', warm, {once: true});
+          else stop();
+          return;
+        }
+        performance.mark('gaius:startWarmBegin');
+        setTimeout(() => stop('gaius:startWarmTimeout'), 20000);
+        worker.postMessage({warm: runtime.textContent});
+      };
+      worker.onmessage = (e) => {
+        const data = e.data || {};
+        if (compiled) {
+          window.__gaiusStartWarm = data.warmed !== undefined ? {ms: data.warmed} : {error: data.warmError};
+          stop(data.warmed !== undefined ? 'gaius:startWarmed' : 'gaius:startWarmFailed');
+          return;
+        }
+        if (data.module instanceof WebAssembly.Module) {
+          compiled = true;
+          nodes.forEach(n => n.remove());
+          if (_warmMode === '0') stop();
+          else window.__gaiusStartWarmStop = () => stop('gaius:startWarmStopped');
+          resolve(data.module);
+          warm();
+        } else { stop(); reject(new Error(data.error || 'no module')); }
+      };
+      worker.onerror = (e) => {
+        if (compiled) { window.__gaiusStartWarm = {error: String(e && e.message || 'worker error')}; stop('gaius:startWarmFailed'); return; }
+        stop();
+        reject(new Error(e && e.message || 'worker error'));
+      };
+      worker.postMessage({text, bytes: info.bytes, sha: info.sha256});
+    }));
+  }
+  const _earlyCompile = (() => {
+    try {
+      const info = window.__gaiusFilePayloads['classes.wasm'];
+      if (!info || !info.gzip || _compileMode === 'late') return null;
+      if (typeof WebAssembly.compileStreaming !== 'function' || typeof DecompressionStream !== 'function' ||
+          typeof Response !== 'function') return null;
+      performance.mark('gaius:portableCompileStart');
+      const module = (_compileMode === 'main' || typeof Worker !== 'function' ? _pageCompile()
+        : _workerCompile(info).catch(() => { performance.mark('gaius:portableCompileFallback'); return _pageCompile(); }))
+        .then(m => { performance.mark('gaius:portableCompiled'); return m; });
+      module.catch(()=>{});
+      return module;
+    } catch (e) { return null; }
+  })();
+  if (_earlyCompile) window.__gaiusWasmSource = _earlyCompile;
+  else _lazyPromise('__gaiusWasmSource', () => _bytes('classes.wasm'));
+  if (window.__gaiusFilePayloads['gaius-png.wasm']) {
+    window.__gaiusPngKernelEnabled = true;
+    _lazyPromise('__gaiusPngWasmBytes', () => _bytes('gaius-png.wasm'));
+  }
   _lazyPromise('__gaiusVanillaAssetsCompressedPromise', () =>
-    _verify('vanilla-assets.pack.gz', window.__gaiusPortablePayloadBytes['vanilla-assets.pack.gz']));
+    window.__gaiusPortablePayloadBytes['vanilla-assets.pack.gz'].then(b => _verify('vanilla-assets.pack.gz', b)));
   _lazyPromise('__gaiusPortableAssetsReady', () => Promise.all([
     _optional('gaius-shaderc.js','text/javascript'), _optional('gaius-spvc.js','text/javascript'),
     _optional('gaius-shaderc.wasm','application/wasm'), _optional('gaius-spvc.wasm','application/wasm'),
@@ -2401,18 +2863,30 @@ try {
                 index,
             )
             inert += "<script>" + (site / shader).read_text(encoding="utf-8") + "</script>"
+        if png_kernel:
+            inert += "<script>" + inline_safe(png_script.read_text(encoding="utf-8"), "png-kernel.js") + "</script>"
         if server_bytes:
             worker_script = require_nonempty(server / "gaius-wasm-worker.js").read_text(encoding="utf-8")
             inert += f'<script type="text/plain" data-gaius-wasm-script="gaius-wasm-worker.js">{worker_script}</script>'
         output.parent.mkdir(parents=True, exist_ok=True)
+        prefix = prefix.replace("__GAIUS_PORTABLE_KERNELS__", json.dumps(
+            kernel_index or None, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+        inert += wasm_only_server_worker_scripts(site, site_manifest)
+        kernel_worker = site_manifest.get("assets", {}).get("kernels/kernel-worker.js")
+        if kernel_index and isinstance(kernel_worker, str) and (site / kernel_worker).is_file():
+            inert += ('<script type="text/plain" id="gaius-kernel-worker-source">\n'
+                      + inline_safe((site / kernel_worker).read_text(encoding="utf-8"), "kernel-worker.js")
+                      + "</script>")
         portable = "<!doctype html><meta charset=\"utf-8\">" + prefix + inert + index
+        if payloads_last:
+            portable += "".join(payload_elements)
         portable = drop_site_notice_link(portable)
         validate_portable_no_relative_urls(portable)
         output.write_text(add_license_notice(portable, root), encoding="utf-8", newline="\n")
         write_license_sidecar(output, root)
         print(f"Portable Wasm-only HTML: {output} ({output.stat().st_size} bytes)")
     else:
-        build(dist, output, wasm_dist=wasm_dist, wasm_server_dist=wasm_server_dist)
+        build(dist, output, wasm_dist=wasm_dist, wasm_server_dist=wasm_server_dist, frozen_js=frozen_js)
     return 0
 
 

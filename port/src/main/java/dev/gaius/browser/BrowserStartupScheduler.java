@@ -53,6 +53,19 @@ public final class BrowserStartupScheduler {
         }
     }
 
+    /** Starts the strict snapshot gate; callers continue with vanilla when this is false. */
+    public static boolean beginInitSnapshotAdoption() {
+        return InitSnapshotAdoption.begin();
+    }
+
+    public static void initSnapshotRegistryEntry() {
+        InitSnapshotAdoption.registryEntryAdopted();
+    }
+
+    public static void initSnapshotDatapackEntry() {
+        InitSnapshotAdoption.datapackEntryAdopted();
+    }
+
     public static void datapackResourceDecoded() {
         if (!isActive()) {
             return;

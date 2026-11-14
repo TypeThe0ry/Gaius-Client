@@ -417,6 +417,429 @@ public final class RenderPatches {
         System.out.println("Added the NativeImage.copyRect row-copy fast path");
     }
 
+    private static final String PREBAKE = "dev/gaius/browser/BrowserAtlasPrebake";
+    private static final String MIP_IMAGE = "com/mojang/blaze3d/platform/NativeImage";
+    private static final String MIP_GENERATE_DESCRIPTOR = "(Lnet/minecraft/resources/Identifier;[L" + MIP_IMAGE
+            + ";ILnet/minecraft/client/renderer/texture/MipmapStrategy;FLcom/mojang/blaze3d/platform/Transparency;)[L"
+            + MIP_IMAGE + ";";
+
+    /**
+     * Atlas prebake, mip chains: {@code MipmapGenerator.generateMipLevels} keeps its vanilla body as
+     * {@code browserVanillaGenerateMipLevels} and first asks {@code BrowserAtlasPrebake.mipLookup}
+     * for a chain the build recorded from these exact inputs (name, one level-0 image with its size,
+     * format and 128-bit pixel hash, level, strategy, bias bits, transparency). On a hit the level-0
+     * image gets the recorded pixels if vanilla changes it in place (solidify / dark fill), and each
+     * further level is a {@code new NativeImage(w >> 1, h >> 1, false)} filled with the recorded
+     * pixels, the same objects and order as vanilla. A miss, or any argument vanilla would treat
+     * differently (no single image, level 0, null), runs the vanilla body. In verify mode the
+     * vanilla body runs and each of its levels is compared with the recorded one.
+     */
+    public static void patchMipmapGeneratorAtlasPrebake(String jar, Path output) throws IOException {
+        String owner = "net/minecraft/client/renderer/texture/MipmapGenerator";
+        ClassNode node = Files.exists(output) ? read(output) : read(jar, owner + ".class");
+        MethodNode vanilla = find(node, "generateMipLevels", MIP_GENERATE_DESCRIPTOR);
+        if ((vanilla.access & Opcodes.ACC_STATIC) == 0) {
+            throw new IllegalStateException("MipmapGenerator.generateMipLevels is not static");
+        }
+        String vanillaName = "browserVanillaGenerateMipLevels";
+        if (findNullable(node, vanillaName, MIP_GENERATE_DESCRIPTOR) != null) {
+            throw new IllegalStateException("MipmapGenerator is already prebake-patched");
+        }
+        vanilla.name = vanillaName;
+        vanilla.access = (vanilla.access & ~(Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) | Opcodes.ACC_PRIVATE;
+        String format = MIP_IMAGE + "$Format";
+        String strategy = "net/minecraft/client/renderer/texture/MipmapStrategy";
+        String transparency = "com/mojang/blaze3d/platform/Transparency";
+        MethodNode method = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "generateMipLevels",
+                MIP_GENERATE_DESCRIPTOR, null, null);
+        InsnList code = method.instructions;
+        LabelNode callVanilla = new LabelNode();
+        LabelNode apply = new LabelNode();
+        LabelNode verifyLoop = new LabelNode();
+        LabelNode verifyDone = new LabelNode();
+        LabelNode applyLoop = new LabelNode();
+        LabelNode applyDone = new LabelNode();
+        // locals: 0 id, 1 images, 2 level, 3 strategy, 4 bias, 5 transparency,
+        // 6 entry, 7 result, 8 index, 9 image
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new JumpInsnNode(Opcodes.IFNULL, callVanilla));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new InsnNode(Opcodes.ARRAYLENGTH));
+        code.add(new InsnNode(Opcodes.ICONST_1));
+        code.add(new JumpInsnNode(Opcodes.IF_ICMPNE, callVanilla));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 2));
+        code.add(new JumpInsnNode(Opcodes.IFLE, callVanilla));
+        for (int local : new int[] {0, 3, 5}) {
+            code.add(new VarInsnNode(Opcodes.ALOAD, local));
+            code.add(new JumpInsnNode(Opcodes.IFNULL, callVanilla));
+        }
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new InsnNode(Opcodes.AALOAD));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 9));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 9));
+        code.add(new JumpInsnNode(Opcodes.IFNULL, callVanilla));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "net/minecraft/resources/Identifier", "toString",
+                "()Ljava/lang/String;", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new InsnNode(Opcodes.ARRAYLENGTH));
+        code.add(imageCall(9, "getPointer", "()J"));
+        code.add(imageCall(9, "getWidth", "()I"));
+        code.add(imageCall(9, "getHeight", "()I"));
+        code.add(imageCall(9, "format", "()L" + format + ";"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, format, "ordinal", "()I", false));
+        code.add(imageCall(9, "format", "()L" + format + ";"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, format, "components", "()I", false));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 2));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 3));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, strategy, "ordinal", "()I", false));
+        code.add(new VarInsnNode(Opcodes.FLOAD, 4));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/Float", "floatToRawIntBits", "(F)I", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 5));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, transparency, "hasTransparent", "()Z", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 5));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, transparency, "hasTranslucent", "()Z", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, "mipLookup",
+                "(Ljava/lang/String;IJIIIIIIIZZ)I", false));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 6));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 6));
+        code.add(new JumpInsnNode(Opcodes.IFLT, callVanilla));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, "verifying", "()Z", false));
+        code.add(new JumpInsnNode(Opcodes.IFEQ, apply));
+        // verify: vanilla result, each level compared with the recorded one
+        addVanillaMipCall(code, owner, vanillaName);
+        code.add(new VarInsnNode(Opcodes.ASTORE, 7));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 8));
+        code.add(verifyLoop);
+        code.add(new VarInsnNode(Opcodes.ILOAD, 8));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7));
+        code.add(new InsnNode(Opcodes.ARRAYLENGTH));
+        code.add(new JumpInsnNode(Opcodes.IF_ICMPGE, verifyDone));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 8));
+        code.add(new InsnNode(Opcodes.AALOAD));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 9));
+        addLevelCall(code, "mipVerify");
+        code.add(new IincInsnNode(8, 1));
+        code.add(new JumpInsnNode(Opcodes.GOTO, verifyLoop));
+        code.add(verifyDone);
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7));
+        code.add(new InsnNode(Opcodes.ARETURN));
+        // apply: result[0] = images[0] (recorded in-place change), result[i] = new image filled
+        code.add(apply);
+        code.add(new VarInsnNode(Opcodes.ILOAD, 2));
+        code.add(new InsnNode(Opcodes.ICONST_1));
+        code.add(new InsnNode(Opcodes.IADD));
+        code.add(new TypeInsnNode(Opcodes.ANEWARRAY, MIP_IMAGE));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 7));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 9));
+        code.add(new InsnNode(Opcodes.AASTORE));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 8));
+        addLevelCall(code, "mipApply");
+        code.add(new InsnNode(Opcodes.ICONST_1));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 8));
+        code.add(applyLoop);
+        code.add(new VarInsnNode(Opcodes.ILOAD, 8));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 2));
+        code.add(new JumpInsnNode(Opcodes.IF_ICMPGT, applyDone));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 8));
+        code.add(new InsnNode(Opcodes.ICONST_1));
+        code.add(new InsnNode(Opcodes.ISUB));
+        code.add(new InsnNode(Opcodes.AALOAD));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 9));
+        code.add(new TypeInsnNode(Opcodes.NEW, MIP_IMAGE));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(imageCall(9, "getWidth", "()I"));
+        code.add(new InsnNode(Opcodes.ICONST_1));
+        code.add(new InsnNode(Opcodes.ISHR));
+        code.add(imageCall(9, "getHeight", "()I"));
+        code.add(new InsnNode(Opcodes.ICONST_1));
+        code.add(new InsnNode(Opcodes.ISHR));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, MIP_IMAGE, "<init>", "(IIZ)V", false));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 9));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 8));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 9));
+        code.add(new InsnNode(Opcodes.AASTORE));
+        addLevelCall(code, "mipApply");
+        code.add(new IincInsnNode(8, 1));
+        code.add(new JumpInsnNode(Opcodes.GOTO, applyLoop));
+        code.add(applyDone);
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7));
+        code.add(new InsnNode(Opcodes.ARETURN));
+        code.add(callVanilla);
+        addVanillaMipCall(code, owner, vanillaName);
+        code.add(new InsnNode(Opcodes.ARETURN));
+        method.maxStack = 16;
+        method.maxLocals = 10;
+        node.methods.add(method);
+        writeComputeFrames(node, output);
+        System.out.println("Added the MipmapGenerator atlas prebake replay");
+    }
+
+    private static InsnList imageCall(int local, String name, String descriptor) {
+        InsnList code = new InsnList();
+        code.add(new VarInsnNode(Opcodes.ALOAD, local));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, MIP_IMAGE, name, descriptor, false));
+        return code;
+    }
+
+    /** {@code BrowserAtlasPrebake.<name>(entry, index, image.getPointer(), getWidth(), getHeight())}. */
+    private static void addLevelCall(InsnList code, String name) {
+        code.add(new VarInsnNode(Opcodes.ILOAD, 6));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 8));
+        code.add(imageCall(9, "getPointer", "()J"));
+        code.add(imageCall(9, "getWidth", "()I"));
+        code.add(imageCall(9, "getHeight", "()I"));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, name, "(IIJII)V", false));
+    }
+
+    private static void addVanillaMipCall(InsnList code, String owner, String vanillaName) {
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 2));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 3));
+        code.add(new VarInsnNode(Opcodes.FLOAD, 4));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 5));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, owner, vanillaName, MIP_GENERATE_DESCRIPTOR, false));
+    }
+
+    /**
+     * Atlas prebake, layouts: {@code Stitcher.stitch} hands the registered sprites (entry names and
+     * sizes in registration order), the mip level, the padding and the maximum size to
+     * {@code BrowserAtlasPrebake}; for a recorded layout of exactly these inputs it sets the storage
+     * size and keeps the layout, which {@code gatherSprites} then replays: the same
+     * {@code SpriteLoader.load(entry, x, y, padding)} calls in the same order as the vanilla region
+     * walk. Otherwise the vanilla bodies ({@code browserVanillaStitch},
+     * {@code browserVanillaGatherSprites}) run. In verify mode the vanilla bodies always run; the
+     * storage size is compared, and {@code Stitcher$Region.walk} reports each placed sprite while
+     * the walk is observed.
+     */
+    public static void patchStitcherAtlasPrebake(String jar, Path stitcherOutput, Path regionOutput)
+            throws IOException {
+        String owner = "net/minecraft/client/renderer/texture/Stitcher";
+        String holder = owner + "$Holder";
+        String entry = owner + "$Entry";
+        String region = owner + "$Region";
+        String loader = owner + "$SpriteLoader";
+        ClassNode node = Files.exists(stitcherOutput) ? read(stitcherOutput) : read(jar, owner + ".class");
+        MethodNode stitch = find(node, "stitch", "()V");
+        MethodNode gather = find(node, "gatherSprites", "(L" + loader + ";)V");
+        for (String field : new String[] {"mipLevel", "padding", "maxWidth", "maxHeight", "storageX", "storageY"}) {
+            requireField(node, field, "I");
+        }
+        requireField(node, "texturesToBeStitched", "Ljava/util/List;");
+        if (findNullable(node, "browserVanillaStitch", "()V") != null) {
+            throw new IllegalStateException("Stitcher is already prebake-patched");
+        }
+        stitch.name = "browserVanillaStitch";
+        stitch.access = (stitch.access & ~(Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) | Opcodes.ACC_PRIVATE;
+        gather.name = "browserVanillaGatherSprites";
+        gather.access = (gather.access & ~(Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) | Opcodes.ACC_PRIVATE;
+        node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE, "browserPrebakedLayout", "[I", null, null));
+        node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE, "browserVerifyLayout", "[I", null, null));
+
+        MethodNode newStitch = new MethodNode(Opcodes.ACC_PUBLIC, "stitch", "()V", null, null);
+        InsnList code = newStitch.instructions;
+        LabelNode loop = new LabelNode();
+        LabelNode looked = new LabelNode();
+        LabelNode use = new LabelNode();
+        LabelNode callVanilla = new LabelNode();
+        // locals: 0 this, 1 layout, 2 iterator, 3 entry
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "texturesToBeStitched", "Ljava/util/List;"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/List", "size", "()I", true));
+        for (String field : new String[] {"mipLevel", "padding", "maxWidth", "maxHeight"}) {
+            code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, field, "I"));
+        }
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, "stitchBegin", "(IIIII)V", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "texturesToBeStitched", "Ljava/util/List;"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/List", "iterator",
+                "()Ljava/util/Iterator;", true));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 2));
+        code.add(loop);
+        code.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "hasNext", "()Z", true));
+        code.add(new JumpInsnNode(Opcodes.IFEQ, looked));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "next",
+                "()Ljava/lang/Object;", true));
+        code.add(new TypeInsnNode(Opcodes.CHECKCAST, holder));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, holder, "entry", "()L" + entry + ";", false));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 3));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 3));
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, entry, "name",
+                "()Lnet/minecraft/resources/Identifier;", true));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "net/minecraft/resources/Identifier", "toString",
+                "()Ljava/lang/String;", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 3));
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, entry, "width", "()I", true));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 3));
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, entry, "height", "()I", true));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, "stitchSprite", "(Ljava/lang/String;II)V", false));
+        code.add(new JumpInsnNode(Opcodes.GOTO, loop));
+        code.add(looked);
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, "stitchEnd", "()[I", false));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 1));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new JumpInsnNode(Opcodes.IFNULL, callVanilla));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, "verifying", "()Z", false));
+        code.add(new JumpInsnNode(Opcodes.IFEQ, use));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, owner, "browserVanillaStitch", "()V", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "storageX", "I"));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "storageY", "I"));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, "stitchVerifySize", "([III)V", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new FieldInsnNode(Opcodes.PUTFIELD, owner, "browserVerifyLayout", "[I"));
+        code.add(new InsnNode(Opcodes.RETURN));
+        code.add(use);
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new InsnNode(Opcodes.IALOAD));
+        code.add(new FieldInsnNode(Opcodes.PUTFIELD, owner, "storageX", "I"));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new InsnNode(Opcodes.ICONST_1));
+        code.add(new InsnNode(Opcodes.IALOAD));
+        code.add(new FieldInsnNode(Opcodes.PUTFIELD, owner, "storageY", "I"));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new FieldInsnNode(Opcodes.PUTFIELD, owner, "browserPrebakedLayout", "[I"));
+        code.add(new InsnNode(Opcodes.RETURN));
+        code.add(callVanilla);
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, owner, "browserVanillaStitch", "()V", false));
+        code.add(new InsnNode(Opcodes.RETURN));
+        newStitch.maxStack = 8;
+        newStitch.maxLocals = 4;
+        node.methods.add(newStitch);
+
+        MethodNode newGather = new MethodNode(Opcodes.ACC_PUBLIC, "gatherSprites", gather.desc, gather.signature,
+                null);
+        code = newGather.instructions;
+        LabelNode replayLoop = new LabelNode();
+        LabelNode replayDone = new LabelNode();
+        LabelNode notPrebaked = new LabelNode();
+        LabelNode plain = new LabelNode();
+        // locals: 0 this, 1 loader, 2 layout, 3 count, 4 index, 5 at
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "browserPrebakedLayout", "[I"));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 2));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        code.add(new JumpInsnNode(Opcodes.IFNULL, notPrebaked));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        code.add(new InsnNode(Opcodes.ICONST_2));
+        code.add(new InsnNode(Opcodes.IALOAD));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 3));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 4));
+        code.add(replayLoop);
+        code.add(new VarInsnNode(Opcodes.ILOAD, 4));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        code.add(new JumpInsnNode(Opcodes.IF_ICMPGE, replayDone));
+        code.add(new InsnNode(Opcodes.ICONST_3));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 4));
+        code.add(new InsnNode(Opcodes.ICONST_3));
+        code.add(new InsnNode(Opcodes.IMUL));
+        code.add(new InsnNode(Opcodes.IADD));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 5));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "texturesToBeStitched", "Ljava/util/List;"));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 5));
+        code.add(new InsnNode(Opcodes.IALOAD));
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/List", "get", "(I)Ljava/lang/Object;", true));
+        code.add(new TypeInsnNode(Opcodes.CHECKCAST, holder));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, holder, "entry", "()L" + entry + ";", false));
+        for (int delta = 1; delta <= 2; delta++) {
+            code.add(new VarInsnNode(Opcodes.ALOAD, 2));
+            code.add(new VarInsnNode(Opcodes.ILOAD, 5));
+            code.add(new InsnNode(delta == 1 ? Opcodes.ICONST_1 : Opcodes.ICONST_2));
+            code.add(new InsnNode(Opcodes.IADD));
+            code.add(new InsnNode(Opcodes.IALOAD));
+        }
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "padding", "I"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, loader, "load", "(L" + entry + ";III)V", true));
+        code.add(new IincInsnNode(4, 1));
+        code.add(new JumpInsnNode(Opcodes.GOTO, replayLoop));
+        code.add(replayDone);
+        code.add(new InsnNode(Opcodes.RETURN));
+        code.add(notPrebaked);
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "browserVerifyLayout", "[I"));
+        code.add(new JumpInsnNode(Opcodes.IFNULL, plain));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "browserVerifyLayout", "[I"));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, "walkBegin", "([I)V", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, owner, "browserVanillaGatherSprites", gather.desc, false));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, "walkEnd", "()V", false));
+        code.add(new InsnNode(Opcodes.RETURN));
+        code.add(plain);
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, owner, "browserVanillaGatherSprites", gather.desc, false));
+        code.add(new InsnNode(Opcodes.RETURN));
+        newGather.maxStack = 8;
+        newGather.maxLocals = 6;
+        node.methods.add(newGather);
+        writeComputeFrames(node, stitcherOutput);
+
+        ClassNode regionNode = Files.exists(regionOutput) ? read(regionOutput) : read(jar, region + ".class");
+        MethodNode walk = find(regionNode, "walk", "(L" + loader + ";I)V");
+        requireField(regionNode, "holder", "L" + holder + ";");
+        InsnList observe = new InsnList();
+        LabelNode skip = new LabelNode();
+        observe.add(new FieldInsnNode(Opcodes.GETSTATIC, PREBAKE, "observingWalk", "Z"));
+        observe.add(new JumpInsnNode(Opcodes.IFEQ, skip));
+        observe.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        observe.add(new FieldInsnNode(Opcodes.GETFIELD, region, "holder", "L" + holder + ";"));
+        observe.add(new JumpInsnNode(Opcodes.IFNULL, skip));
+        observe.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        observe.add(new FieldInsnNode(Opcodes.GETFIELD, region, "holder", "L" + holder + ";"));
+        observe.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, holder, "entry", "()L" + entry + ";", false));
+        observe.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, entry, "name",
+                "()Lnet/minecraft/resources/Identifier;", true));
+        observe.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "net/minecraft/resources/Identifier", "toString",
+                "()Ljava/lang/String;", false));
+        observe.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        observe.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, region, "getX", "()I", false));
+        observe.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        observe.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, region, "getY", "()I", false));
+        observe.add(new MethodInsnNode(Opcodes.INVOKESTATIC, PREBAKE, "walkObserved", "(Ljava/lang/String;II)V", false));
+        observe.add(skip);
+        walk.instructions.insert(observe);
+        walk.maxStack = Math.max(walk.maxStack, 3);
+        writeComputeFrames(regionNode, regionOutput);
+        System.out.println("Added the Stitcher atlas prebake replay");
+    }
+
+    private static void requireField(ClassNode node, String name, String descriptor) {
+        boolean present = node.fields.stream().anyMatch(field -> field.name.equals(name) && field.desc.equals(descriptor)
+                && (field.access & Opcodes.ACC_STATIC) == 0);
+        if (!present) {
+            throw new IllegalStateException(node.name + "." + name + " " + descriptor + " was not found");
+        }
+    }
+
     public static void patchDynamicUniformsBrowserInitialCapacity(String jar, Path output)
             throws IOException {
         if (ModernSymbols.cached(jar).renderpearl()) {
@@ -496,8 +919,23 @@ public final class RenderPatches {
                         + "[Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;");
         raiseDynamicGpuDataCapacity(constructor, "Dynamic Transforms UBO", 2, "Terrain UBO");
         raiseDynamicGpuDataCapacity(writeChunkSections, "Chunk Sections UBO", 1, null);
+        // The two renderpearl terrain paths are lazy storages.  Leaving them at the vanilla
+        // capacities (2 for both instanced section uniforms and indirect commands) makes the
+        // first terrain burst repeatedly allocate and copy the whole GPU buffer on the render
+        // thread.  Use the same runtime-selectable slab as the UBOs so ?gaiusUboCap=vanilla/N
+        // remains a useful A/B escape hatch while the default avoids the resize storm.
+        MethodNode writeChunkSectionsInstanced = find(node, "writeChunkSectionsInstanced",
+                "(Ljava/util/List;)Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;");
+        raiseDynamicGpuDataLazyCapacity(writeChunkSectionsInstanced,
+                "Chunk Sections Instanced", "net/minecraft/client/renderer/DynamicGpuDataStorageNonMapped",
+                2, 32767);
+        MethodNode writeChunkSectionCommands = find(node, "writeChunkSectionCommands",
+                "(Ljava/util/List;)[Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;");
+        raiseDynamicGpuDataLazyCapacity(writeChunkSectionCommands,
+                "Chunk Sections Command Buffer", "net/minecraft/client/renderer/DynamicGpuDataStorageMapped",
+                2, 32767);
         writeComputeFrames(node, output);
-        System.out.println("Raised 26.3 DynamicGpuData transforms and chunk-section UBO capacity");
+        System.out.println("Raised 26.3 DynamicGpuData terrain storage capacities");
     }
 
     /**
@@ -553,6 +991,54 @@ public final class RenderPatches {
     }
 
     /**
+     * Raises one lazily-created DynamicGpuData storage while retaining the URL capacity switch.
+     * The mapped and non-mapped constructors both place capacity last, but their vanilla
+     * capacity literals are validated against the exact vanilla bytecode shape.
+     */
+    private static void raiseDynamicGpuDataLazyCapacity(MethodNode method, String label,
+            String storage, int vanillaCapacity, int browserCapacity) {
+        int matches = 0;
+        for (AbstractInsnNode instruction : method.instructions.toArray()) {
+            if (!(instruction instanceof MethodInsnNode call)
+                    || call.getOpcode() != Opcodes.INVOKESPECIAL
+                    || !call.owner.equals(storage)
+                    || !call.name.equals("<init>")) {
+                continue;
+            }
+            if (!call.desc.equals("(Ljava/lang/String;III)V")) {
+                throw new IllegalStateException(method.name + " " + label
+                        + " constructor descriptor changed");
+            }
+            AbstractInsnNode capacity = previousOpcode(call);
+            AbstractInsnNode usage = capacity == null ? null : previousOpcode(capacity);
+            AbstractInsnNode blockSize = usage == null ? null : previousOpcode(usage);
+            AbstractInsnNode labelLoad = blockSize == null ? null : previousOpcode(blockSize);
+            if (capacity == null || !matchesIntConstant(capacity, vanillaCapacity)
+                    || !(labelLoad instanceof LdcInsnNode constant)
+                    || !label.equals(constant.cst)) {
+                throw new IllegalStateException(method.name + " " + label
+                        + " constructor inputs changed");
+            }
+            replaceDynamicGpuDataCapacity(method, capacity, label, vanillaCapacity,
+                    browserCapacity);
+            matches++;
+        }
+        if (matches != 1) {
+            throw new IllegalStateException(method.name + " expected one " + label
+                    + " storage, got " + matches);
+        }
+    }
+
+    private static boolean matchesIntConstant(AbstractInsnNode instruction, int value) {
+        if (value == 2 && instruction.getOpcode() == Opcodes.ICONST_2) {
+            return true;
+        }
+        return instruction instanceof IntInsnNode intInsn
+                && (intInsn.getOpcode() == Opcodes.BIPUSH || intInsn.getOpcode() == Opcodes.SIPUSH)
+                && intInsn.operand == value;
+    }
+
+    /**
      * Replaces the vanilla {@code iconst_2} initial capacity {@code capacity} of a uniform storage
      * constructor. The internal JavaScript build gets the fixed browser slab as before; the
      * WebAssembly GC build asks
@@ -561,13 +1047,24 @@ public final class RenderPatches {
      */
     private static void replaceDynamicGpuDataCapacity(MethodNode method, AbstractInsnNode capacity,
             String label, int browserCapacity) {
+        replaceDynamicGpuDataCapacity(method, capacity, label, 2, browserCapacity);
+    }
+
+    private static void replaceDynamicGpuDataCapacity(MethodNode method, AbstractInsnNode capacity,
+            String label, int vanillaCapacity, int browserCapacity) {
         if (!BuildTarget.wasmGc()) {
             method.instructions.set(capacity, new IntInsnNode(Opcodes.SIPUSH, browserCapacity));
             return;
         }
         InsnList choose = new InsnList();
         choose.add(new LdcInsnNode(label));
-        choose.add(new InsnNode(Opcodes.ICONST_2));
+        if (vanillaCapacity == 2) {
+            choose.add(new InsnNode(Opcodes.ICONST_2));
+        } else if (vanillaCapacity >= -128 && vanillaCapacity <= 127) {
+            choose.add(new IntInsnNode(Opcodes.BIPUSH, vanillaCapacity));
+        } else {
+            choose.add(new IntInsnNode(Opcodes.SIPUSH, vanillaCapacity));
+        }
         choose.add(new IntInsnNode(Opcodes.SIPUSH, browserCapacity));
         choose.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
                 "dev/gaius/browser/quality/BrowserGpuDataCapacity", "capacity",
@@ -3639,6 +4136,7 @@ public final class RenderPatches {
                     "LevelRenderer.render prepareChunkRenders receiver shape changed");
         }
         InsnList early = new InsnList();
+        early.add(browserGpuIndirectFrameInstructions(4));
         early.add(new VarInsnNode(Opcodes.ALOAD, 0));
         early.add(new FieldInsnNode(Opcodes.GETFIELD,
                 "net/minecraft/client/renderer/LevelRenderer",
@@ -3719,6 +4217,7 @@ public final class RenderPatches {
                             + prepares);
         }
         InsnList early = new InsnList();
+        early.add(browserGpuIndirectFrameInstructions(3));
         early.add(new VarInsnNode(Opcodes.ALOAD, 0));
         early.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "sectionOcclusionGraph",
                 "Lnet/minecraft/client/renderer/SectionOcclusionGraph;"));
@@ -3751,6 +4250,29 @@ public final class RenderPatches {
             }
         }
         return false;
+    }
+
+    private static InsnList browserGpuIndirectFrameInstructions(int cameraLocal) {
+        String camera = "net/minecraft/client/renderer/state/level/CameraRenderState";
+        String vec = "net/minecraft/world/phys/Vec3";
+        InsnList result = new InsnList();
+        result.add(new VarInsnNode(Opcodes.ALOAD, cameraLocal));
+        result.add(new FieldInsnNode(Opcodes.GETFIELD, camera, "projectionMatrix", "Lorg/joml/Matrix4f;"));
+        result.add(new VarInsnNode(Opcodes.ALOAD, cameraLocal));
+        result.add(new FieldInsnNode(Opcodes.GETFIELD, camera, "viewRotationMatrix", "Lorg/joml/Matrix4f;"));
+        result.add(new VarInsnNode(Opcodes.ALOAD, cameraLocal));
+        result.add(new FieldInsnNode(Opcodes.GETFIELD, camera, "pos", "L" + vec + ";"));
+        result.add(new FieldInsnNode(Opcodes.GETFIELD, vec, "x", "D"));
+        result.add(new VarInsnNode(Opcodes.ALOAD, cameraLocal));
+        result.add(new FieldInsnNode(Opcodes.GETFIELD, camera, "pos", "L" + vec + ";"));
+        result.add(new FieldInsnNode(Opcodes.GETFIELD, vec, "y", "D"));
+        result.add(new VarInsnNode(Opcodes.ALOAD, cameraLocal));
+        result.add(new FieldInsnNode(Opcodes.GETFIELD, camera, "pos", "L" + vec + ";"));
+        result.add(new FieldInsnNode(Opcodes.GETFIELD, vec, "z", "D"));
+        result.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "dev/gaius/browser/render/BrowserGpuIndirectTerrain", "beginFrame",
+                "(Lorg/joml/Matrix4fc;Lorg/joml/Matrix4fc;DDD)V", false));
+        return result;
     }
 
     /**
@@ -3915,6 +4437,8 @@ public final class RenderPatches {
             String jar, Path output) throws IOException {
         String owner = "net/minecraft/client/renderer/SectionOcclusionGraph";
         ClassNode node = read(jar, owner + ".class");
+        patchSectionOcclusionGraphBrowserSectionBoundaryCache(node);
+        patchSectionOcclusionGraphBrowserFaceConnectivityCache(node);
         MethodNode update = find(node, "update",
                 "(Lnet/minecraft/client/renderer/state/level/CameraRenderState;"
                         + "ILnet/minecraft/client/renderer/state/level/ChunkLoadingRenderState;)V");
@@ -3964,6 +4488,59 @@ public final class RenderPatches {
         patchSectionOcclusionGraphBrowserLoadedChunkRebuild(node);
         writeComputeFrames(node, output);
         System.out.println("Patched 26.2 movement occlusion refresh + frustum notify");
+    }
+
+    /** Keep graph invalidation opt-in and at section granularity for browser camera motion. */
+    private static void patchSectionOcclusionGraphBrowserSectionBoundaryCache(ClassNode node) {
+        MethodNode method = find(node, "invalidateIfNeeded",
+                "(Lnet/minecraft/client/renderer/state/level/CameraRenderState;I)V");
+        InsnList guard = new InsnList();
+        LabelNode continueLabel = new LabelNode();
+        guard.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        guard.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        guard.add(new VarInsnNode(Opcodes.ILOAD, 2));
+        guard.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "dev/gaius/browser/BrowserSectionVisibilityFastPath",
+                "skipGraphInvalidation",
+                "(Lnet/minecraft/client/renderer/SectionOcclusionGraph;"
+                        + "Lnet/minecraft/client/renderer/state/level/CameraRenderState;I)Z",
+                false));
+        guard.add(new JumpInsnNode(Opcodes.IFEQ, continueLabel));
+        guard.add(new InsnNode(Opcodes.RETURN));
+        guard.add(continueLabel);
+        method.instructions.insert(guard);
+    }
+
+    /** Route the repeated 6x6 face relation through the compiled-mesh identity cache. */
+    private static void patchSectionOcclusionGraphBrowserFaceConnectivityCache(ClassNode node) {
+        MethodNode method = find(node, "runUpdates",
+                "(Lnet/minecraft/client/renderer/SectionOcclusionGraph$GraphStorage;"
+                        + "Lnet/minecraft/world/phys/Vec3;Ljava/util/Queue;Z"
+                        + "Ljava/util/function/Consumer;"
+                        + "Lit/unimi/dsi/fastutil/longs/LongOpenHashSet;"
+                        + "Lit/unimi/dsi/fastutil/longs/LongOpenHashSet;)V");
+        int replaced = 0;
+        for (AbstractInsnNode instruction : method.instructions.toArray()) {
+            if (instruction instanceof MethodInsnNode call
+                    && call.getOpcode() == Opcodes.INVOKEINTERFACE
+                    && call.owner.equals("net/minecraft/client/renderer/chunk/SectionMesh")
+                    && call.name.equals("facesCanSeeEachother")
+                    && call.desc.equals("(Lnet/minecraft/core/Direction;"
+                            + "Lnet/minecraft/core/Direction;)Z")) {
+                call.setOpcode(Opcodes.INVOKESTATIC);
+                call.owner = "dev/gaius/browser/BrowserSectionVisibilityFastPath";
+                call.name = "facesCanSeeEachOther";
+                call.desc = "(Lnet/minecraft/client/renderer/chunk/SectionMesh;"
+                        + "Lnet/minecraft/core/Direction;Lnet/minecraft/core/Direction;)Z";
+                call.itf = false;
+                replaced++;
+            }
+        }
+        if (replaced != 1) {
+            throw new IllegalStateException(
+                    "SectionOcclusionGraph.runUpdates face connectivity call count changed: "
+                            + replaced);
+        }
     }
 
     /** Rebuild the graph when either loaded-column mutation changes the set. */

@@ -69,7 +69,7 @@ pub mod flags {
     pub const CUTOUT_LEAVES: u32 = 1 << 1;
     /// Emit vanilla BLOCK vertices (28 bytes).
     pub const EMIT_VANILLA: u32 = 1 << 2;
-    /// Emit the compact format (12 bytes per vertex plus a tint per quad).
+    /// Emit compact v2 vertices (20 bytes per vertex, with colour and light in each vertex).
     pub const EMIT_COMPACT: u32 = 1 << 3;
     /// Sort translucent quads back to front for `camera`, as MeshData.sortQuads does.
     pub const SORT_TRANSLUCENT: u32 = 1 << 4;
@@ -84,7 +84,9 @@ pub mod flags {
     pub const EMIT_CENTROIDS: u32 = 1 << 8;
     /// `blend_radius` is set and the swamp mask covers the 20 x 20 columns of the region.
     pub const BIOME_BLEND: u32 = 1 << 9;
-    pub const KNOWN: u32 = (1 << 10) - 1;
+    /// State ids are carried as packed section palettes and storage words.
+    pub const PACKED_STATES: u32 = 1 << 10;
+    pub const KNOWN: u32 = (1 << 11) - 1;
 }
 
 /// Swamp mask bytes of the legacy layout (16 x 16 columns).
@@ -121,6 +123,8 @@ pub struct SectionJob<'a> {
     pub biome_zoom_seed: i64,
     /// Raw little-endian ids, 2 or 4 bytes each.
     pub states: &'a [u8],
+    /// Packed section palettes and storage words, present with flags::PACKED_STATES.
+    pub packed_states: Option<&'a [u8]>,
     pub light: &'a [u8],
     pub biome_quarts: &'a [u8],
     pub palette: Vec<BiomeColors>,
@@ -175,7 +179,20 @@ impl<'a> SectionJob<'a> {
         }
         let blend_radius = if blend { blend_field as i32 } else { 0 };
         let id_width = if flags & flags::WIDE_IDS != 0 { 4 } else { 2 };
-        let states = r.take(VOLUME * id_width).map_err(t)?;
+        let packed_states = if flags & flags::PACKED_STATES != 0 {
+            let count = r.u32().map_err(t)? as usize;
+            let bytes = count
+                .checked_mul(4)
+                .ok_or_else(|| bad("packed state payload too large"))?;
+            Some(r.take(bytes).map_err(t)?)
+        } else {
+            None
+        };
+        let states = if packed_states.is_some() {
+            &[][..]
+        } else {
+            r.take(VOLUME * id_width).map_err(t)?
+        };
         let light = r.take(VOLUME).map_err(t)?;
         let biome_quarts = r.take(QUART_VOLUME).map_err(t)?;
         if biome_quarts.iter().any(|&b| b as u32 >= palette_len) {
@@ -214,6 +231,7 @@ impl<'a> SectionJob<'a> {
             camera,
             biome_zoom_seed,
             states,
+            packed_states,
             light,
             biome_quarts,
             palette,
@@ -233,6 +251,9 @@ impl<'a> SectionJob<'a> {
         out.clear();
         out.reserve(VOLUME);
         let count = table.states.len() as u32;
+        if let Some(bytes) = self.packed_states {
+            return read_packed_ids(bytes, count, out);
+        }
         let mut max = 0u32;
         if self.has(flags::WIDE_IDS) {
             for c in self.states.as_chunks::<4>().0 {
@@ -254,6 +275,118 @@ impl<'a> SectionJob<'a> {
     }
 }
 
+fn packed_u32(bytes: &[u8], at: &mut usize) -> Result<u32, KernelError> {
+    let end = (*at)
+        .checked_add(4)
+        .ok_or_else(|| bad("packed state cursor overflow"))?;
+    if end > bytes.len() {
+        return Err(bad("packed state descriptor truncated"));
+    }
+    let value = u32::from_le_bytes(bytes[*at..end].try_into().unwrap());
+    *at = end;
+    Ok(value)
+}
+
+fn read_packed_ids(bytes: &[u8], state_count: u32, out: &mut Vec<u32>) -> Result<(), KernelError> {
+    let mut at = 0usize;
+    let air_id = packed_u32(bytes, &mut at)?;
+    if air_id >= state_count {
+        return Err(bad("packed air state id outside the model table"));
+    }
+    if packed_u32(bytes, &mut at)? != 27 {
+        return Err(bad("packed state section count must be 27"));
+    }
+    out.resize(VOLUME, air_id);
+    let mut palette = [0u32; 256];
+    for section_index in 0..27usize {
+        let bits = packed_u32(bytes, &mut at)? as usize;
+        let palette_len = packed_u32(bytes, &mut at)? as i32;
+        let word_count = packed_u32(bytes, &mut at)? as usize;
+        if palette_len == 0 {
+            if bits != 0 || word_count != 0 {
+                return Err(bad("missing packed section has storage"));
+            }
+            continue;
+        }
+        if palette_len < -1 || palette_len > palette.len() as i32 {
+            return Err(bad("packed section palette length out of range"));
+        }
+        if bits > 32
+            || (palette_len == -1 && bits == 0)
+            || (palette_len > 0 && bits == 0 && palette_len != 1)
+            || (palette_len > 0 && bits > 0 && (1u64 << bits) < palette_len as u64)
+        {
+            return Err(bad("packed section bit width out of range"));
+        }
+        let expected_words = if bits == 0 { 0 } else { 4096usize.div_ceil(64 / bits) };
+        if word_count != expected_words {
+            return Err(bad("packed section storage length mismatch"));
+        }
+        if palette_len > 0 {
+            for entry in palette[..palette_len as usize].iter_mut() {
+                let id = packed_u32(bytes, &mut at)?;
+                *entry = if id < state_count { id } else { air_id };
+            }
+        }
+        let words_at = at;
+        let words_bytes = word_count
+            .checked_mul(8)
+            .ok_or_else(|| bad("packed section storage too large"))?;
+        let words_end = at
+            .checked_add(words_bytes)
+            .ok_or_else(|| bad("packed section cursor overflow"))?;
+        if words_end > bytes.len() {
+            return Err(bad("packed section storage truncated"));
+        }
+        let dx = section_index as i32 % 3 - 1;
+        let dz = (section_index as i32 / 3) % 3 - 1;
+        let dy = section_index as i32 / 9 - 1;
+        let x0 = if dx < 0 { 14 } else { 0 };
+        let x1 = if dx > 0 { 1 } else { 15 };
+        let y0 = if dy < 0 { 14 } else { 0 };
+        let y1 = if dy > 0 { 1 } else { 15 };
+        let z0 = if dz < 0 { 14 } else { 0 };
+        let z1 = if dz > 0 { 1 } else { 15 };
+        for y in y0..=y1 {
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    let local = (y * 256 + z * 16 + x) as usize;
+                    let id = if bits == 0 {
+                        palette[0]
+                    } else {
+                        let values_per_word = 64 / bits;
+                        let word = local / values_per_word;
+                        let shift = (local % values_per_word) * bits;
+                        let word_at = words_at + word * 8;
+                        let packed = u64::from_le_bytes(bytes[word_at..word_at + 8].try_into().unwrap());
+                        let value = ((packed >> shift) & ((1u64 << bits) - 1)) as u32;
+                        if palette_len == -1 {
+                            if value < state_count {
+                                value
+                            } else {
+                                air_id
+                            }
+                        } else if value < palette_len as u32 {
+                            palette[value as usize]
+                        } else {
+                            air_id
+                        }
+                    };
+                    if id >= state_count {
+                        return Err(bad("block state id outside the model table"));
+                    }
+                    out[region_index(dx * 16 + x, dy * 16 + y, dz * 16 + z)] = id;
+                }
+            }
+        }
+        at = words_end;
+    }
+    if at != bytes.len() {
+        return Err(bad("packed state payload has trailing bytes"));
+    }
+    Ok(())
+}
+
 /// Index of a section-relative position in the 20^3 region.
 #[inline]
 pub const fn region_index(x: i32, y: i32, z: i32) -> usize {
@@ -272,6 +405,8 @@ pub struct SectionJobData {
     pub camera: [f32; 3],
     pub biome_zoom_seed: i64,
     pub states: Vec<u32>,
+    /// Optional packed palette/storage representation for all 27 surrounding sections.
+    pub packed_states: Option<Vec<u32>>,
     pub light: Vec<u8>,
     pub biome_quarts: Vec<u8>,
     pub palette: Vec<BiomeColors>,
@@ -315,12 +450,15 @@ impl SectionJobData {
         if !self.inline_table.is_empty() {
             flags |= flags::INLINE_TABLE;
         }
-        let wide = self.states.iter().any(|&s| s > u16::MAX as u32);
+        let wide = self.packed_states.is_none() && self.states.iter().any(|&s| s > u16::MAX as u32);
         if wide {
             flags |= flags::WIDE_IDS;
         }
         if self.blend_radius.is_some() {
             flags |= flags::BIOME_BLEND;
+        }
+        if self.packed_states.is_some() {
+            flags |= flags::PACKED_STATES;
         }
         let mut o = Vec::with_capacity(HEADER_LEN + VOLUME * 3 + 512 + self.inline_table.len());
         for v in [self.table_epoch, self.request_seq, self.section_version, flags] {
@@ -338,11 +476,18 @@ impl SectionJobData {
         o.extend_from_slice(&self.blend_radius.unwrap_or(0).to_le_bytes());
         o.extend_from_slice(&[0u8; 12]);
         debug_assert_eq!(o.len(), HEADER_LEN);
-        for &s in &self.states {
-            if wide {
-                o.extend_from_slice(&s.to_le_bytes());
-            } else {
-                o.extend_from_slice(&(s as u16).to_le_bytes());
+        if let Some(packed) = &self.packed_states {
+            o.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+            for &word in packed {
+                o.extend_from_slice(&word.to_le_bytes());
+            }
+        } else {
+            for &s in &self.states {
+                if wide {
+                    o.extend_from_slice(&s.to_le_bytes());
+                } else {
+                    o.extend_from_slice(&(s as u16).to_le_bytes());
+                }
             }
         }
         o.extend_from_slice(&self.light);

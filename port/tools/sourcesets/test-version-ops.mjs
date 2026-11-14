@@ -174,9 +174,9 @@ for (const profile of loadProfiles(root)) {
                     check(LightVersionOps.INSTANCE.chunkX(chunk) == -3); check(LightVersionOps.INSTANCE.chunkZ(chunk) == 5);
                     check(LightVersionOps.INSTANCE.packChunk(-3, 5) == (4294967293L | 5L << 32));
                     MeshKernelBridge.copied = 16;
-                    check(VersionOps.INSTANCE.copyVertices(null, 1, 4096, 16) == ${modern && target === "wasmgc"});
-                    check(MeshKernelBridge.calls == ${modern && target === "wasmgc" ? 1 : 0});
-                    ${modern && target === "wasmgc" ? `MeshKernelBridge.copied = 15;
+                    check(VersionOps.INSTANCE.copyVertices(null, 1, 4096, 16) == ${target === "wasmgc"});
+                    check(MeshKernelBridge.calls == ${target === "wasmgc" ? 1 : 0});
+                    ${target === "wasmgc" ? `MeshKernelBridge.copied = 15;
                         try { VersionOps.INSTANCE.copyVertices(null, 1, 4096, 16); throw new AssertionError("short copy accepted"); }
                         catch (IllegalStateException expected) { check(expected.getMessage().equals("kernel vertex bytes do not match the quad count")); }` : ""}
                     ${meshTests}

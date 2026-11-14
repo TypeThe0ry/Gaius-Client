@@ -17,6 +17,8 @@ public final class CoreBuffer {
     private final long size;
     private final int usage;
     private final boolean transientBlock;
+    private final RegionArena.Lease regionLease;
+    private final int regionBaseOffset;
     private boolean closed;
     private Object facade;
     /**
@@ -30,11 +32,18 @@ public final class CoreBuffer {
     private ByteBuffer readData;
 
     CoreBuffer(CoreDevice device, int usage, long size, int handle, boolean transientBlock) {
+        this(device, usage, size, handle, transientBlock, null);
+    }
+
+    CoreBuffer(CoreDevice device, int usage, long size, int handle, boolean transientBlock,
+            RegionArena.Lease regionLease) {
         this.device = device;
         this.usage = usage;
         this.size = size;
         this.handle = handle;
         this.transientBlock = transientBlock;
+        this.regionLease = regionLease;
+        this.regionBaseOffset = regionLease == null ? 0 : (int) regionLease.offset();
     }
 
     public long size() {
@@ -51,6 +60,13 @@ public final class CoreBuffer {
         return this.handle;
     }
 
+    public int baseOffset() {
+        if (this.regionLease != null && this.regionLease.isReleased()) {
+            throw new IllegalStateException("region buffer is released");
+        }
+        return this.regionBaseOffset;
+    }
+
     /** A block of transient memory: never closed by its users and not mappable. */
     public boolean isTransient() {
         return this.transientBlock;
@@ -64,7 +80,13 @@ public final class CoreBuffer {
     public void close() {
         if (!this.closed && !this.transientBlock) {
             this.closed = true;
-            this.device.encoder().destroyBufferAfterSubmit(this.handle);
+            if (this.regionLease != null) {
+                if (!this.regionLease.isReleased()) {
+                    this.regionLease.close();
+                }
+            } else {
+                this.device.encoder().destroyBufferAfterSubmit(this.handle);
+            }
         }
     }
 

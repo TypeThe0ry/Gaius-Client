@@ -549,6 +549,7 @@ vm.runInNewContext(html.slice(fpsStart, fpsEnd), {
   window: fpsWindow,
   requestAnimationFrame(callback) { nextFrame = callback; },
   maybeDegradeResolutionForFps() {},
+  collectFpsSamples: true,
   Float32Array,
 });
 for (const at of [10, 26, 42, 6042]) nextFrame(at);

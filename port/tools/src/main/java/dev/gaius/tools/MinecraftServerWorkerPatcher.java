@@ -2,6 +2,7 @@ package dev.gaius.tools;
 
 import dev.gaius.tools.patches.light.LightKernelPatches;
 import dev.gaius.tools.patches.serverworker.WorkerOverridePatches;
+import dev.gaius.tools.patches.serverworker.WorldLoaderCachePatches;
 import dev.gaius.tools.patches.worldgen.WorldgenKernelPatches;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -20,8 +21,14 @@ public final class MinecraftServerWorkerPatcher {
         PatchRegistry.runPart("MinecraftServerWorkerPatcher.lightKernelPatches",
                 "PERF NOT_APPLICABLE js wasmgc",
                 () -> LightKernelPatches.patch(jar, outputRoot));
+        PatchRegistry.runPart("MinecraftServerWorkerPatcher.lightWakePatches",
+                "PERF wasmgc >=26.3",
+                () -> LightKernelPatches.patchServerWake(jar, outputRoot));
         PatchRegistry.runPart("MinecraftServerWorkerPatcher.worldgenKernelPatches",
                 "PERF NOT_APPLICABLE js wasmgc",
                 () -> WorldgenKernelPatches.patch(jar, outputRoot));
+        PatchRegistry.runPart("MinecraftServerWorkerPatcher.worldLoaderCache",
+                "PERF wasmgc >=26.3",
+                () -> WorldLoaderCachePatches.patch(jar, outputRoot));
     }
 }

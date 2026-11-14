@@ -74,6 +74,7 @@ public final class BrowserWorldgenKernel {
         }
         boolean ok = registerGeneratorNative(key, ir);
         startNative();
+        installVanillaTrace();
         return ok;
     }
 
@@ -117,6 +118,22 @@ public final class BrowserWorldgenKernel {
                     reason == null ? "unknown" : reason);
         } catch (Throwable ignored) {
             // Telemetry is diagnostic and must never alter the fallback path.
+        }
+    }
+
+    /**
+     * Opt-in diagnostics ({@code gaiusWorldgenVanillaTrace=1}, or the kernel timeline switch): counts how
+     * many status tickets take the vanilla supplier and why, under {@code kernel.vanilla.frontier} in the
+     * facade telemetry. Off by default: no observer is installed and nothing is counted.
+     */
+    private static void installVanillaTrace() {
+        try {
+            if (vanillaTraceNative()) {
+                dev.gaius.browser.kernel.KernelStatusFrontier.setObserver(
+                        reason -> noteVanillaNative("frontier", reason));
+            }
+        } catch (Throwable ignored) {
+            // Diagnostics only.
         }
     }
 
@@ -294,6 +311,16 @@ public final class BrowserWorldgenKernel {
             "var k = globalThis.GaiusWorldgenKernel;"
                     + "if (k && k.recordHostFallback) k.recordHostFallback(stage, reason);")
     private static native void noteHostFallbackNative(String stage, String reason);
+
+    @JSBody(script =
+            "var k = globalThis.GaiusWorldgenKernel;"
+                    + "return !!k && !!k.vanillaTraceEnabled && k.vanillaTraceEnabled();")
+    private static native boolean vanillaTraceNative();
+
+    @JSBody(params = {"stage", "reason"}, script =
+            "var k = globalThis.GaiusWorldgenKernel;"
+                    + "if (k && k.recordVanilla) k.recordVanilla(stage, reason);")
+    private static native void noteVanillaNative(String stage, String reason);
 
     @JSBody(params = {"key", "ir"}, script = "var k = globalThis.GaiusWorldgenKernel;"
             + "if (!k) { return false; }"

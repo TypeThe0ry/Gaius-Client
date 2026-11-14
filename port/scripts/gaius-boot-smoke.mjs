@@ -13,8 +13,10 @@ import {RENDERPEARL_PROFILE} from "./verification-profiles.mjs";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
 import vm from "node:vm";
+import {gzipSync} from "node:zlib";
 
-const source = await readFile(new URL("../web/boot/gaius-boot.js", import.meta.url), "utf8");
+const source = await readFile(process.env.GAIUS_BOOT_SMOKE_SOURCE
+  || new URL("../web/boot/gaius-boot.js", import.meta.url), "utf8");
 const launcherSource = await readFile(new URL("../web/launcher/index.template.html", import.meta.url), "utf8");
 
 function createPage({search = "", site = null, portable = false, protocol = "https:", inertScripts = {}, storage = {},
@@ -181,9 +183,24 @@ check("modules load in order with async=false; missing ones never block", async 
   assert.equal(scripts[5].src, "runtime/quality/quality-profile.js", "unmapped quality files fall back to their name");
   for (const node of scripts) (node.src.includes("quality-profile") ? node.onerror : node.onload)();
   let tiers = 0;
-  page.window.GaiusQuality = {caps: {ensureTier: () => { tiers++; }}};
-  await page.window.__gaiusBoot.beforeMain();
+  const order = [];
+  let releasePrepare;
+  page.window.GaiusQuality = {caps: {
+    ensureTier: () => { tiers++; order.push("ensure"); },
+    // The tier Worker's result is awaited before the synchronous ensureTier.
+    prepareTier: () => { order.push("prepare"); return new Promise((resolve) => { releasePrepare = resolve; }); },
+    probeInfo: () => ({path: "worker", worker: {reason: null}}),
+  }};
+  const before = page.window.__gaiusBoot.beforeMain();
+  for (let i = 0; i < 20 && !releasePrepare; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(releasePrepare, "beforeMain calls prepareTier");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(tiers, 0, "ensureTier waits for prepareTier");
+  releasePrepare();
+  await before;
   assert.equal(tiers, 1, "beforeMain picks the quality tier");
+  assert.deepEqual(order, ["prepare", "ensure"]);
+  assert.ok(page.window.__gaiusBoot.events.some((entry) => entry.event === "quality-tier-probe" && entry.detail === "worker"));
   assert.ok(page.window.__gaiusBoot.events.some((entry) => entry.event === "module-missing"));
 });
 
@@ -216,6 +233,26 @@ check("document graphics teardown suppresses only its intentional context-loss r
   assert.equal(page.window.__gaiusTerminateGraphics("pagehide"), false,
     "graphics teardown ran more than once");
   assert.equal(loseCalls, 1);
+});
+
+check("pagehide cancels boot preloads and the idle server before graphics teardown", async () => {
+  const page = createPage();
+  const order = [];
+  page.window.__gaiusWasmHttpPreload = {
+    url: "https://example.invalid/classes.wasm",
+    response: Promise.resolve({body: {cancel(reason) { order.push(["body", reason]); }}}),
+  };
+  page.window.__gaiusCancelIdleSingleplayerWorker = reason => { order.push(["idle", reason]); return true; };
+  page.window.__gaiusAbortServerWasmPrewarm = reason => { order.push(["server", reason]); };
+  let graphicsDone = false, kernelsDone = false;
+  page.window.__gaiusTerminateGraphics = reason => { if (graphicsDone) return false; graphicsDone = true; order.push(["graphics", reason]); return true; };
+  page.window.__gaiusTerminateKernels = reason => { if (kernelsDone) return false; kernelsDone = true; order.push(["kernels", reason]); return true; };
+  page.dispatch("pagehide");
+  await Promise.resolve();
+  assert.equal(page.window.__gaiusWasmHttpPreload, null, "pagehide retained the shell Wasm preload");
+  assert.deepEqual(order, [["idle", "pagehide"], ["server", "pagehide"], ["graphics", "pagehide"], ["kernels", "pagehide"], ["body", "pagehide"]]);
+  page.dispatch("pagehide");
+  assert.equal(order.length, 5, "duplicate pagehide repeated boot teardown");
 });
 
 check("the sound pack merges into the decoded core pack in one step", async () => {
@@ -254,7 +291,132 @@ check("sounds without a reload bridge fall back to eager loading instead of goin
   release();
   await beforeMain;
   assert.equal(page.window.__gaiusBoot.sounds().merged, true);
+  assert.equal(page.window.__gaiusBoot.sounds().layout, "split",
+    "eager Wasm sound loading should avoid copying the full core archive");
+  assert.equal(page.window.__gaiusVanillaAssets.bytes, core.bytes,
+    "the eager sound sidecar must leave the core archive bytes intact");
+  assert.equal(page.window.__gaiusVanillaSounds.resourceCount, 1);
+  assert.ok(page.window.__gaiusBoot.events.some((entry) => entry.event === "sound-layout"
+    && entry.detail === "split"));
   assert.ok(page.window.__gaiusBoot.events.some((entry) => entry.event === "sound-mode-fallback"));
+});
+
+check("Wasm-only portable pages and sites default to WebGPU and fall back to WebGL 2", async () => {
+  const inline = Object.fromEntries(["runtime/webgpu/gpu-glue.js", "runtime/webgpu/shaderxlat-job.js",
+    "runtime/webgpu/quality-post.js", "runtime/webgpu/shader-pack-store.js",
+    "runtime/webgpu/shader-pack-compat.js", "runtime/webgpu/shader-pack.js"].map((name) => [name, true]));
+  const gpuNavigator = {hardwareConcurrency: 8, gpu: {requestAdapter() {}}};
+  const portable = (search, navigator) => createPage({site: {...WASM_SITE, runtimePolicy: "wasm-only"}, portable: true,
+    protocol: "file:", search, globals: Object.assign({
+      WebAssembly: fullWasm(), navigator, __gaiusBootInline: inline,
+      __gaiusPortableRuntimes: {wasm: {client: "classes.wasm", server: "singleplayer-server.wasm"}},
+      __gaiusFilePayloads: {"classes.wasm": {script: "classes.wasm.payload.js", bytes: 8, gzip: false}},
+    }, WEB_APIS)}).window.__gaiusGpuSelection;
+  assert.equal(portable("", gpuNavigator).requested, "webgpu");
+  assert.equal(portable("", gpuNavigator).source, "portable");
+  assert.equal(portable("?gpu=webgl2", gpuNavigator).requested, "webgl2");
+  // The single file defines no __gaiusSite at all; it still prefers WebGPU once the glue is inlined.
+  const bare = createPage({portable: true, protocol: "file:", search: "", globals: Object.assign({
+    WebAssembly: fullWasm(), navigator: gpuNavigator, __gaiusBootInline: inline,
+    __gaiusPortableRuntimes: {wasm: {client: "classes.wasm", server: "singleplayer-server.wasm"}},
+    __gaiusFilePayloads: {"classes.wasm": {script: "classes.wasm.payload.js", bytes: 8, gzip: false}},
+  }, WEB_APIS)}).window.__gaiusGpuSelection;
+  assert.equal(bare.requested, "webgpu");
+  // Without the inlined glue (the earlier single file) it can only offer WebGL 2 and says why.
+  const unglued = createPage({portable: true, protocol: "file:", search: "", globals: Object.assign({
+    WebAssembly: fullWasm(), navigator: gpuNavigator,
+    __gaiusPortableRuntimes: {wasm: {client: "classes.wasm", server: "singleplayer-server.wasm"}},
+    __gaiusFilePayloads: {"classes.wasm": {script: "classes.wasm.payload.js", bytes: 8, gzip: false}},
+  }, WEB_APIS)}).window.__gaiusGpuSelection;
+  assert.equal(unglued.requested, "webgl2");
+  assert.match(unglued.reason, /missing runtime\/webgpu\/gpu-glue\.js/);
+  const without = portable("", {hardwareConcurrency: 8});
+  assert.equal(without.requested, "webgl2");
+  assert.match(without.reason, /^webgpu unavailable: navigator\.gpu is not available/);
+  const site = createPage({site: {...WASM_SITE, runtimePolicy: "wasm-only"}, search: "", globals: Object.assign({
+    WebAssembly: fullWasm(), navigator: gpuNavigator, __gaiusBootInline: inline}, WEB_APIS)}).window.__gaiusGpuSelection;
+  assert.equal(site.source, "site");
+  // The test site ships no translator, so it falls back, but it is judged on the automatic path.
+  assert.match(site.reason, /^webgpu unavailable: .*missing runtime\/webgpu\/gaius-shaderxlat\.wasm/);
+});
+
+check("a Wasm-only single file creates the kernel runtime from its embedded kernels and worker", async () => {
+  const created = [];
+  const inlineKernelScripts = {"kernels/kernel-mirror.js": true, "kernels/kernel-policy.js": true,
+    "kernels/kernel-runtime.js": true};
+  const page = createPage({portable: true, protocol: "file:", search: "?runtime=wasm", globals: Object.assign({
+    WebAssembly: fullWasm(), __gaiusBootInline: inlineKernelScripts,
+    __gaiusPortableRuntimes: {wasm: {client: "classes.wasm", server: "singleplayer-server.wasm"}},
+    __gaiusFilePayloads: {"classes.wasm": {script: "classes.wasm.payload.js", bytes: 8, gzip: false}},
+    GaiusKernelPolicy: {},
+    GaiusKernelRuntime: {create(options) { created.push(options); return {available: () => true, terminate() {}, setViewer() {}}; }},
+    __gaiusPortableKernels: {worldgen: {kinds: ["terrain"], variants: {simd: {load: () => Promise.resolve(new ArrayBuffer(8))}}}},
+  }, WEB_APIS)});
+  const element = {textContent: "self.onmessage=()=>{}"};
+  page.window.document.getElementById = (id) => (id === "gaius-kernel-worker-source" ? element : null);
+  const runtime = await page.window.__gaiusKernels.runtime();
+  assert.ok(runtime, "the kernel runtime must exist on a single file");
+  assert.equal(created.length, 1);
+  assert.deepEqual(Object.keys(created[0].kernels), ["worldgen"]);
+  assert.equal(created[0].workerSource, "self.onmessage=()=>{}");
+  assert.equal(page.window.__gaiusBoot.events.some((entry) => entry.event === "kernels-unavailable"), false);
+  page.window.__gaiusKernelRuntime = null;
+});
+
+check("a portable page reads its embedded sound pack instead of fetching a sibling", async () => {
+  const core = pack([["assets/minecraft/sounds.json", "{}"]]);
+  const root = {bytes: core.bytes, index: Object.assign({}, core.index), dataOffset: core.dataOffset, resourceCount: 1};
+  const sounds = pack([["assets/minecraft/sounds/mob/cow/say1.ogg", "moo"]]);
+  const wasmBytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+  const page = createPage({site: SOUND_SITE, portable: true, protocol: "file:", search: "?runtime=wasm", globals: Object.assign({
+    WebAssembly: fullWasm(),
+    __gaiusPortableRuntimes: {wasm: {client: "classes.wasm", server: "singleplayer-server.wasm"}},
+    __gaiusFilePayloads: {
+      "classes.wasm": {script: "classes.wasm.payload.js", bytes: 8, gzip: false},
+      "vanilla-sounds.pack": {script: "x", gzip: false, bytes: sounds.bytes.length},
+    },
+    __gaiusPortablePayloadBytes: {
+      "classes.wasm": Promise.resolve(wasmBytes),
+      "vanilla-sounds.pack": Promise.resolve(sounds.bytes),
+    },
+    __gaiusVanillaAssets: root,
+    __gaiusVanillaAssetsReady: Promise.resolve(root),
+    fetch: async () => { throw new Error("a portable page has no sibling sound pack to fetch"); },
+  }, WEB_APIS)});
+  for (const node of page.appended) if (node.onload) node.onload();
+  assert.equal(page.window.__gaiusBoot.sounds().mode, "eager");
+  await page.window.__gaiusBoot.beforeMain();
+  assert.equal(page.window.__gaiusBoot.sounds().merged, true);
+  assert.equal(page.window.__gaiusBoot.sounds().error, null);
+  assert.equal(page.window.__gaiusVanillaSounds.resourceCount, 1);
+});
+
+check("a portable page without site metadata still reads its embedded sound pack", async () => {
+  const core = pack([["assets/minecraft/sounds.json", "{}"]]);
+  const root = {bytes: core.bytes, index: Object.assign({}, core.index), dataOffset: core.dataOffset, resourceCount: 1};
+  const sounds = pack([["assets/minecraft/sounds/mob/cow/say1.ogg", "moo"]]);
+  const wasmBytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+  const page = createPage({portable: true, protocol: "file:", search: "?runtime=wasm", globals: Object.assign({
+    WebAssembly: fullWasm(),
+    __gaiusPortableRuntimes: {wasm: {client: "classes.wasm", server: "singleplayer-server.wasm"}},
+    __gaiusFilePayloads: {
+      "classes.wasm": {script: "classes.wasm.payload.js", bytes: 8, gzip: false},
+      "vanilla-sounds.pack": {script: "x", gzip: false, bytes: sounds.bytes.length},
+    },
+    __gaiusPortablePayloadBytes: {
+      "classes.wasm": Promise.resolve(wasmBytes),
+      "vanilla-sounds.pack": Promise.resolve(sounds.bytes),
+    },
+    __gaiusVanillaAssets: root,
+    __gaiusVanillaAssetsReady: Promise.resolve(root),
+    fetch: async () => { throw new Error("a portable page has no sibling sound pack to fetch"); },
+  }, WEB_APIS)});
+  for (const node of page.appended) if (node.onload) node.onload();
+  assert.equal(page.window.__gaiusBoot.sounds().mode, "eager");
+  await page.window.__gaiusBoot.beforeMain();
+  assert.equal(page.window.__gaiusBoot.sounds().merged, true);
+  assert.equal(page.window.__gaiusBoot.sounds().error, null);
+  assert.equal(page.window.__gaiusVanillaSounds.resourceCount, 1);
 });
 
 check("deferred sounds call the provided SoundManager reload bridge once", async () => {
@@ -331,6 +493,46 @@ check("the integrated server Worker gets a kernel port after its start message",
   assert.equal(page.posted.length, 4, "other messages pass through untouched");
   page.posted[1].message.port.close();
   channel.port1.close();
+});
+
+check("?gaiusWorldgenSlice overrides the worldgen slice of the start message and nothing else", async () => {
+  const startMessage = (search) => {
+    const page = createPage({site: SITE, search});
+    const worker = new page.FakeWorker();
+    const channel = new MessageChannel();
+    worker.postMessage({type: "start", sessionId: "a".repeat(32), worldgenSliceMillis: 8, port: channel.port2},
+      [channel.port2]);
+    const message = page.posted[0].message;
+    page.posted[1].message.port.close();
+    channel.port1.close();
+    return message;
+  };
+  assert.equal(startMessage("").worldgenSliceMillis, 8, "no override without the switch");
+  assert.equal(startMessage("?gaiusWorldgenSlice=24").worldgenSliceMillis, 24);
+  for (const bad of ["", "1", "51", "fast"]) {
+    assert.equal(startMessage("?gaiusWorldgenSlice=" + bad).worldgenSliceMillis, 8, "ignored: " + bad);
+  }
+});
+
+check("?gaiusServerWake=1 adds the wake switch to the start message and nothing else; absent or =0 adds nothing", async () => {
+  const startMessage = (search) => {
+    const page = createPage({site: SITE, search});
+    const worker = new page.FakeWorker();
+    const channel = new MessageChannel();
+    worker.postMessage({type: "start", sessionId: "a".repeat(32), port: channel.port2}, [channel.port2]);
+    const message = page.posted[0].message;
+    page.posted[1].message.port.close();
+    channel.port1.close();
+    return message;
+  };
+  const plainKeys = Object.keys(startMessage("")).sort();
+  assert.equal(startMessage("").gaiusServerWake, undefined, "no switch without the query");
+  assert.equal(startMessage("?gaiusServerWake=1").gaiusServerWake, true);
+  assert.equal(startMessage("?gaiusServerWake=on").gaiusServerWake, true);
+  assert.deepEqual(Object.keys(startMessage("?gaiusServerWake=1")).sort(), [...plainKeys, "gaiusServerWake"].sort());
+  for (const off of ["0", "off", "false", "", "none", "2"]) {
+    assert.deepEqual(Object.keys(startMessage("?gaiusServerWake=" + off)).sort(), plainKeys, "ignored: " + off);
+  }
 });
 
 check("switched-off kernels give no runtime and no server port", async () => {
@@ -521,7 +723,20 @@ check("the world-selection prewarm parks vanilla Main; title idle and low memory
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(prewarmPosts(page)[0].message.parkMain, true,
     "Create World must ask the idle Worker to run vanilla Main up to Bootstrap");
+  assert.equal(prewarmPosts(page)[0].message.prewarmWorld, true,
+    "the parked Main may decode the default data pack ahead of the click");
   page.window.__gaiusCancelIdleSingleplayerWorker("smoke");
+
+  // ?gaiusSrvInit=0 keeps the parked Main but not the data pack prewarm.
+  const noSrvInit = siteIdlePage("net.minecraft.client.gui.screens.worldselection.CreateWorldScreen",
+    {site: WASM_SERVER_SITE, search: "?runtime=wasm&serverRuntime=wasm&gaiusSrvInit=0",
+      globals: {WebAssembly: fullWasm()}});
+  noSrvInit.page.runIntervals();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(prewarmPosts(noSrvInit.page)[0].message.parkMain, true);
+  assert.equal(prewarmPosts(noSrvInit.page)[0].message.prewarmWorld, false,
+    "?gaiusSrvInit=0 must switch the data pack prewarm off");
+  noSrvInit.page.window.__gaiusCancelIdleSingleplayerWorker("smoke");
 
   // A title-idle Worker only compiles; reaching the world list later parks its Main once.
   const title = siteIdlePage("TitleScreen", {
@@ -559,6 +774,57 @@ check("the world-selection prewarm parks vanilla Main; title idle and low memory
     assert.equal(prewarmPosts(low)[0].message.parkMain, false,
       "low-memory pages and ?gaiusParkMain=0 keep the compile-only prewarm");
     low.window.__gaiusCancelIdleSingleplayerWorker("smoke");
+  }
+});
+
+check("title idle starts the idle Worker at once and parks Main only with room to spare", async () => {
+  const roomy = {hardwareConcurrency: 8, deviceMemory: 8};
+  const startTitle = (search, navigator) => {
+    const title = siteIdlePage("TitleScreen", {
+      site: WASM_SERVER_SITE,
+      // A roomy site would also start its idle Worker at boot; this check is about the title idle.
+      search: "?runtime=wasm&serverRuntime=wasm&gaiusBootServer=0" + search,
+      globals: {WebAssembly: fullWasm(), ...(navigator ? {navigator} : {})},
+    });
+    title.page.window.requestIdleCallback = (callback) => callback();
+    title.page.runIntervals();
+    return title;
+  };
+  const idleWorker = (title) => title.page.window.__gaiusIdleSingleplayerWorker;
+  // The second poll after the title appeared (no grace period any more), long before the former 2.5 s.
+  let title = startTitle("", roomy);
+  title.clock.now = 1300;
+  title.page.runIntervals();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(idleWorker(title), "the idle Worker must start right after the title screen shows");
+  assert.equal(prewarmPosts(title.page, idleWorker(title))[0].message.parkMain, true,
+    "a roomy page runs Main to Bootstrap while the title idles");
+  title.page.window.__gaiusCancelIdleSingleplayerWorker("smoke");
+
+  // The former grace period is one URL switch away.
+  title = startTitle("&gaiusTitleIdleMs=2500", roomy);
+  title.clock.now = 2200;
+  title.page.runIntervals();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(idleWorker(title) || null, null, "?gaiusTitleIdleMs=2500 keeps the 2.5 s grace period");
+  title.clock.now = 4000;
+  title.page.runIntervals();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(idleWorker(title), "the idle Worker starts once the configured grace has passed");
+  title.page.window.__gaiusCancelIdleSingleplayerWorker("smoke");
+
+  // Small devices, unknown memory and the opt-out switches keep the compile-only prewarm.
+  for (const [search, navigator] of [["", {hardwareConcurrency: 8, deviceMemory: 4}],
+    ["", {hardwareConcurrency: 2, deviceMemory: 8}], ["", {hardwareConcurrency: 8}],
+    ["&gaiusTitlePark=0", roomy], ["&gaiusParkMain=0", roomy]]) {
+    title = startTitle(search, navigator);
+    title.clock.now = 2200;
+    title.page.runIntervals();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(idleWorker(title), "the idle Worker is created on every page: " + search + JSON.stringify(navigator));
+    assert.equal(prewarmPosts(title.page, idleWorker(title))[0].message.parkMain, false,
+      "no parked Main without room or with the switch off: " + search + JSON.stringify(navigator));
+    title.page.window.__gaiusCancelIdleSingleplayerWorker("smoke");
   }
 });
 
@@ -801,6 +1067,24 @@ const WASM_SERVER_SITE = Object.assign({}, WASM_SITE, {
 const WASM_ONLY_SERVER_SITE = Object.assign({}, WASM_SERVER_SITE, {runtimePolicy: "wasm-only"});
 const BASE = "https://example.invalid/Gaius/" + RENDERPEARL_PROFILE.id + "/";
 
+check("memory-rich sites overlap runtime-only server prewarm with client boot", async () => {
+  for (const [memory, search, expected] of [[8, "", 1], [4, "", 0], [8, "?gaiusBootServer=0", 0]]) {
+    const page = createPage({site: WASM_ONLY_SERVER_SITE, search, globals: {
+      ...WEB_APIS, WebAssembly: {...fullWasm(), compile: WebAssembly.compile, compileStreaming: WebAssembly.compileStreaming}, navigator: {hardwareConcurrency: 8, deviceMemory: memory},
+      async fetch() { return new Response(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]),
+        {headers: {"Content-Type": "application/wasm"}}); },
+    }});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(page.workers.length, expected);
+    const prewarm = page.posted.find(entry => entry.message.type === "prewarm");
+    if (expected) {
+      assert.ok(prewarm, "runtime prewarm starts before any TitleScreen state");
+      assert.equal(prewarm.message.parkMain, false, "boot prewarm must not start Java Main");
+      assert.equal(prewarm.message.serverRuntime, "wasm");
+    } else assert.equal(prewarm, undefined);
+  }
+});
+
 check("the runtime defaults to WasmGC and records all required capabilities", async () => {
   const page = createPage({site: WASM_SITE, globals: {WebAssembly: fullWasm()}});
   const selection = page.window.__gaiusRuntimeSelection;
@@ -834,9 +1118,20 @@ check("?runtime=wasm starts the WebAssembly GC client and its module download", 
   assert.equal(typeof page.window.__gaiusWasmBootReady?.then, "function");
   assert.ok(!page.appended.some((node) => node.tagName === "link"), "no classes.js preload");
   const source = await page.window.__gaiusWasmSource;
-  assert.equal(requests[0], BASE + "classes.aaaaaaaaaaaaaaab.wasm");
+  assert.equal(requests[0], BASE + "classes.aaaaaaaaaaaaaaab.wasm?gaiusWasmHttp=1");
   assert.equal(source, served, "the fetched Response itself streams into the compiler (code cache)");
   assert.equal(new Uint8Array(await source.arrayBuffer())[1], 97);
+  const prefetched = new Response(new Uint8Array([0, 97, 115, 109]), {headers: {"Content-Type": "application/wasm"}});
+  let duplicateFetches = 0;
+  const withPreload = createPage({site: WASM_SITE, globals: Object.assign({WebAssembly: fullWasm(),
+    __gaiusWasmHttpPreload: {url: BASE + "classes.aaaaaaaaaaaaaaab.wasm?gaiusWasmHttp=1",
+      response: Promise.resolve(prefetched)},
+    fetch: async () => { duplicateFetches++; throw new Error("duplicate client fetch"); },
+  }, WEB_APIS)});
+  assert.equal(await withPreload.window.__gaiusWasmSource, prefetched,
+    "the shell fetch Response retains its identity and metadata handler");
+  assert.equal(duplicateFetches, 0);
+  assert.equal(withPreload.window.__gaiusWasmHttpPreload, null);
   // A host that serves .wasm with another type gets the body rewrapped as application/wasm.
   const untyped = createPage({site: WASM_SITE, search: "?runtime=wasm", globals: Object.assign({
     WebAssembly: fullWasm(), fetch: async () => new Response(new Uint8Array([0, 97, 115, 109])),
@@ -844,6 +1139,19 @@ check("?runtime=wasm starts the WebAssembly GC client and its module download", 
   const rewrapped = await untyped.window.__gaiusWasmSource;
   assert.equal(rewrapped.headers.get("Content-Type"), "application/wasm");
   assert.equal(new Uint8Array(await rewrapped.arrayBuffer())[2], 115);
+  // The browser decodes HTTP Content-Encoding before exposing the fetched body. A .gz URL
+  // served as Wasm must reach compileStreaming as the original network Response.
+  const encoded = new Response(new Uint8Array([0, 97, 115, 109]), {headers: {
+    "Content-Type": "application/wasm", "Content-Encoding": "gzip",
+  }});
+  const encodedSite = Object.assign({}, WASM_SITE, {assets: {...WASM_SITE.assets}, inflate: {"classes.wasm": "classes.aaaaaaaaaaaaaaab.wasm"}});
+  delete encodedSite.assets["classes.wasm"];
+  const encodedPage = createPage({site: encodedSite, search: "?runtime=wasm", globals: Object.assign({
+    WebAssembly: fullWasm(), fetch: async () => encoded,
+  }, WEB_APIS)});
+  const encodedSource = await encodedPage.window.__gaiusWasmSource;
+  assert.equal(encodedSource, encoded);
+  assert.deepEqual([...new Uint8Array(await encodedSource.arrayBuffer())], [0, 97, 115, 109]);
   // beforeMain waits for the instantiated module and publishes the shared boot timings.
   for (const node of page.appended) if (node.onload) node.onload();
   page.window.__gaiusBootTimings = {pageStart: 0, classesLoaded: 5};
@@ -1121,6 +1429,40 @@ const GZIP_ONLY_SITE = (() => {
 const MODULE_BYTES = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
 const gzipResponse = async () => new Response(await new Response(new Blob([MODULE_BYTES]).stream()
   .pipeThrough(new CompressionStream("gzip"))).arrayBuffer(), {headers: {"Content-Type": "application/gzip"}});
+
+check("Brotli delivery reuses the shell response and retains native compilation identity", async () => {
+  const site = {...WASM_SITE, assets: {...WASM_SITE.assets, "classes.wasm.br": "classes.wasm.aaaaaaaaaaaaaaae.br"}};
+  const served = new Response(MODULE_BYTES, {headers: {"Content-Type": "application/wasm", "Content-Encoding": "br"}});
+  let requests = 0;
+  const page = createPage({site, globals: Object.assign({WebAssembly: fullWasm(),
+    __gaiusWasmHttpPreload: {url: BASE + site.assets["classes.wasm.br"] + "?gaiusWasmHttp=1", response: Promise.resolve(served)},
+    fetch: async () => { requests++; throw new Error("duplicate fetch"); },
+  }, WEB_APIS)});
+  assert.equal(await page.window.__gaiusWasmSource, served);
+  assert.equal(page.window.__gaiusWasmHttpPreload, null);
+  assert.equal(requests, 0);
+});
+
+check("hosts without Brotli headers or sidecars retain the immutable raw Wasm path", async () => {
+  const site = {...WASM_SITE, assets: {...WASM_SITE.assets, "classes.wasm.br": "classes.wasm.aaaaaaaaaaaaaaae.br"}};
+  for (const failure of ["headers", "missing", "network"]) {
+    const requests = [];
+    const raw = new Response(MODULE_BYTES, {headers: {"Content-Type": "application/wasm"}});
+    const page = createPage({site, globals: Object.assign({WebAssembly: fullWasm(), fetch: async (url) => {
+      requests.push(String(url));
+      if (String(url).includes(".br?gaiusWasmHttp=1")) {
+        if (failure === "network") throw new Error("offline sidecar");
+        return new Response(new Uint8Array([1, 2]), {status: failure === "missing" ? 404 : 200});
+      }
+      return raw;
+    }}, WEB_APIS)});
+    assert.equal(await page.window.__gaiusWasmSource, raw);
+    assert.deepEqual(requests, [BASE + site.assets["classes.wasm.br"] + "?gaiusWasmHttp=1",
+      BASE + site.assets["classes.wasm"] + "?gaiusWasmHttp=1"]);
+    assert.ok(page.window.__gaiusBoot.events.some(event => event.event === "wasm-brotli-fallback"));
+  }
+});
+
 const controlled = {hardwareConcurrency: 8, serviceWorker: {controller: {}}};
 
 check("a gzip-only module comes from the Service Worker, or is inflated on the page without one", async () => {
@@ -1230,6 +1572,94 @@ check("?gaiusSw=0 unregisters only this site's own Service Worker", async () => 
 // page has no __gaiusWasmSupportReady preload: integ4-t6 skipped the runtime script then and failed
 // with "Cannot read properties of undefined (reading 'wasmGC')".
 const wasmShim = await readFile(new URL("../web/runtime/wasmgc/gaius-wasm-boot.js", import.meta.url), "utf8");
+async function runBrotliClient({failure = null, retryFailure = null, instantiateFailure = false} = {}) {
+  const site = {...WASM_SITE, assets: {...WASM_SITE.assets, "classes.wasm.br": "classes.wasm.aaaaaaaaaaaaaaae.br"}};
+  const requests = [], compiledSources = [];
+  let instances = 0, compilerCalls = 0, loadCalls = 0;
+  const served = new Response(MODULE_BYTES, {headers: {"Content-Type": "application/wasm", "Content-Encoding": "br"}});
+  const erroredBody = () => new ReadableStream({start(controller) { controller.error(new Error("truncated body")); }});
+  const page = createPage({site, globals: Object.assign({
+    WebAssembly: {...fullWasm(), Module: WebAssembly.Module, compile: WebAssembly.compile,
+      compileStreaming(response, options) {
+        compilerCalls++;
+        compiledSources.push(response);
+        if (failure === "sync" && compilerCalls === 1) throw new Error("synchronous compiler failure");
+        return WebAssembly.compileStreaming(response, options);
+      }},
+    fetch: async (url) => {
+      requests.push(String(url));
+      const brotli = String(url).includes(".br?");
+      if (brotli && failure === "network") throw new Error("sidecar unavailable");
+      if (!brotli && retryFailure === "network") throw new Error("raw unavailable");
+      if (brotli && failure === "headers") return new Response(MODULE_BYTES, {headers: {"Content-Type": "application/wasm"}});
+      if ((brotli && failure === "body") || (!brotli && retryFailure === "body")) {
+        return new Response(erroredBody(), {headers: {"Content-Type": "application/wasm", ...(brotli ? {"Content-Encoding": "br"} : {})}});
+      }
+      if ((brotli && failure === "module") || (!brotli && retryFailure === "module")) {
+        return new Response(new Uint8Array([0, 1]), {headers: {"Content-Type": "application/wasm", ...(brotli ? {"Content-Encoding": "br"} : {})}});
+      }
+      return brotli ? served : new Response(MODULE_BYTES, {headers: {"Content-Type": "application/wasm"}});
+    },
+  }, WEB_APIS)});
+  page.window.__gaiusWasmSupportReady = Promise.resolve(true);
+  page.window.GaiusJspi = {};
+  page.window.TeaVM = {wasmGC: {load: async (module) => {
+    loadCalls++;
+    assert.ok(module instanceof WebAssembly.Module);
+    if (instantiateFailure) throw new Error("instance import failure");
+    instances++;
+    return {instance: await WebAssembly.instantiate(module, {})};
+  }}};
+  vm.runInContext(wasmShim, page.window, {filename: "gaius-wasm-boot.js"});
+  let error = null;
+  try { await page.window.__gaiusWasmReady; } catch (failure) { error = failure; }
+  return {page, requests, compiledSources, served, compilerCalls, loadCalls, instances, error};
+}
+
+check("Brotli compilation retries a failed stream or compiler once before instantiation", async () => {
+  for (const failure of ["body", "module", "sync", "headers", "network"]) {
+    const result = await runBrotliClient({failure});
+    assert.equal(result.error, null, failure);
+    assert.equal(result.requests.length, 2, failure);
+    assert.match(result.requests[0], /\.br\?/);
+    assert.match(result.requests[1], /\.wasm\?/);
+    assert.equal(result.loadCalls, 1, failure);
+    assert.equal(result.instances, 1, failure);
+    assert.equal(result.page.window.__gaiusWasmSourceFallback, null, failure);
+    assert.equal(result.compilerCalls, ["headers", "network"].includes(failure) ? 1 : 2, failure);
+  }
+});
+
+check("Brotli compilation keeps successful responses and never retries instance failures", async () => {
+  const success = await runBrotliClient();
+  assert.equal(success.error, null);
+  assert.equal(success.compiledSources[0], success.served, "native response identity survives compilation");
+  assert.equal(success.requests.length, 1);
+  assert.equal(success.compilerCalls, 1);
+  assert.equal(success.instances, 1);
+  assert.equal(success.page.window.__gaiusWasmSourceFallback, null);
+  const failed = await runBrotliClient({instantiateFailure: true});
+  assert.match(String(failed.error), /instance import failure/);
+  assert.equal(failed.requests.length, 1);
+  assert.equal(failed.compilerCalls, 1);
+  assert.equal(failed.loadCalls, 1);
+  assert.equal(failed.instances, 0);
+  assert.equal(failed.page.window.__gaiusWasmSourceFallback, null);
+});
+
+check("Brotli compilation leaves a failed raw retry terminal without starting an instance", async () => {
+  for (const failure of ["body", "headers", "network"]) {
+    for (const retryFailure of ["body", "module", "network"]) {
+      const result = await runBrotliClient({failure, retryFailure});
+      assert.ok(result.error, `${failure}/${retryFailure}`);
+      assert.equal(result.requests.length, 2, `${failure}/${retryFailure}`);
+      assert.equal(result.loadCalls, 0);
+      assert.equal(result.instances, 0);
+      assert.equal(result.page.window.__gaiusWasmSourceFallback, null);
+    }
+  }
+});
+
 async function runWasmShim({preload, preloaded = false} = {}) {
   const loaded = [];
   const counts = {loads: 0};
@@ -1260,7 +1690,7 @@ check("wasm shim: a portable page without a support preload loads the runtime sc
   assert.deepEqual(await runWasmShim(), {loaded: ["blob:jspi", "blob:runtime"], loads: 1});
 });
 
-check("memory pacing asks for a UA memory measurement only at quiet moments, only when isolated", async () => {
+check("adaptive memory pacing measures only WebGPU retention at quiet moments, only when isolated", async () => {
   const pacingPage = (search, isolated) => {
     const timers = [];
     let calls = 0;
@@ -1280,6 +1710,16 @@ check("memory pacing asks for a UA memory measurement only at quiet moments, onl
   };
   const {page, tick, calls} = pacingPage("", true);
   const game = page.window.__gaiusMinecraftState = {level: false, screen: "net.minecraft.client.gui.screens.TitleScreen", pause: false};
+  await tick(1000);
+  assert.equal(calls(), 0, "an unselected backend has no WebGPU wrapper backlog");
+  page.window.__gaiusGpuBackend = "webgl2";
+  await tick(60000);
+  assert.equal(calls(), 0, "WebGL2 title frames must not force a full heap measurement");
+  game.level = true; game.screen = "net.minecraft.client.gui.screens.LevelLoadingScreen";
+  await tick(60000);
+  assert.equal(calls(), 0, "WebGL2 loading frames must not force a full heap measurement");
+  page.window.__gaiusGpuBackend = "webgpu";
+  game.level = false; game.screen = "net.minecraft.client.gui.screens.TitleScreen";
   await tick(1000);
   assert.equal(calls(), 1, "the title screen is a quiet moment");
   const telemetry = page.window.__gaiusMemoryTelemetry.uaMemory;
@@ -1301,12 +1741,20 @@ check("memory pacing asks for a UA memory measurement only at quiet moments, onl
   await tick(200000);
   assert.equal(calls(), 4, "a large render pass backlog asks in the world after the long gap");
   assert.equal(telemetry.reasons.backlog, 1);
+  page.window.__gaiusGpuBackend = "webgl2";
+  game.pause = true;
+  await tick(200000);
+  assert.equal(calls(), 4, "a WebGPU-to-WebGL2 fallback stops adaptive measurements");
   page.dispatch("pagehide");
   game.screen = "net.minecraft.client.gui.screens.PauseScreen";
   await tick(60000);
   assert.equal(calls(), 4, "pagehide stops the pacing");
   const custom = pacingPage("?gaiusGcPacing=2500", true);
   assert.equal(custom.timers.filter((timer) => timer.ms === 2500).length, 1, "a fixed pause asks on its own timer");
+  custom.page.window.__gaiusGpuBackend = "webgl2";
+  custom.timers.find((timer) => timer.ms === 2500).callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(custom.calls(), 1, "explicit memory diagnostics still measure WebGL2");
   const off = pacingPage("?gaiusGcPacing=0", true);
   assert.equal(off.page.window.__gaiusMemoryTelemetry?.uaMemory, undefined);
   const notIsolated = pacingPage("", false);
@@ -1365,7 +1813,128 @@ check("unsupported launcher page has localized message and retry controls", asyn
   assert.match(launcherSource, /if \(window\.__gaiusUnsupportedBrowser\) return;/);
 });
 
+check("missing Wasm features select the frozen JavaScript pair and its server", async () => {
+  for (const feature of ["gc", "jspi"]) {
+    const wasm = fullWasm();
+    if (feature === "gc") wasm.validate = () => false;
+    else { delete wasm.Suspending; delete wasm.promising; }
+    const requests = [];
+    const site = {...WASM_SITE, runtimePolicy: "auto", assets: {...WASM_SITE.assets,
+      "classes.js": "classes.frozen.js", "singleplayer-server.js": "server.frozen.js"}};
+    const page = createPage({site, search: "?worldgenKernel=0", globals: {
+      WebAssembly: wasm, fetch: async (url) => { requests.push(String(url)); return new Response(new Uint8Array(0)); },
+    }});
+    const selected = page.window.__gaiusRuntimeSelection;
+    assert.equal(selected.selected, "js");
+    assert.equal(selected.fallback, true);
+    assert.equal(selected.features[feature], false);
+    assert.equal(page.window.__gaiusClassesUrl, BASE + "classes.frozen.js");
+    assert.equal(page.window.__gaiusWasmSource, undefined);
+    page.window.__gaiusBoot.applyAssetUrls();
+    const worker = new page.FakeWorker("worker.js");
+    worker.postMessage({type: "start"});
+    assert.equal(page.posted[0].message.serverRuntime, "js");
+    assert.equal(page.posted[0].message.serverScriptUrl, BASE + "server.frozen.js");
+    assert.equal(requests.some((url) => /classes.*wasm/.test(url)), false);
+  }
+});
+
+check("a failed Wasm load switches to frozen JavaScript before main", async () => {
+  const site = {...WASM_SITE, runtimePolicy: "auto", assets: {...WASM_SITE.assets,
+    "classes.js": "classes.frozen.js", "singleplayer-server.js": "server.frozen.js"}};
+  const page = createPage({site, globals: {WebAssembly: fullWasm(),
+    fetch: async () => new Response(new Uint8Array(0))}});
+  for (const node of page.appended) node.onload?.();
+  page.window.__gaiusClientReady = Promise.reject(new Error("deterministic compile failure"));
+  page.window.__gaiusClientReady.catch(() => {});
+  const pending = page.window.__gaiusBoot.beforeMain();
+  for (let i = 0; i < 20; i++) {
+    await new Promise(resolve => setTimeout(resolve, 1));
+    for (const node of page.appended) node.onload?.();
+  }
+  await pending;
+  assert.equal(page.window.__gaiusRuntimeSelection.selected, "js");
+  assert.equal(page.window.__gaiusRuntimeSelection.late, true);
+  assert.equal(page.window.__gaiusBoot.serverRuntime, "js");
+  assert.equal(page.appended.filter(node => /classes.frozen.js$/.test(node.src || "")).length, 1);
+});
+
+check("compressed frozen JavaScript stays lazy on Wasm and streams on fallback", async () => {
+  const site = {...WASM_SITE, runtimePolicy: "auto", assets: {...WASM_SITE.assets,
+    "classes.js.gz": "classes.frozen.js.gz", "singleplayer-server.js.gz": "server.frozen.js.gz"}};
+  const packed = gzipSync("globalThis.main = function() {};\n");
+  const normalRequests = [];
+  const normal = createPage({site, globals: {...WEB_APIS, WebAssembly: fullWasm(),
+    fetch: async url => { normalRequests.push(String(url)); return new Response(new Uint8Array(0)); }}});
+  assert.equal(normal.window.__gaiusRuntimeSelection.selected, "wasm");
+  await Promise.resolve();
+  assert.equal(normalRequests.some(url => /frozen\.js\.gz$/.test(url)), false);
+  for (const responseBody of [packed, Buffer.from("globalThis.main = function() {};\n")]) {
+    const requests = [];
+    const wasm = fullWasm(); delete wasm.Suspending; delete wasm.promising;
+    const page = createPage({site, globals: {...WEB_APIS, WebAssembly: wasm,
+      fetch: async url => { requests.push(String(url)); return new Response(responseBody); }}});
+    assert.equal(page.window.__gaiusRuntimeSelection.selected, "js");
+    await page.window.__gaiusBoot.assetsReady();
+    const url = page.window.__gaiusClassesUrl;
+    assert.match(url, /^blob:/);
+    const text = await (await fetch(url)).text();
+    assert.match(text, /globalThis.main = function/);
+    assert.match(text, /sourceURL=.*classes.frozen.js.gz/);
+    assert.equal(requests.some(url => /classes.*wasm/.test(url)), false);
+    page.window.__gaiusBoot.applyAssetUrls();
+    assert.equal(page.window.__gaiusSingleplayerServerGzipUrl, BASE + "server.frozen.js.gz");
+    URL.revokeObjectURL(url);
+  }
+});
+
+check("main entry commits Wasm and releases portable JS without allowing a late switch", async () => {
+  let released = 0;
+  const site = {...WASM_SITE, runtimePolicy: "auto", assets: {...WASM_SITE.assets,
+    "classes.js": "classes.frozen.js", "singleplayer-server.js": "server.frozen.js"}};
+  const page = createPage({site, globals: {WebAssembly: fullWasm(),
+    fetch: async () => new Response(new Uint8Array(0)),
+    __gaiusPortableReleaseJsFallback() {released++; return true;}}});
+  for (const node of page.appended) node.onload?.();
+  page.window.__gaiusClientReady = Promise.resolve();
+  await page.window.__gaiusBoot.beforeMain();
+  assert.equal(released, 0, "beforeMain must retain fallback payloads");
+  assert.equal(page.window.__gaiusBoot.commitClientRuntime(), true);
+  assert.equal(released, 1);
+  assert.equal(page.window.__gaiusBoot.commitClientRuntime(), false);
+  page.window.__gaiusClientReady = Promise.reject(new Error("after-main failure"));
+  page.window.__gaiusClientReady.catch(() => {});
+  await assert.rejects(() => page.window.__gaiusBoot.beforeMain(), /after-main failure/);
+  assert.equal(page.window.__gaiusRuntimeSelection.selected, "wasm");
+  assert.equal(page.appended.some(node => /classes.frozen.js$/.test(node.src || "")), false);
+
+  const start = wasmShim.indexOf("  function runMain(args) {");
+  const end = wasmShim.indexOf("  g.main = function", start);
+  const events = [];
+  const context = {phase: name => events.push(name), terminated: false,
+    jspi: {startMain() {events.push("java-main-entered"); return new Promise(() => {});}},
+    g: {__gaiusBoot: {commitClientRuntime() {events.push("runtime-committed");}}}};
+  vm.createContext(context);
+  vm.runInContext(wasmShim.slice(start, end) + "runMain([]);", context);
+  assert.deepEqual(events, ["mainStart", "java-main-entered", "mainReturned", "runtime-committed"]);
+  events.length = 0;
+  context.jspi.startMain = () => {throw new Error("failed entry");};
+  assert.throws(() => vm.runInContext("runMain([]);", context), /failed entry/);
+  assert.equal(events.includes("runtime-committed"), false);
+});
+
 const SMOKE_ALLOWLIST = new Set([
+  "main entry commits Wasm and releases portable JS without allowing a late switch",
+  "compressed frozen JavaScript stays lazy on Wasm and streams on fallback",
+  "missing Wasm features select the frozen JavaScript pair and its server",
+  "a failed Wasm load switches to frozen JavaScript before main",
+  "Brotli compilation retries a failed stream or compiler once before instantiation",
+  "Brotli compilation keeps successful responses and never retries instance failures",
+  "Brotli compilation leaves a failed raw retry terminal without starting an instance",
+  "Brotli delivery reuses the shell response and retains native compilation identity",
+  "hosts without Brotli headers or sidecars retain the immutable raw Wasm path",
+  "adaptive memory pacing measures only WebGPU retention at quiet moments, only when isolated",
+  "memory-rich sites overlap runtime-only server prewarm with client boot",
   "site mode maps logical Wasm names and starts the Wasm client",
   "the runtime defaults to WasmGC and records all required capabilities",
   "?runtime=wasm starts the WebAssembly GC client and its module download",
@@ -1374,11 +1943,18 @@ const SMOKE_ALLOWLIST = new Set([
   "a Wasm module failure is terminal and never starts a JavaScript client",
   "the sound pack merges into the decoded core pack in one step",
   "sounds without a reload bridge fall back to eager loading instead of going silent",
+  "Wasm-only portable pages and sites default to WebGPU and fall back to WebGL 2",
+  "a Wasm-only single file creates the kernel runtime from its embedded kernels and worker",
+  "a portable page reads its embedded sound pack instead of fetching a sibling",
+  "a portable page without site metadata still reads its embedded sound pack",
   "deferred sounds call the provided SoundManager reload bridge once",
   "the integrated server Worker gets a kernel port after its start message",
   "switched-off kernels give no runtime and no server port",
   "world-selection screens warm the server Worker at once and post a runtime prewarm",
   "the world-selection prewarm parks vanilla Main; title idle and low memory do not",
+  "title idle starts the idle Worker at once and parks Main only with room to spare",
+  "?gaiusWorldgenSlice overrides the worldgen slice of the start message and nothing else",
+  "?gaiusServerWake=1 adds the wake switch to the start message and nothing else; absent or =0 adds nothing",
   "an adopted or launching Worker is not replaced while its world starts",
   "an idle Worker that fails to load is retried once per world-selection stay",
   "an open world never triggers the world-selection warm-up",

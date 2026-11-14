@@ -359,7 +359,7 @@
     // would produce.  Only successful compilations are kept.
     var cache = {
       enabled: true, version: String(cacheVersion || "dev"), entries: new Map(), hits: 0, misses: 0,
-      db: null, dbName: null, pending: [], flushTimer: null, loaded: 0, stored: 0, evicted: 0, lastError: null
+      db: null, dbName: null, attaching: false, pending: [], flushTimer: null, loaded: 0, stored: 0, evicted: 0, primed: 0, lastError: null
     };
     var jobs = new Map();
     var nextJob = 1;
@@ -904,9 +904,11 @@
         cache.entries.delete(cache.entries.keys().next().value);
         cache.evicted++;
       }
-      if (cache.db) {
+      if (cache.db || cache.attaching) {
         cache.pending.push({key: key, version: cache.version, spirv: entry.spirv, error: entry.error,
           warnings: entry.warnings, errors: entry.errors, used: entry.used});
+        // An open that never answers must not keep every result of the session alive.
+        if (cache.pending.length > CACHE_MAX_ENTRIES) cache.pending.shift();
         if (cache.flushTimer === null) cache.flushTimer = setTimeout(flushCache, 500);
       }
     }
@@ -915,7 +917,12 @@
       cache.flushTimer = null;
       var batch = cache.pending;
       cache.pending = [];
-      if (!cache.db || batch.length === 0) return Promise.resolve(0);
+      if (batch.length === 0) return Promise.resolve(0);
+      if (!cache.db) {
+        // The database is still being attached: keep the results for the first flush after it.
+        if (cache.attaching) cache.pending = batch.concat(cache.pending);
+        return Promise.resolve(0);
+      }
       return new Promise(function (resolve) {
         try {
           var transaction = cache.db.transaction(CACHE_STORE, "readwrite");
@@ -940,6 +947,64 @@
       cache.enabled = !!enabled;
     };
 
+    // ---- baked results ---------------------------------------------------------------
+    // A baked set is the cache as a release run left it: "GSPB" 1 <u32 header length> <header
+    // JSON {version, entries: [[key, length, error, warnings, errors], ...]}> <SPIR-V of the
+    // entries in order>.  Entries are keyed like live results (every job input plus the
+    // toolchain version), so priming can only ever hand back what shaderc would have produced:
+    // a set baked for another toolchain version is ignored, and a job whose inputs changed
+    // misses and compiles.
+    api.exportCache = function () {
+      var entries = [];
+      var total = 0;
+      cache.entries.forEach(function (entry, key) {
+        entries.push([key, entry.spirv.length, entry.error || "", entry.warnings | 0, entry.errors | 0]);
+        total += entry.spirv.length;
+      });
+      var header = new TextEncoder().encode(JSON.stringify({version: cache.version, entries: entries}));
+      var out = new Uint8Array(9 + header.length + total);
+      out.set([0x47, 0x53, 0x50, 0x42, 1], 0);
+      new DataView(out.buffer).setUint32(5, header.length, true);
+      out.set(header, 9);
+      var at = 9 + header.length;
+      cache.entries.forEach(function (entry) {
+        out.set(entry.spirv, at);
+        at += entry.spirv.length;
+      });
+      return out;
+    };
+
+    // Returns the number of entries added (0 for a malformed set or another toolchain version).
+    api.primeCache = function (bytes) {
+      var primed = 0;
+      try {
+        bytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        if (bytes.length < 9 || bytes[0] !== 0x47 || bytes[1] !== 0x53 || bytes[2] !== 0x50
+            || bytes[3] !== 0x42 || bytes[4] !== 1) {
+          return 0;
+        }
+        var headerLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.length).getUint32(5, true);
+        var header = JSON.parse(new TextDecoder().decode(bytes.subarray(9, 9 + headerLength)));
+        if (!header || header.version !== cache.version || !Array.isArray(header.entries)) return 0;
+        var at = 9 + headerLength;
+        for (var i = 0; i < header.entries.length; i++) {
+          var row = header.entries[i];
+          var length = row[1] >>> 0;
+          if (at + length > bytes.length) return primed;
+          if (!cache.entries.has(row[0])) {
+            cache.entries.set(row[0], {spirv: bytes.slice(at, at + length), error: String(row[2] || ""),
+              warnings: row[3] | 0, errors: row[4] | 0, used: 0});
+            primed++;
+          }
+          at += length;
+        }
+      } catch (error) {
+        cache.lastError = describe(error);
+      }
+      cache.primed += primed;
+      return primed;
+    };
+
     api.clearCache = function () {
       cache.entries.clear();
       cache.hits = 0;
@@ -951,12 +1016,18 @@
     // Resolves to the number of loaded entries (0 when IndexedDB is unavailable).
     api.attachPersistentCache = function (name) {
       if (typeof indexedDB === "undefined" || !name) return Promise.resolve(0);
+      cache.attaching = true;
       return new Promise(function (resolve) {
         var settled = false;
         var finish = function (count, error) {
           if (settled) return;
           settled = true;
-          if (error) cache.lastError = describe(error);
+          cache.attaching = false;
+          if (error) {
+            cache.lastError = describe(error);
+            // A blocked open may still succeed later and flush what is kept; any other failure is final.
+            if (error !== "blocked") cache.pending = [];
+          }
           resolve(count);
         };
         var request;
@@ -974,32 +1045,54 @@
         request.onblocked = function () { finish(0, "blocked"); };
         request.onsuccess = function () {
           var db = request.result;
-          var transaction = db.transaction(CACHE_STORE, "readwrite");
-          var store = transaction.objectStore(CACHE_STORE);
+          var transaction;
+          var read;
+          try {
+            // One read-only getAll instead of a read-write cursor: a cursor costs a round trip per
+            // entry, and a read-write transaction queues behind every other writer of the database.
+            transaction = db.transaction(CACHE_STORE, "readonly");
+            read = transaction.objectStore(CACHE_STORE).getAll(null, CACHE_MAX_ENTRIES);
+          } catch (error) {
+            try { db.close(); } catch (_) { /* already closed */ }
+            finish(0, error);
+            return;
+          }
           var loaded = 0;
-          var cursorRequest = store.openCursor();
-          cursorRequest.onsuccess = function () {
-            var cursor = cursorRequest.result;
-            if (!cursor) return;
-            var value = cursor.value;
-            if (value && value.version === cache.version && value.spirv) {
-              if (!cache.entries.has(value.key)) {
-                cache.entries.set(value.key, {spirv: new Uint8Array(value.spirv), error: value.error || "",
-                  warnings: value.warnings | 0, errors: value.errors | 0, used: value.used || 0});
-                loaded++;
+          var stale = [];
+          read.onsuccess = function () {
+            var values = read.result || [];
+            for (var i = 0; i < values.length; i++) {
+              var value = values[i];
+              if (value && value.version === cache.version && value.spirv) {
+                if (!cache.entries.has(value.key)) {
+                  cache.entries.set(value.key, {spirv: new Uint8Array(value.spirv), error: value.error || "",
+                    warnings: value.warnings | 0, errors: value.errors | 0, used: value.used || 0});
+                  loaded++;
+                }
+              } else if (value) {
+                stale.push(value.key);
               }
-            } else {
-              cursor.delete();
             }
-            cursor.continue();
           };
           transaction.oncomplete = function () {
             cache.db = db;
             cache.dbName = name;
             cache.loaded += loaded;
             finish(loaded, null);
+            // Results kept while attaching (or after a blocked open that came through) go out first.
+            if (cache.pending.length && cache.flushTimer === null) cache.flushTimer = setTimeout(flushCache, 500);
+            // Entries of other toolchain versions go away in the background, off the boot path.
+            if (stale.length) {
+              try {
+                var cleanup = db.transaction(CACHE_STORE, "readwrite").objectStore(CACHE_STORE);
+                for (var j = 0; j < stale.length; j++) cleanup.delete(stale[j]);
+              } catch (_) { /* the stale entries are removed by a later page */ }
+            }
           };
-          transaction.onerror = function () { finish(0, transaction.error); };
+          transaction.onerror = transaction.onabort = function () {
+            if (!settled || cache.db !== db) try { db.close(); } catch (_) { /* already closed */ }
+            finish(0, transaction.error);
+          };
         };
       });
     };
@@ -1028,7 +1121,7 @@
         spvcMs: Math.round(counters.spvcMs * 10) / 10,
         cache: {
           enabled: cache.enabled, version: cache.version, entries: cache.entries.size, hits: cache.hits,
-          misses: cache.misses, database: cache.dbName, loaded: cache.loaded, stored: cache.stored,
+          misses: cache.misses, database: cache.dbName, loaded: cache.loaded, stored: cache.stored, primed: cache.primed,
           evicted: cache.evicted, lastError: cache.lastError
         }
       };
@@ -1102,6 +1195,8 @@
   // the profile's own IndexedDB cache database.
   function loaderProfile() {
     var profile = loaderScript && loaderScript.getAttribute ? loaderScript.getAttribute("data-profile") : null;
+    // A portable page inlines the loader as a plain script: the page's profile id names the cache.
+    if (!profile && typeof root.__gaiusProfileId === "string") profile = root.__gaiusProfileId;
     return profile && /^[A-Za-z0-9._+-]+$/.test(profile) ? profile : null;
   }
 
@@ -1177,11 +1272,36 @@
         cacheVersion: token
       });
     }).then(function (api) {
-      if (!profile) return api;
-      // The persistent cache is an optimisation: never hold the boot for more than 3 s on it.
+      // Baked results of the release's pipelines (a Uint8Array/ArrayBuffer or a promise of one,
+      // published by the page; a site names a URL in __gaiusShaderToolchainUrls.prebake).
+      var urls = root.__gaiusShaderToolchainUrls || {};
+      var baked = root.__gaiusShaderPrebake;
+      if (!baked && typeof urls.prebake === "string" && typeof fetch === "function") {
+        baked = fetch(urls.prebake).then(function (response) {
+          return response.ok ? response.arrayBuffer() : null;
+        });
+      }
+      return Promise.resolve(baked).then(function (bytes) {
+        if (!bytes) return api;
+        bytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        // The release stores the set gzipped (a third of the size).
+        if (bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b && typeof DecompressionStream === "function") {
+          return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip")))
+            .arrayBuffer().then(function (inflated) { api.primeCache(new Uint8Array(inflated)); return api; });
+        }
+        api.primeCache(bytes);
+        return api;
+      }).catch(function () { return api; });
+    }).then(function (api) {
+      // A portable page publishes its profile id after this script has started: ask again here.
+      var cacheProfile = profile || loaderProfile();
+      if (!cacheProfile) return api;
+      // The persistent cache is an optimisation: give it a short head start and let a slow
+      // IndexedDB (cold file system, security scanners) finish in the background. Entries that
+      // arrive late still serve every later compile; a miss just compiles.
       return Promise.race([
-        api.attachPersistentCache("gaius-shader-cache-v1-" + profile),
-        new Promise(function (resolve) { setTimeout(resolve, 3000); })
+        api.attachPersistentCache("gaius-shader-cache-v1-" + cacheProfile),
+        new Promise(function (resolve) { setTimeout(resolve, 400); })
       ]).then(function () { return api; });
     }).then(function (api) {
       api.loadMs = Math.round((performance.now() - started) * 10) / 10;

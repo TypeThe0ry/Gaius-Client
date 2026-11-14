@@ -112,7 +112,8 @@ public final class WorldgenKernel263 {
         return chunk instanceof ProtoChunk
                 && blender.isEmpty()
                 && !chunk.isUpgrading()
-                && chunk.getBelowZeroRetrogen() == null;
+                && chunk.getBelowZeroRetrogen() == null
+                && chunk.getHeightAccessorForGeneration().getHeight() >= 384;
     }
 
     /** Marks the slot failed unless the error was a transient refusal for this one job. */
@@ -242,7 +243,8 @@ public final class WorldgenKernel263 {
                                 .thenCompose(c -> c != null ? CompletableFuture.completedFuture(c) : vanilla.get()));
                     }, () -> ticket.fallback("dispatch-failure")),
                     message -> dispatch(() -> {
-                        failed(slot, "terrain", message);
+                        failed(slot, "terrain level=" + carverBiomeRegion.getLevel().dimension()
+                                + " chunk=" + pos.x() + "," + pos.z(), message);
                         ticket.fallback("kernel-error");
                     }, () -> ticket.fallback("dispatch-failure")));
         } catch (RuntimeException e) {

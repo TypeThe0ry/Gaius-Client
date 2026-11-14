@@ -12,6 +12,11 @@ const platformSmokeSource = await readFile(new URL(
   "../src/main/java/dev/gaius/browser/PlatformSmoke.java",
   import.meta.url,
 ), "utf8");
+const inflaterStreamSource = await readFile(new URL(
+  "../overrides/classlib/src/main/java/org/teavm/classlib/java/util/zip/" +
+    "TInflaterInputStream.java",
+  import.meta.url,
+), "utf8");
 
 function between(source, start, end) {
   const startOffset = source.indexOf(start);
@@ -63,6 +68,12 @@ assert.match(inflateSource,
 assert.match(inflateSource,
   /byte\[\] output = new byte\[buffer\.remaining\(\)\];\s*int count = inflater\.inflate\(output\);\s*buffer\.put\(output, 0, count\);/,
   "direct/read-only output fallback no longer preserves the copy path");
+
+const skipSource = inflaterStreamSource.slice(inflaterStreamSource.indexOf("public long skip(long n)"));
+assert.match(skipSource, /skipBuffer == null[\s\S]*new byte\[BUF_SIZE\]/,
+  "InflaterInputStream.skip must allocate a separate output buffer");
+assert.match(skipSource, /read\(skipBuffer, 0, count\)/,
+  "InflaterInputStream.skip must not overwrite the inflater input buffer");
 
 const compressionSmoke = between(
   platformSmokeSource,

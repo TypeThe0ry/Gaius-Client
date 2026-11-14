@@ -58,6 +58,18 @@ final class WebGpuGlue {
     @JSBody(params = "key", script = "return globalThis.GaiusWebGpu.stat(key);")
     static native double stat(String key);
 
+    @JSBody(script = "return !!(globalThis.GaiusWebGpu && globalThis.GaiusWebGpu.regionArenaEnabled === true);")
+    static native boolean regionArenaEnabled();
+
+    @JSBody(script = "return globalThis.GaiusWebGpu.regionArenaNextRetireEpoch();")
+    static native int regionArenaNextRetireEpoch();
+
+    @JSBody(script = "return globalThis.GaiusWebGpu.regionArenaCompletedEpoch();")
+    static native int regionArenaCompletedEpoch();
+
+    @JSBody(script = "return globalThis.GaiusWebGpu && globalThis.GaiusWebGpu.regionArenaGeneration ? globalThis.GaiusWebGpu.regionArenaGeneration() : 0;")
+    static native int regionArenaGeneration();
+
     /** Adds {@code delta} to the glue's counter {@code key} (telemetry of the core's downgrades). */
     @JSBody(params = { "key", "delta" }, script = "globalThis.GaiusWebGpu.count(key, delta);")
     static native void count(String key, int delta);
@@ -279,6 +291,43 @@ final class WebGpuGlue {
     @JSBody(params = { "buffer", "offset", "drawCount" },
             script = "globalThis.GaiusWebGpu.drawIndexedIndirect(buffer, offset, drawCount);")
     static native void drawIndexedIndirect(int buffer, int offset, int drawCount);
+
+    @JSBody(params = { "generated", "fallback", "offset", "drawCount" },
+            script = "globalThis.GaiusWebGpu.gpuIndirectDrawIndexed(generated, fallback, offset, drawCount, null);")
+    static native void gpuIndirectDrawIndexed(int generated, int fallback, int offset, int drawCount);
+
+    @JSBody(params = { "generated", "fallback", "generatedOffset", "fallbackOffset", "drawCount" },
+            script = "globalThis.GaiusWebGpu.gpuIndirectDrawIndexed(generated, fallback, generatedOffset, drawCount, null, fallbackOffset);")
+    static native void gpuIndirectDrawIndexedRanges(int generated, int fallback, int generatedOffset,
+            int fallbackOffset, int drawCount);
+
+    @JSBody(params = { "generated", "fallback", "offset", "drawCount" },
+            script = "if (globalThis.GaiusWebGpu.gpuIndirectParityReadbackLive) "
+                    + "globalThis.GaiusWebGpu.gpuIndirectParityReadbackLive(generated, fallback, offset, drawCount).catch(function(){});")
+    static native void gpuIndirectParityReadbackLive(int generated, int fallback, int offset, int drawCount);
+
+    @JSBody(params = { "buffer", "offset", "drawCount" },
+            script = "globalThis.GaiusWebGpu.gpuIndirectDrawIndexedSource(buffer, offset, drawCount);")
+    static native void gpuIndirectDrawIndexedSource(int buffer, int offset, int drawCount);
+
+    @JSBody(script = "return !!globalThis.GaiusWebGpu.gpuIndirectState && globalThis.GaiusWebGpu.gpuIndirectState().requested;")
+    static native boolean gpuIndirectRequested();
+
+    @JSBody(script = "return !!globalThis.GaiusWebGpu.gpuIndirectHiZRequested && globalThis.GaiusWebGpu.gpuIndirectHiZRequested();")
+    static native boolean gpuIndirectHiZRequested();
+
+    @JSBody(params = { "input", "bounds", "planes", "output", "count" },
+            script = "return globalThis.GaiusWebGpu.gpuIndirectEncodeFrustum(input, bounds, planes, output, count);")
+    static native boolean gpuIndirectEncodeFrustum(int input, int bounds, int planes, int output, int count);
+
+    @JSBody(params = { "input", "projected", "hiz", "sampler", "config", "output", "count" },
+            script = "return globalThis.GaiusWebGpu.gpuIndirectEncodeHiZ(input, projected, hiz, sampler, config, output, count);")
+    static native boolean gpuIndirectEncodeHiZ(int input, int projected, int hiz, int sampler, int config,
+            int output, int count);
+
+    @JSBody(params = { "input", "projected", "output", "count" },
+            script = "return globalThis.GaiusWebGpu.gpuIndirectEncodeHiZLive(input, projected, output, count);")
+    static native boolean gpuIndirectEncodeHiZLive(int input, int projected, int output, int count);
 
     @JSBody(params = { "bindGroup", "count", "o0", "o1", "o2", "o3", "buffer", "offset", "drawCount" },
             script = "globalThis.GaiusWebGpu.drawIndexedIndirectWithOffsets(bindGroup, count, o0, o1, o2, o3, "

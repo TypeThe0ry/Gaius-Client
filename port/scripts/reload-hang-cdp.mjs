@@ -9,6 +9,7 @@ import {mkdtemp} from "node:fs/promises";
 import {chromeIsolationArgs} from "./bench/harness-common.mjs";
 import {RENDERPEARL_PROFILE} from "./verification-profiles.mjs";
 import {killProcessTree, parseMemoryBudget, processPrivateBytes, reloadMemoryGate} from "./reload-memory-gate.mjs";
+import {chromeLaunchArgs, resolveChromeBinary} from "./chrome-binary.mjs";
 
 const dist = resolve(process.env.DIST);
 const out = resolve(process.env.OUT || "reload-hang-out");
@@ -34,10 +35,9 @@ const server = createServer((req, res) => {
 });
 await new Promise(ok => server.listen(0, "127.0.0.1", ok));
 const pageUrl = `http://127.0.0.1:${server.address().port}/index.html?runtime=wasm&gpu=webgpu`;
-const chromeBin = process.env.GAIUS_CHROME_BIN || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const profileDir = await mkdtemp(join(out, "chrome-profile-"));
 const debugPort = await new Promise((ok, bad) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p=s.address().port; s.close(()=>ok(p)); }); s.on("error", bad); });
-const chrome = spawn(chromeBin, ["--headless=new", `--remote-debugging-port=${debugPort}`, "--remote-allow-origins=*", `--user-data-dir=${profileDir}`, "--window-size=1280,720", "--ignore-gpu-blocklist", "--enable-unsafe-swiftshader", ...chromeIsolationArgs(), "about:blank"], {stdio:"ignore"});
+const chrome = spawn(resolveChromeBinary(), [...chromeLaunchArgs(), "--headless=new", `--remote-debugging-port=${debugPort}`, "--remote-allow-origins=*", `--user-data-dir=${profileDir}`, "--window-size=1280,720", "--ignore-gpu-blocklist", "--enable-unsafe-swiftshader", ...chromeIsolationArgs(), "about:blank"], {stdio:"ignore"});
 const reloadMemorySeries = [];
 let browserCdp;
 class Cdp {

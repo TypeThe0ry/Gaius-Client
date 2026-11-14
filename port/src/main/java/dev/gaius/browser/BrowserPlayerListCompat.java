@@ -12,8 +12,8 @@ import net.minecraft.server.players.PlayerList;
 public final class BrowserPlayerListCompat {
     private BrowserPlayerListCompat() {}
 
-    /** Lets the single local Worker player use commands without writing ops.json. */
-    public static void allowCommandsForAllPlayers(PlayerList playerList) {
-        playerList.setAllowCommandsForAllPlayers(true);
+    /** Applies the world's command setting to the single local Worker player. */
+    public static void setAllowCommandsForAllPlayers(PlayerList playerList, boolean allowed) {
+        playerList.setAllowCommandsForAllPlayers(allowed);
     }
 }

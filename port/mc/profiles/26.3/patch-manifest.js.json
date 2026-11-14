@@ -15,7 +15,7 @@
       "patcher": "MinecraftClientPatcher",
       "registry": true,
       "summary": [
-        "PATCH_SUMMARY applied=189 dropped=20 bringupSkipped=0 targetSkipped=5"
+        "PATCH_SUMMARY applied=194 dropped=20 bringupSkipped=0 targetSkipped=11"
       ],
       "status": "ok"
     },
@@ -28,7 +28,7 @@
       "patcher": "Minecraft262BrowserPatcher",
       "registry": true,
       "summary": [
-        "PATCH_SUMMARY applied=31 dropped=5 bringupSkipped=0 targetSkipped=1"
+        "PATCH_SUMMARY applied=30 dropped=5 bringupSkipped=0 targetSkipped=1"
       ],
       "status": "ok"
     },
@@ -41,14 +41,14 @@
       "patcher": "Minecraft263BrowserPatcher",
       "registry": true,
       "summary": [
-        "PATCH_SUMMARY applied=32 dropped=0 bringupSkipped=0"
+        "PATCH_SUMMARY applied=33 dropped=0 bringupSkipped=0"
       ],
       "status": "ok"
     }
   ],
   "outcomes": {
-    "APPLIED": 259,
-    "NOT_APPLICABLE": 34,
+    "APPLIED": 264,
+    "NOT_APPLICABLE": 42,
     "DISABLED": 0,
     "FAILED": 0,
     "BRINGUP_SKIPPED": 0
@@ -59,12 +59,12 @@
       "NOT_APPLICABLE": 20
     },
     "FEATURE": {
-      "APPLIED": 31,
+      "APPLIED": 29,
       "NOT_APPLICABLE": 1
     },
     "PERF": {
-      "APPLIED": 50,
-      "NOT_APPLICABLE": 12
+      "APPLIED": 57,
+      "NOT_APPLICABLE": 20
     },
     "TELEMETRY": {
       "APPLIED": 14,
@@ -641,6 +641,14 @@
           "operation": "structure",
           "targetHash": "dbc8cfad8fc91a9645d2b56e0116c8bb73bf0681d61470cffabc70fdfd2e4206",
           "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/chunk/SectionCopy",
+          "method": "gaius$blockEntities",
+          "descriptor": "()Ljava/util/Map;",
+          "operation": "injected",
+          "targetHash": "909a9a9419326255c4ada59f200ac143be869f27fcdeae9b2c39ee1fa6e794ba",
+          "vanillaPresent": false
         },
         {
           "className": "net/minecraft/client/renderer/chunk/SectionCopy",
@@ -1307,71 +1315,6 @@
       ]
     },
     {
-      "id": "Minecraft262BrowserPatcher.patchGraphicsPresetBrowserDistances",
-      "patcher": "Minecraft262BrowserPatcher",
-      "kind": "FEATURE",
-      "targets": [
-        "js",
-        "wasmgc"
-      ],
-      "profiles": ">=26.2",
-      "outcome": "APPLIED",
-      "rewrites": [
-        "net/minecraft/client/GraphicsPreset.class"
-      ],
-      "methodTargets": [
-        {
-          "className": "net/minecraft/client/GraphicsPreset",
-          "method": "apply",
-          "descriptor": "(Lnet/minecraft/client/Minecraft;)V",
-          "operation": "rewrite",
-          "targetHash": "dc2985bfa1866150185ed4e2dc4e3930c68f78873a28a6a3d9c0341990a1d599",
-          "vanillaPresent": true
-        }
-      ]
-    },
-    {
-      "id": "Minecraft262BrowserPatcher.patchGraphicsPresetStartupReplay",
-      "patcher": "Minecraft262BrowserPatcher",
-      "kind": "FEATURE",
-      "targets": [
-        "js",
-        "wasmgc"
-      ],
-      "profiles": ">=26.2",
-      "outcome": "APPLIED",
-      "rewrites": [
-        "net/minecraft/client/Minecraft.class",
-        "net/minecraft/client/Options.class"
-      ],
-      "methodTargets": [
-        {
-          "className": "net/minecraft/client/Minecraft",
-          "method": "<init>",
-          "descriptor": "(Lnet/minecraft/client/main/GameConfig;)V",
-          "operation": "rewrite",
-          "targetHash": "09f4042e5fb0deb41ac72890474c31f5254b90758a255917cd6a2f0dd539c5aa",
-          "vanillaPresent": true
-        },
-        {
-          "className": "net/minecraft/client/Options",
-          "method": "<class>",
-          "descriptor": "",
-          "operation": "structure",
-          "targetHash": "11c0edad13615e486e7472fb4fdd9cf8e4beb54c9d0b57850eaad6c43269be8b",
-          "vanillaPresent": true
-        },
-        {
-          "className": "net/minecraft/client/Options",
-          "method": "gaius$applyStartupGraphicsPreset",
-          "descriptor": "(Lnet/minecraft/client/GraphicsPreset;)V",
-          "operation": "injected",
-          "targetHash": "a8bcca0eb30df817dc016af4525883f6c2c952362c5d48ab517c9a61febd9198",
-          "vanillaPresent": false
-        }
-      ]
-    },
-    {
       "id": "Minecraft262BrowserPatcher.patchIdentifierResolveAgainst",
       "patcher": "Minecraft262BrowserPatcher",
       "kind": "REQUIRED",
@@ -1444,6 +1387,30 @@
         "com/mojang/blaze3d/platform/MacosUtil#setWindowColorSpaceForOpenGLBecauseGLFWDoesnt"
       ],
       "methodTargets": []
+    },
+    {
+      "id": "Minecraft262BrowserPatcher.patchModelBakeryInterner",
+      "patcher": "Minecraft262BrowserPatcher",
+      "kind": "PERF",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/client/resources/model/ModelBakery$InternerImpl.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/client/resources/model/ModelBakery$InternerImpl",
+          "method": "<init>",
+          "descriptor": "()V",
+          "operation": "rewrite",
+          "targetHash": "9ce45512ff5508e938f17ca1ad20785ee608a775a38543fd139fbaa6b4099497",
+          "vanillaPresent": true
+        }
+      ]
     },
     {
       "id": "Minecraft262BrowserPatcher.patchNativeLibrariesBootstrap",
@@ -1981,6 +1948,14 @@
           "descriptor": "(Lorg/joml/Matrix4fc;Z)Lnet/minecraft/client/renderer/chunk/ChunkSectionsToRender;",
           "operation": "rewrite",
           "targetHash": "7a0e41c7bedf469230c69a5067a7bded0adbfc4406128a2613000211952d1b8a",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/LevelRenderer",
+          "method": "prepareChunkRendersIndirect",
+          "descriptor": "(Lorg/joml/Matrix4fc;Z)Lnet/minecraft/client/renderer/chunk/ChunkSectionsToRender;",
+          "operation": "rewrite",
+          "targetHash": "d319216377039976ec417c562b634a63a49f8fd1721fcd6c96041f7c99c145e3",
           "vanillaPresent": true
         },
         {
@@ -3028,6 +3003,55 @@
       ]
     },
     {
+      "id": "MinecraftClientPatcher.patchBulkSectionAccessLookup",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/world/level/chunk/BulkSectionAccess.class",
+        "net/minecraft/world/level/levelgen/feature/OreFeature.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/world/level/chunk/BulkSectionAccess",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "structure",
+          "targetHash": "60e11a95ea8a2c1c0feab079ad9c155129f5394b3e0eb93bc9edae042cbf91ee",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/world/level/chunk/BulkSectionAccess",
+          "method": "apply",
+          "descriptor": "(Ljava/lang/Object;)Ljava/lang/Object;",
+          "operation": "injected",
+          "targetHash": "cf7f9c4ee95856d552398297aacc4aafafa6084f38501eae4420298378be357e",
+          "vanillaPresent": false
+        },
+        {
+          "className": "net/minecraft/world/level/chunk/BulkSectionAccess",
+          "method": "getSection",
+          "descriptor": "(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/chunk/LevelChunkSection;",
+          "operation": "rewrite",
+          "targetHash": "e463df3659a3b6d4261dd439b4b26632e96f72d2c5ea09046665ee373a9492fe",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/world/level/levelgen/feature/OreFeature",
+          "method": "doPlace",
+          "descriptor": "(Lnet/minecraft/world/level/WorldGenLevel;Lnet/minecraft/util/RandomSource;DDDDDDIIIII)Z",
+          "operation": "rewrite",
+          "targetHash": "f24e8b29cb3de9e7597069281f371589874bddbdbb084d53643096b7ac70d5e1",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
       "id": "MinecraftClientPatcher.patchByteBufferBuilderBrowserReserve",
       "patcher": "MinecraftClientPatcher",
       "kind": "PERF",
@@ -3309,43 +3333,7 @@
       ],
       "profiles": "*",
       "outcome": "APPLIED",
-      "rewrites": [
-        "net/minecraft/world/level/ChunkPos$2.class"
-      ],
-      "methodTargets": [
-        {
-          "className": "net/minecraft/world/level/ChunkPos$2",
-          "method": "<class>",
-          "descriptor": "",
-          "operation": "structure",
-          "targetHash": "4bcb1471e3a114247e7e6be389bdd08732da89286789a18cf41965015d9cc4b0",
-          "vanillaPresent": true
-        },
-        {
-          "className": "net/minecraft/world/level/ChunkPos$2",
-          "method": "<init>",
-          "descriptor": "(JILnet/minecraft/world/level/ChunkPos;Lnet/minecraft/world/level/ChunkPos;II)V",
-          "operation": "rewrite",
-          "targetHash": "eb6cb482f989a994929176ed3be41145e3640e1efc74e024906736b4ec7ea12f",
-          "vanillaPresent": true
-        },
-        {
-          "className": "net/minecraft/world/level/ChunkPos$2",
-          "method": "characteristics",
-          "descriptor": "()I",
-          "operation": "rewrite",
-          "targetHash": "7dad49f228ea94b52998f6b2c2cd4f34d1d7cb05c56c5d363281a5392d0531aa",
-          "vanillaPresent": false
-        },
-        {
-          "className": "net/minecraft/world/level/ChunkPos$2",
-          "method": "estimateSize",
-          "descriptor": "()J",
-          "operation": "rewrite",
-          "targetHash": "856aba0e92cdf5daba829af56c9bff9ffd212ea78bab5893dad4cef747702b9b",
-          "vanillaPresent": false
-        }
-      ]
+      "methodTargets": []
     },
     {
       "id": "MinecraftClientPatcher.patchChunkTaskPriorityQueueBrowserNearestFirst",
@@ -3890,18 +3878,10 @@
       "methodTargets": [
         {
           "className": "net/minecraft/client/gui/screens/worldselection/CreateWorldScreen",
-          "method": "<init>",
-          "descriptor": "(Lnet/minecraft/client/Minecraft;Ljava/lang/Runnable;Lnet/minecraft/client/gui/screens/worldselection/WorldCreationContext;Ljava/util/Optional;Ljava/util/OptionalLong;Lnet/minecraft/client/gui/screens/worldselection/CreateWorldCallback;)V",
-          "operation": "rewrite",
-          "targetHash": "087bc6e4b4db80fcd0bc5092c4d29febd7914a2758aa01920519acbc3552f4a1",
-          "vanillaPresent": true
-        },
-        {
-          "className": "net/minecraft/client/gui/screens/worldselection/CreateWorldScreen",
-          "method": "createLevelSettings",
-          "descriptor": "(Z)Lnet/minecraft/world/level/LevelSettings;",
-          "operation": "rewrite",
-          "targetHash": "cf8bafbba2b09001f26dc905f91286da396d0119b6b90dff9cbf05f366915252",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "override",
+          "targetHash": "19c9944d918ab3eb5c2b8d77db8a594f0b04a8b3984893ee61d593d80551544e",
           "vanillaPresent": true
         }
       ]
@@ -4281,6 +4261,39 @@
       ]
     },
     {
+      "id": "MinecraftClientPatcher.patchDeferredChoiceTypeChecks",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/world/entity/EntityType$Builder.class",
+        "net/minecraft/world/level/block/entity/BlockEntityTypes.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/world/entity/EntityType$Builder",
+          "method": "build",
+          "descriptor": "(Lnet/minecraft/resources/ResourceKey;)Lnet/minecraft/world/entity/EntityType;",
+          "operation": "rewrite",
+          "targetHash": "b7f97dc6bdad6e58470ec5cc5a4231220d9c1996d0614462e538508c422cb266",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/world/level/block/entity/BlockEntityTypes",
+          "method": "register",
+          "descriptor": "(Lnet/minecraft/resources/ResourceKey;Lnet/minecraft/world/level/block/entity/BlockEntityType$BlockEntitySupplier;[Lnet/minecraft/world/level/block/Block;)Lnet/minecraft/world/level/block/entity/BlockEntityType;",
+          "operation": "rewrite",
+          "targetHash": "c2ec68902869ca9b926080ed6d47610c47c2c23852c66d0d92c2a65fb26537ff",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
       "id": "MinecraftClientPatcher.patchDensityFunctionsPureTransformersBrowserDirect",
       "patcher": "MinecraftClientPatcher",
       "kind": "PERF",
@@ -4393,10 +4406,26 @@
         },
         {
           "className": "net/minecraft/client/renderer/DynamicGpuData",
+          "method": "writeChunkSectionCommands",
+          "descriptor": "(Ljava/util/List;)[Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;",
+          "operation": "rewrite",
+          "targetHash": "cb5570d06421111537fe750720b9a5019aaf6dca6bf4a4bebf70195ee628af34",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/DynamicGpuData",
           "method": "writeChunkSections",
           "descriptor": "([Lnet/minecraft/client/renderer/DynamicGpuData$ChunkSectionInfo;)[Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;",
           "operation": "rewrite",
           "targetHash": "24f2a5b5cc2e39dff44199d40a290a98e7b26a7051ded122db2aedd4f062130a",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/DynamicGpuData",
+          "method": "writeChunkSectionsInstanced",
+          "descriptor": "(Ljava/util/List;)Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;",
+          "operation": "rewrite",
+          "targetHash": "8262124c4574a62de61d06bf07f913d0784ae97fd84bb897cd8b7970bf65bf96",
           "vanillaPresent": true
         }
       ]
@@ -5259,6 +5288,46 @@
       ]
     },
     {
+      "id": "MinecraftClientPatcher.patchHolderReferenceTagMemo",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/core/Holder$Reference.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/core/Holder$Reference",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "structure",
+          "targetHash": "cf8bb9acb7cf21b96036d18ef0a7a1bf207a97416579400fa5368b5f2080807a",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/core/Holder$Reference",
+          "method": "bindTags",
+          "descriptor": "(Ljava/util/Collection;)V",
+          "operation": "rewrite",
+          "targetHash": "3357ca62e3b4966588e24e16c7bf1a6ae58619433232b8d6b05fca3a8a92695f",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/core/Holder$Reference",
+          "method": "is",
+          "descriptor": "(Lnet/minecraft/tags/TagKey;)Z",
+          "operation": "rewrite",
+          "targetHash": "50c4c6cdd27e7341c0058163ce29f6e3464b86a3865f374da485ed58682ace60",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
       "id": "MinecraftClientPatcher.patchHttpUtil",
       "patcher": "MinecraftClientPatcher",
       "kind": "REQUIRED",
@@ -5274,11 +5343,27 @@
       "methodTargets": [
         {
           "className": "net/minecraft/util/HttpUtil",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "structure",
+          "targetHash": "38a283d9d35b38cae267479e8bc0bea5ecc9bd7a32d2e89bd8379f4e3bdddf83",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/util/HttpUtil",
           "method": "downloadFile",
           "descriptor": "(Ljava/nio/file/Path;Ljava/net/URL;Ljava/util/Map;Lcom/google/common/hash/HashFunction;Lcom/google/common/hash/HashCode;ILjava/net/Proxy;Lnet/minecraft/util/HttpUtil$DownloadProgressListener;)Ljava/nio/file/Path;",
           "operation": "rewrite",
           "targetHash": "9b5d3c77f4432058861abcb5ec526dd9a112ee8ac58dd05a83c50994ab77dc10",
           "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/util/HttpUtil",
+          "method": "gaiusDownloadFileVanilla",
+          "descriptor": "(Ljava/nio/file/Path;Ljava/net/URL;Ljava/util/Map;Lcom/google/common/hash/HashFunction;Lcom/google/common/hash/HashCode;ILjava/net/Proxy;Lnet/minecraft/util/HttpUtil$DownloadProgressListener;)Ljava/nio/file/Path;",
+          "operation": "injected",
+          "targetHash": "5516691bb4dfdeddd8e648969037400d57e5777fd1dd72e2d9627e37fb33a5c8",
+          "vanillaPresent": false
         },
         {
           "className": "net/minecraft/util/HttpUtil",
@@ -6263,14 +6348,6 @@
         },
         {
           "className": "net/minecraft/server/MinecraftServer",
-          "method": "prepareLevels",
-          "descriptor": "()V",
-          "operation": "rewrite",
-          "targetHash": "7fa74777ff94aca0959dd4480560b5e90cc11adc006b480cec3c0d6ad802e3c4",
-          "vanillaPresent": true
-        },
-        {
-          "className": "net/minecraft/server/MinecraftServer",
           "method": "processPacketsAndTick",
           "descriptor": "(Z)V",
           "operation": "rewrite",
@@ -6312,6 +6389,19 @@
       ]
     },
     {
+      "id": "MinecraftClientPatcher.patchMipmapGeneratorAtlasPrebake",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "NOT_APPLICABLE",
+      "reason": "target",
+      "notApplicableDeclared": true,
+      "methodTargets": []
+    },
+    {
       "id": "MinecraftClientPatcher.patchMobBrowserAiCooperation",
       "patcher": "MinecraftClientPatcher",
       "kind": "REQUIRED",
@@ -6351,6 +6441,18 @@
           "vanillaPresent": true
         }
       ]
+    },
+    {
+      "id": "MinecraftClientPatcher.patchMultiNoiseBiomeSourceBrowserCachedParameters",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "NOT_APPLICABLE",
+      "reason": "target",
+      "methodTargets": []
     },
     {
       "id": "MinecraftClientPatcher.patchMultiPlayerGameModeBrowserHitSound",
@@ -7039,6 +7141,38 @@
       ]
     },
     {
+      "id": "MinecraftClientPatcher.patchPalettedContainerBrowserEncode",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/world/level/chunk/PalettedContainer.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/world/level/chunk/PalettedContainer",
+          "method": "codec",
+          "descriptor": "(Lcom/mojang/serialization/Codec;Lnet/minecraft/world/level/chunk/Strategy;Ljava/lang/Object;Lnet/minecraft/world/level/chunk/PalettedContainerRO$Unpacker;)Lcom/mojang/serialization/Codec;",
+          "operation": "rewrite",
+          "targetHash": "14f6340f1cd80b7ec664eda07b44ffbe6480f0443aae3aa726a80af45973da58",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/world/level/chunk/PalettedContainer",
+          "method": "reencodeContents",
+          "descriptor": "(Lnet/minecraft/util/BitStorage;Lnet/minecraft/world/level/chunk/Palette;Lnet/minecraft/world/level/chunk/Palette;)[I",
+          "operation": "rewrite",
+          "targetHash": "1f8488ab176e2802911e272f8ec6b523a0cc858b2af39ad546f0050a8d890f4b",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
       "id": "MinecraftClientPatcher.patchParticleGroupBrowserTickSafety",
       "patcher": "MinecraftClientPatcher",
       "kind": "REQUIRED",
@@ -7184,10 +7318,26 @@
         },
         {
           "className": "net/minecraft/server/level/PlayerSpawnFinder",
+          "method": "gaius$findSpawnNow",
+          "descriptor": "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/core/BlockPos;)Ljava/util/concurrent/CompletableFuture;",
+          "operation": "injected",
+          "targetHash": "c7aa8ae3305cbbedef913576f9ce3864d03b6c7ad89fd6c846b4ffda2e05589d",
+          "vanillaPresent": false
+        },
+        {
+          "className": "net/minecraft/server/level/PlayerSpawnFinder",
           "method": "gaius$fixupLoadedSpawn",
           "descriptor": "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/phys/Vec3;)Lnet/minecraft/world/phys/Vec3;",
           "operation": "injected",
           "targetHash": "9c5d187dd5a36a0abee4c6a0df5723638859ea82e5fd91d636f8490f4a66c0be",
+          "vanillaPresent": false
+        },
+        {
+          "className": "net/minecraft/server/level/PlayerSpawnFinder",
+          "method": "gaius$searchNow",
+          "descriptor": "()V",
+          "operation": "injected",
+          "targetHash": "e767afc526d066f1c0e290b09c512d237fbdf06ae3fdf94796bf77715b363f58",
           "vanillaPresent": false
         }
       ]
@@ -7836,6 +7986,22 @@
       "methodTargets": [
         {
           "className": "net/minecraft/client/renderer/SectionOcclusionGraph",
+          "method": "invalidateIfNeeded",
+          "descriptor": "(Lnet/minecraft/client/renderer/state/level/CameraRenderState;I)V",
+          "operation": "rewrite",
+          "targetHash": "81b7334712b456dfb00c2f84427976fe617a6efcbeeb683e8d92c37bbe1f7995",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/SectionOcclusionGraph",
+          "method": "runUpdates",
+          "descriptor": "(Lnet/minecraft/client/renderer/SectionOcclusionGraph$GraphStorage;Lnet/minecraft/world/phys/Vec3;Ljava/util/Queue;ZLjava/util/function/Consumer;Lit/unimi/dsi/fastutil/longs/LongOpenHashSet;Lit/unimi/dsi/fastutil/longs/LongOpenHashSet;)V",
+          "operation": "rewrite",
+          "targetHash": "f79c3d80c5c860b5fffcb336aeb463bd3bc6318bb34de5bd339b2a669d3ef407",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/SectionOcclusionGraph",
           "method": "update",
           "descriptor": "(Lnet/minecraft/client/renderer/state/level/CameraRenderState;ILnet/minecraft/client/renderer/state/level/ChunkLoadingRenderState;)V",
           "operation": "rewrite",
@@ -8088,14 +8254,6 @@
           "descriptor": "(Lnet/minecraft/network/protocol/game/ServerboundChunkBatchReceivedPacket;)V",
           "operation": "rewrite",
           "targetHash": "b69aadb30665106aabe86c4a040574204655c114e6c3873aa7e83e2ee932c2e6",
-          "vanillaPresent": true
-        },
-        {
-          "className": "net/minecraft/server/network/ServerGamePacketListenerImpl",
-          "method": "handleMovePlayer",
-          "descriptor": "(Lnet/minecraft/network/protocol/game/ServerboundMovePlayerPacket;)V",
-          "operation": "rewrite",
-          "targetHash": "674f514d45e4f28f242bfd1b6a508b01e82d927782b112a8196edc3f9a836549",
           "vanillaPresent": true
         },
         {
@@ -8584,6 +8742,43 @@
       ]
     },
     {
+      "id": "MinecraftClientPatcher.patchStateDefinitionNeighbourTables",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/world/level/block/state/StateDefinition.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/world/level/block/state/StateDefinition",
+          "method": "createMultiPropertyStates",
+          "descriptor": "(Ljava/lang/Object;Lnet/minecraft/world/level/block/state/StateDefinition$Factory;Ljava/util/Map;)Lcom/google/common/collect/ImmutableList;",
+          "operation": "rewrite",
+          "targetHash": "1a479d59cee2c4c77627ce1f63c9521980cfe47427ae19a152d573f789e7d47d",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
+      "id": "MinecraftClientPatcher.patchStitcherAtlasPrebake",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "NOT_APPLICABLE",
+      "reason": "target",
+      "notApplicableDeclared": true,
+      "methodTargets": []
+    },
+    {
       "id": "MinecraftClientPatcher.patchStructureTemplateManagerBrowserGzip",
       "patcher": "MinecraftClientPatcher",
       "kind": "REQUIRED",
@@ -8769,6 +8964,18 @@
           "vanillaPresent": false
         }
       ]
+    },
+    {
+      "id": "MinecraftClientPatcher.patchTagKeyBrowserHashCodeCache",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "NOT_APPLICABLE",
+      "reason": "target",
+      "methodTargets": []
     },
     {
       "id": "MinecraftClientPatcher.patchTextureAtlasBrowserReleaseStaticImages",
@@ -9515,6 +9722,31 @@
           "vanillaPresent": true
         }
       ]
+    },
+    {
+      "id": "MinecraftClientPatcher.patchWorldGenRegionBrowserCachedHeight",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "NOT_APPLICABLE",
+      "reason": "target",
+      "methodTargets": []
+    },
+    {
+      "id": "MinecraftClientPatcher.patchWorldGenRegionBrowserLastChunk",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "PERF",
+      "targets": [
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "NOT_APPLICABLE",
+      "reason": "target",
+      "notApplicableDeclared": true,
+      "methodTargets": []
     },
     {
       "id": "MinecraftClientPatcher.patchWorldLoaderBrowserStartupTelemetry",
@@ -10311,6 +10543,30 @@
       ]
     },
     {
+      "id": "MinecraftServerWorkerPatcher.lightWakePatches",
+      "patcher": "MinecraftServerWorkerPatcher",
+      "kind": "PERF",
+      "targets": [
+        "wasmgc"
+      ],
+      "profiles": ">=26.3",
+      "outcome": "NOT_APPLICABLE",
+      "reason": "target",
+      "methodTargets": []
+    },
+    {
+      "id": "MinecraftServerWorkerPatcher.worldLoaderCache",
+      "patcher": "MinecraftServerWorkerPatcher",
+      "kind": "PERF",
+      "targets": [
+        "wasmgc"
+      ],
+      "profiles": ">=26.3",
+      "outcome": "NOT_APPLICABLE",
+      "reason": "target",
+      "methodTargets": []
+    },
+    {
       "id": "MinecraftServerWorkerPatcher.worldgenKernelPatches",
       "patcher": "MinecraftServerWorkerPatcher",
       "kind": "PERF",
@@ -10762,6 +11018,95 @@
           "descriptor": "(Lcom/mojang/renderpearl/backend/opengl/GlRenderPass;)V",
           "operation": "rewrite",
           "targetHash": "02cef45293d788a4ddb533369c5c1136c464dc37efe8a3847e3b35eb57c63c66",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
+      "id": "RenderPatches263.patchShaderPipelineWarmup",
+      "patcher": "Minecraft263BrowserPatcher",
+      "kind": "PERF",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": ">=26.3",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "com/mojang/blaze3d/pipeline/PipelineCache.class",
+        "net/minecraft/client/renderer/ShaderManager.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "com/mojang/blaze3d/pipeline/PipelineCache",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "structure",
+          "targetHash": "ba7d71642ec160882c8f69022975ee8e23c0864d7298d85e45933308fd2a4350",
+          "vanillaPresent": true
+        },
+        {
+          "className": "com/mojang/blaze3d/pipeline/PipelineCache",
+          "method": "gaiusWarm",
+          "descriptor": "(Ljava/lang/Object;)Ljava/lang/Object;",
+          "operation": "injected",
+          "targetHash": "03892e9b520e59975903eaef6d68bd7c7b60628f5a5b9f6ba5fd1481e510e970",
+          "vanillaPresent": false
+        },
+        {
+          "className": "com/mojang/blaze3d/pipeline/PipelineCache",
+          "method": "get",
+          "descriptor": "(Lcom/mojang/renderpearl/api/pipeline/RenderPipeline;)Lcom/mojang/renderpearl/api/pipeline/CompiledRenderPipeline;",
+          "operation": "rewrite",
+          "targetHash": "82bb080c78e80517570fa94ff634ade676b6b1e1a1b1b76bec1624d440dad5f5",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/ShaderManager",
+          "method": "apply",
+          "descriptor": "(Lcom/mojang/renderpearl/api/device/GpuDevice;Lnet/minecraft/client/renderer/ShaderManager$PendingResults;)V",
+          "operation": "rewrite",
+          "targetHash": "c575f35743027f065e8149a1e31dd77bf18eb796615b2c385e7cfbfa6e8ab06f",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/ShaderManager",
+          "method": "lambda$reload$1",
+          "descriptor": "(Lcom/mojang/renderpearl/api/device/GpuDevice;Ljava/util/concurrent/Executor;Ljava/util/concurrent/Executor;Lnet/minecraft/client/renderer/ShaderManager$Configs;)Ljava/util/concurrent/CompletionStage;",
+          "operation": "rewrite",
+          "targetHash": "a28e98e91be37d2275a152e21d84b7a0141c6cd58016d6be7967b80e0152ffd5",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/ShaderManager",
+          "method": "loadConfigs",
+          "descriptor": "(Lnet/minecraft/server/packs/resources/ResourceManager;)Lnet/minecraft/client/renderer/ShaderManager$Configs;",
+          "operation": "rewrite",
+          "targetHash": "17ffbccb2999a5bd7e92b470761064ca01fc7dd453dfd78f24226e3eca84d2ee",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/ShaderManager",
+          "method": "loadInclude",
+          "descriptor": "(Lnet/minecraft/resources/Identifier;Lnet/minecraft/server/packs/resources/Resource;Lcom/google/common/collect/ImmutableMap$Builder;)V",
+          "operation": "rewrite",
+          "targetHash": "13cb8fc25d15ee8949999087e7b9f2919167922c27936b55d453cae1a719d75f",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/ShaderManager",
+          "method": "loadPostChain",
+          "descriptor": "(Lnet/minecraft/resources/Identifier;Lnet/minecraft/server/packs/resources/Resource;Lcom/google/common/collect/ImmutableMap$Builder;)V",
+          "operation": "rewrite",
+          "targetHash": "5aff38879553cba72764df2562ef82a2ac160bb8995c5eee3cee2ee42dbbd96d",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/renderer/ShaderManager",
+          "method": "loadShader",
+          "descriptor": "(Lnet/minecraft/resources/Identifier;Lnet/minecraft/server/packs/resources/Resource;Lcom/mojang/renderpearl/api/pipeline/ShaderType;Lcom/google/common/collect/ImmutableMap$Builder;)V",
+          "operation": "rewrite",
+          "targetHash": "14544ab5f498ab06033d14a3444fca9c19299e166539a63ccb1be1021db8aebd",
           "vanillaPresent": true
         }
       ]
@@ -14332,19 +14677,7 @@
       ],
       "profiles": ">=26.3",
       "outcome": "APPLIED",
-      "rewrites": [
-        "net/minecraft/client/multiplayer/ClientLevel.class"
-      ],
-      "methodTargets": [
-        {
-          "className": "net/minecraft/client/multiplayer/ClientLevel",
-          "method": "playBreakingSound",
-          "descriptor": "(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;)V",
-          "operation": "rewrite",
-          "targetHash": "88fa8e1099b87ba6255327fb19341549d546e97e42652807e794de4b0769ad3f",
-          "vanillaPresent": true
-        }
-      ]
+      "methodTargets": []
     },
     {
       "id": "UiPatches263.patchVanillaPackResourcesSingleLayer",

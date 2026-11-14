@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.List;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
@@ -178,6 +179,287 @@ public final class PlatformPatches {
         }
         writeComputeFrames(node, output);
         System.out.println("Memoized BlockStateBase.Cache face sturdiness per support shape");
+    }
+
+    private static final String STATE_PACKAGE = "net/minecraft/world/level/block/state/";
+    private static final String STATE_DEFINITION = STATE_PACKAGE + "StateDefinition";
+    private static final String STATE_COLLECTION = STATE_DEFINITION + "$StateCollection";
+    private static final String STATE_WILDCARD = STATE_COLLECTION + "$Wildcard";
+    private static final String STATE_HOLDER = STATE_PACKAGE + "StateHolder";
+    private static final String STATE_FACTORY = STATE_DEFINITION + "$Factory";
+    private static final String STATE_PROPERTY = STATE_PACKAGE + "properties/Property";
+    private static final String STATE_TABLES = STATE_PACKAGE + "GaiusStateNeighbourTables";
+    private static final String STATE_MULTI = "createMultiPropertyStates";
+    private static final String STATE_MULTI_DESC = "(Ljava/lang/Object;L" + STATE_FACTORY
+            + ";Ljava/util/Map;)Lcom/google/common/collect/ImmutableList;";
+    private static final String STATE_TABLES_CREATE_DESC = "(Ljava/lang/Object;L" + STATE_FACTORY
+            + ";Ljava/util/Map;)L" + STATE_TABLES + ";";
+    private static final String STATE_TABLES_FINISH_DESC = "(Ljava/lang/Object;)Lcom/google/common/collect/ImmutableList;";
+
+    /**
+     * The member, type and invokedynamic instructions, in order, of the vanilla bodies the
+     * neighbour table patch reproduces (see {@link #stateMembers}). The mixed-radix tables of
+     * GaiusStateNeighbourTables are only equal to vanilla's for exactly this construction:
+     * states in cartesian-product order through the factory, a HashMap from the combination
+     * list, and per state and property a row of the states that differ only in that property
+     * (looked up by the combination with that value replaced), shared through a cache keyed by
+     * the combination with a wildcard at the property.
+     */
+    private static final List<String> STATE_MULTI_MEMBERS = List.of(
+            "INVOKEINTERFACE java/util/Map.values()Ljava/util/Collection;",
+            "GETSTATIC " + STATE_DEFINITION + ".EMPTY_KEYS [L" + STATE_PROPERTY + ";",
+            "INVOKEINTERFACE java/util/Collection.toArray([Ljava/lang/Object;)[Ljava/lang/Object;",
+            "CHECKCAST [L" + STATE_PROPERTY + ";",
+            "NEW java/util/ArrayList",
+            "INVOKESPECIAL java/util/ArrayList.<init>(I)V",
+            "INVOKEVIRTUAL " + STATE_PROPERTY + ".getPossibleValues()Ljava/util/List;",
+            "INVOKEINTERFACE java/util/List.add(Ljava/lang/Object;)Z",
+            "INVOKESTATIC com/google/common/collect/Lists.cartesianProduct(Ljava/util/List;)Ljava/util/List;",
+            "NEW java/util/HashMap",
+            "INVOKESPECIAL java/util/HashMap.<init>()V",
+            "INVOKEINTERFACE java/util/List.size()I",
+            "INVOKESTATIC com/google/common/collect/ImmutableList.builderWithExpectedSize(I)"
+                    + "Lcom/google/common/collect/ImmutableList$Builder;",
+            "INVOKEINTERFACE java/util/List.iterator()Ljava/util/Iterator;",
+            "INVOKEINTERFACE java/util/Iterator.hasNext()Z",
+            "INVOKEINTERFACE java/util/Iterator.next()Ljava/lang/Object;",
+            "CHECKCAST java/util/List",
+            "INVOKESTATIC java/util/List.copyOf(Ljava/util/Collection;)Ljava/util/List;",
+            "GETSTATIC " + STATE_DEFINITION + ".EMPTY_VALUES [Ljava/lang/Comparable;",
+            "INVOKEINTERFACE java/util/List.toArray([Ljava/lang/Object;)[Ljava/lang/Object;",
+            "CHECKCAST [Ljava/lang/Comparable;",
+            "INVOKEINTERFACE " + STATE_FACTORY + ".create(Ljava/lang/Object;[L" + STATE_PROPERTY
+                    + ";[Ljava/lang/Comparable;)Ljava/lang/Object;",
+            "CHECKCAST " + STATE_HOLDER,
+            "INVOKEINTERFACE java/util/Map.put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            "INVOKEVIRTUAL com/google/common/collect/ImmutableList$Builder.add(Ljava/lang/Object;)"
+                    + "Lcom/google/common/collect/ImmutableList$Builder;",
+            "NEW " + STATE_COLLECTION,
+            "NEW java/util/HashMap",
+            "INVOKESPECIAL java/util/HashMap.<init>()V",
+            "INVOKESPECIAL " + STATE_COLLECTION + ".<init>(Ljava/util/Map;Ljava/util/Map;)V",
+            "INVOKEDYNAMIC accept(L" + STATE_COLLECTION + ";[L" + STATE_PROPERTY
+                    + ";)Ljava/util/function/BiConsumer; " + STATE_DEFINITION
+                    + ".lambda$createMultiPropertyStates$0",
+            "INVOKEINTERFACE java/util/Map.forEach(Ljava/util/function/BiConsumer;)V",
+            "INVOKEVIRTUAL com/google/common/collect/ImmutableList$Builder.build()"
+                    + "Lcom/google/common/collect/ImmutableList;");
+    private static final List<String> STATE_LAMBDA_MEMBERS = List.of(
+            "INVOKEVIRTUAL " + STATE_COLLECTION + ".fillNeighborsForState([L" + STATE_PROPERTY
+                    + ";Ljava/util/List;)[[L" + STATE_HOLDER + ";",
+            "INVOKEVIRTUAL " + STATE_HOLDER + ".initializeNeighbors([[Ljava/lang/Object;)V");
+    private static final List<String> STATE_FILL_MEMBERS = List.of(
+            "ANEWARRAY [L" + STATE_HOLDER + ";",
+            "NEW java/util/ArrayList",
+            "INVOKESPECIAL java/util/ArrayList.<init>(Ljava/util/Collection;)V",
+            "INVOKEVIRTUAL " + STATE_COLLECTION + ".fillStatesForPivot(Ljava/util/List;L" + STATE_PROPERTY
+                    + ";I)[L" + STATE_HOLDER + ";");
+    private static final List<String> STATE_PIVOT_MEMBERS = List.of(
+            "GETSTATIC " + STATE_WILDCARD + ".INSTANCE L" + STATE_WILDCARD + ";",
+            "INVOKEINTERFACE java/util/List.set(ILjava/lang/Object;)Ljava/lang/Object;",
+            "CHECKCAST java/lang/Comparable",
+            "GETFIELD " + STATE_COLLECTION + ".statesByPivotCache Ljava/util/Map;",
+            "INVOKEINTERFACE java/util/Map.get(Ljava/lang/Object;)Ljava/lang/Object;",
+            "CHECKCAST [L" + STATE_HOLDER + ";",
+            "INVOKEINTERFACE java/util/List.set(ILjava/lang/Object;)Ljava/lang/Object;",
+            "INVOKEVIRTUAL " + STATE_COLLECTION + ".computeStatesForPivot(Ljava/util/List;L" + STATE_PROPERTY
+                    + ";I)[L" + STATE_HOLDER + ";",
+            "GETSTATIC " + STATE_WILDCARD + ".INSTANCE L" + STATE_WILDCARD + ";",
+            "INVOKEINTERFACE java/util/List.set(ILjava/lang/Object;)Ljava/lang/Object;",
+            "GETFIELD " + STATE_COLLECTION + ".statesByPivotCache Ljava/util/Map;",
+            "INVOKESTATIC java/util/List.copyOf(Ljava/util/Collection;)Ljava/util/List;",
+            "INVOKEINTERFACE java/util/Map.put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            "INVOKEINTERFACE java/util/List.set(ILjava/lang/Object;)Ljava/lang/Object;",
+            "INVOKEINTERFACE java/util/List.set(ILjava/lang/Object;)Ljava/lang/Object;");
+    private static final List<String> STATE_COMPUTE_MEMBERS = List.of(
+            "INVOKEVIRTUAL " + STATE_PROPERTY + ".getPossibleValues()Ljava/util/List;",
+            "INVOKEINTERFACE java/util/List.size()I",
+            "ANEWARRAY " + STATE_HOLDER,
+            "INVOKEINTERFACE java/util/List.get(I)Ljava/lang/Object;",
+            "CHECKCAST java/lang/Comparable",
+            "GETSTATIC " + STATE_COLLECTION + ".$assertionsDisabled Z",
+            "INVOKEVIRTUAL " + STATE_PROPERTY + ".getInternalIndex(Ljava/lang/Comparable;)I",
+            "NEW java/lang/AssertionError",
+            "INVOKESPECIAL java/lang/AssertionError.<init>()V",
+            "INVOKEINTERFACE java/util/List.set(ILjava/lang/Object;)Ljava/lang/Object;",
+            "GETFIELD " + STATE_COLLECTION + ".statesByValues Ljava/util/Map;",
+            "INVOKEINTERFACE java/util/Map.get(Ljava/lang/Object;)Ljava/lang/Object;",
+            "CHECKCAST " + STATE_HOLDER,
+            "INVOKESTATIC java/util/Objects.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object;",
+            "CHECKCAST " + STATE_HOLDER);
+    private static final List<String> STATE_INITIALIZE_MEMBERS = List.of(
+            "GETFIELD " + STATE_HOLDER + ".neighbors [[Ljava/lang/Object;",
+            "NEW java/lang/IllegalStateException",
+            "INVOKESPECIAL java/lang/IllegalStateException.<init>()V",
+            "PUTFIELD " + STATE_HOLDER + ".neighbors [[Ljava/lang/Object;");
+
+    /**
+     * Builds the states and neighbour tables of multi-property block and fluid state
+     * definitions by index arithmetic. {@code StateDefinition.createMultiPropertyStates} (the
+     * generation whose StateHolder keeps a {@code S[][]} neighbour table per state, built through
+     * {@code StateDefinition$StateCollection}) creates every state into a HashMap keyed by
+     * {@code List.copyOf(combination)} and then, per state and property, hashes wildcard and value
+     * lists to find the row of states that differ in that property: about 110 ms of Blocks
+     * static initialization in the browser profile of the newest client (list hashing and
+     * equals, ArrayList copies, HashMap gets and puts). The new prologue calls
+     * {@code GaiusStateNeighbourTables.create(owner, factory, properties)}; when it returns a table
+     * the prologue loads {@code StateCollection.Wildcard.INSTANCE}, calls {@code finish} and
+     * returns its list, otherwise (values outside Boolean, Integer and enum constants, a repeated
+     * value, an empty list, an oversized product; nothing has been created then) the vanilla body
+     * runs. The helper's comment carries the proof that the states, their order, the returned
+     * list, the tables (contents, runtime classes, the sharing of row arrays) and the order of
+     * first identity-hash requests are vanilla's.
+     *
+     * <p>Shape, checked before writing: the member, type and invokedynamic instructions of
+     * createMultiPropertyStates, its lambda, StateCollection.fillNeighborsForState,
+     * fillStatesForPivot, computeStatesForPivot and StateHolder.initializeNeighbors are exactly
+     * the vanilla construction above (no exception handlers in createMultiPropertyStates), the
+     * Wildcard constant exists, and createMultiPropertyStates is called only from the
+     * StateDefinition constructor. A body that already starts with the prologue is accepted as
+     * patched (idempotent). A generation without StateCollection (its StateHolder keeps a
+     * neighbour Table) is recorded as dropped.
+     */
+    public static void patchStateDefinitionNeighbourTables(String jar, Path root) throws IOException {
+        String patchId = "MinecraftClientPatcher.patchStateDefinitionNeighbourTables";
+        if (!jarHasClass(jar, STATE_COLLECTION)) {
+            PatchRegistry.dropped(patchId, jar, STATE_COLLECTION + ".class");
+            return;
+        }
+        Path definitionOutput = root.resolve(STATE_DEFINITION + ".class");
+        ClassNode definition = Files.exists(definitionOutput)
+                ? read(definitionOutput) : read(jar, STATE_DEFINITION + ".class");
+        ClassNode collection = read(jar, STATE_COLLECTION + ".class");
+        ClassNode holder = read(jar, STATE_HOLDER + ".class");
+        ClassNode wildcard = read(jar, STATE_WILDCARD + ".class");
+        if (wildcard.fields.stream().noneMatch(field -> field.name.equals("INSTANCE")
+                && field.desc.equals("L" + STATE_WILDCARD + ";")
+                && (field.access & (Opcodes.ACC_STATIC | Opcodes.ACC_PUBLIC)) == (Opcodes.ACC_STATIC | Opcodes.ACC_PUBLIC))) {
+            throw new IllegalStateException(STATE_WILDCARD + ".INSTANCE changed");
+        }
+        MethodNode initialize = find(holder, "initializeNeighbors", "([[Ljava/lang/Object;)V");
+        if ((initialize.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED | Opcodes.ACC_PRIVATE
+                | Opcodes.ACC_STATIC)) != 0) {
+            throw new IllegalStateException(STATE_HOLDER + ".initializeNeighbors is no longer package-private");
+        }
+        requireStateMembers(initialize, STATE_INITIALIZE_MEMBERS);
+        requireStateMembers(find(collection, "fillNeighborsForState", "([L" + STATE_PROPERTY
+                + ";Ljava/util/List;)[[L" + STATE_HOLDER + ";"), STATE_FILL_MEMBERS);
+        requireStateMembers(find(collection, "fillStatesForPivot", "(Ljava/util/List;L" + STATE_PROPERTY
+                + ";I)[L" + STATE_HOLDER + ";"), STATE_PIVOT_MEMBERS);
+        requireStateMembers(find(collection, "computeStatesForPivot", "(Ljava/util/List;L" + STATE_PROPERTY
+                + ";I)[L" + STATE_HOLDER + ";"), STATE_COMPUTE_MEMBERS);
+        requireStateMembers(find(definition, "lambda$createMultiPropertyStates$0", "(L" + STATE_COLLECTION
+                + ";[L" + STATE_PROPERTY + ";Ljava/util/List;L" + STATE_HOLDER + ";)V"), STATE_LAMBDA_MEMBERS);
+        int callers = 0;
+        for (MethodNode method : definition.methods) {
+            for (AbstractInsnNode instruction : method.instructions.toArray()) {
+                if (instruction instanceof MethodInsnNode call && call.owner.equals(STATE_DEFINITION)
+                        && call.name.equals(STATE_MULTI)) {
+                    if (!method.name.equals("<init>") || !call.desc.equals(STATE_MULTI_DESC)) {
+                        throw new IllegalStateException(STATE_MULTI + " has an unexpected caller "
+                                + method.name + method.desc);
+                    }
+                    callers++;
+                }
+            }
+        }
+        if (callers != 1) {
+            throw new IllegalStateException(STATE_MULTI + " callers changed: " + callers);
+        }
+        MethodNode multi = find(definition, STATE_MULTI, STATE_MULTI_DESC);
+        if ((multi.access & Opcodes.ACC_STATIC) == 0) {
+            throw new IllegalStateException(STATE_MULTI + " is no longer static");
+        }
+        List<String> members = stateMembers(multi);
+        List<String> prologue = List.of(
+                "INVOKESTATIC " + STATE_TABLES + ".create" + STATE_TABLES_CREATE_DESC,
+                "GETSTATIC " + STATE_WILDCARD + ".INSTANCE L" + STATE_WILDCARD + ";",
+                "INVOKEVIRTUAL " + STATE_TABLES + ".finish" + STATE_TABLES_FINISH_DESC);
+        boolean patched = members.size() == prologue.size() + STATE_MULTI_MEMBERS.size()
+                && members.subList(0, prologue.size()).equals(prologue);
+        requireStateMembers(STATE_MULTI, patched ? members.subList(prologue.size(), members.size()) : members,
+                STATE_MULTI_MEMBERS);
+        if (!multi.tryCatchBlocks.isEmpty()) {
+            throw new IllegalStateException(STATE_MULTI + " has exception handlers");
+        }
+        if (patched) {
+            System.out.println("StateDefinition neighbour tables already built by index");
+            return;
+        }
+        // GaiusStateNeighbourTables tables = GaiusStateNeighbourTables.create(owner, factory, properties);
+        // if (tables != null) return tables.finish(StateCollection.Wildcard.INSTANCE);
+        InsnList code = new InsnList();
+        LabelNode vanilla = new LabelNode();
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, STATE_TABLES, "create", STATE_TABLES_CREATE_DESC, false));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new JumpInsnNode(Opcodes.IFNULL, vanilla));
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, STATE_WILDCARD, "INSTANCE", "L" + STATE_WILDCARD + ";"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, STATE_TABLES, "finish", STATE_TABLES_FINISH_DESC, false));
+        code.add(new InsnNode(Opcodes.ARETURN));
+        code.add(vanilla);
+        code.add(new InsnNode(Opcodes.POP));
+        multi.instructions.insert(code);
+        writeComputeFrames(definition, definitionOutput);
+        System.out.println("Built StateDefinition neighbour tables by index");
+    }
+
+    private static void requireStateMembers(MethodNode method, List<String> expected) {
+        requireStateMembers(method.name, stateMembers(method), expected);
+    }
+
+    private static void requireStateMembers(String name, List<String> actual, List<String> expected) {
+        if (!actual.equals(expected)) {
+            int index = 0;
+            while (index < Math.min(actual.size(), expected.size())
+                    && actual.get(index).equals(expected.get(index))) {
+                index++;
+            }
+            throw new IllegalStateException(name + " changed at member #" + index + ": "
+                    + (index < actual.size() ? actual.get(index) : "<end>") + " (expected "
+                    + (index < expected.size() ? expected.get(index) : "<end>") + ")");
+        }
+    }
+
+    /** The member, type and invokedynamic instructions of a method, in order, as text. */
+    public static List<String> stateMembers(MethodNode method) {
+        List<String> members = new ArrayList<>();
+        for (AbstractInsnNode instruction : method.instructions.toArray()) {
+            String opcode = memberOpcode(instruction.getOpcode());
+            if (instruction instanceof MethodInsnNode call) {
+                members.add(opcode + " " + call.owner + "." + call.name + call.desc);
+            } else if (instruction instanceof FieldInsnNode field) {
+                members.add(opcode + " " + field.owner + "." + field.name + " " + field.desc);
+            } else if (instruction instanceof TypeInsnNode type) {
+                members.add(opcode + " " + type.desc);
+            } else if (instruction instanceof InvokeDynamicInsnNode indy) {
+                String target = indy.bsmArgs.length > 1 && indy.bsmArgs[1] instanceof org.objectweb.asm.Handle handle
+                        ? " " + handle.getOwner() + "." + handle.getName() : "";
+                members.add(opcode + " " + indy.name + indy.desc + target);
+            }
+        }
+        return members;
+    }
+
+    private static String memberOpcode(int opcode) {
+        return switch (opcode) {
+            case Opcodes.GETSTATIC -> "GETSTATIC";
+            case Opcodes.PUTSTATIC -> "PUTSTATIC";
+            case Opcodes.GETFIELD -> "GETFIELD";
+            case Opcodes.PUTFIELD -> "PUTFIELD";
+            case Opcodes.INVOKEVIRTUAL -> "INVOKEVIRTUAL";
+            case Opcodes.INVOKESPECIAL -> "INVOKESPECIAL";
+            case Opcodes.INVOKESTATIC -> "INVOKESTATIC";
+            case Opcodes.INVOKEINTERFACE -> "INVOKEINTERFACE";
+            case Opcodes.INVOKEDYNAMIC -> "INVOKEDYNAMIC";
+            case Opcodes.NEW -> "NEW";
+            case Opcodes.ANEWARRAY -> "ANEWARRAY";
+            case Opcodes.CHECKCAST -> "CHECKCAST";
+            case Opcodes.INSTANCEOF -> "INSTANCEOF";
+            default -> "OP" + opcode;
+        };
     }
 
     /** The per-shape answer of {@code Block.isShapeFullBlock}: 0 unknown, 1 false, 2 true. */
@@ -1031,8 +1313,26 @@ public final class PlatformPatches {
 
     public static void patchChunkPosSpliterator(String jar, Path output) throws IOException {
         String owner = "net/minecraft/world/level/ChunkPos$2";
-        ClassNode node = read(jar, owner + ".class");
+        ClassNode node = java.nio.file.Files.isRegularFile(output)
+                ? read(output) : read(jar, owner + ".class");
+        // The REQUIRED library transform may already have supplied the complete direct
+        // implementation. Keep it: adding the same signatures would make an invalid class.
+        if ("java/lang/Object".equals(node.superName)) {
+            verifyDirectSpliterator(node);
+            return;
+        }
+        if (!"java/util/Spliterators$AbstractSpliterator".equals(node.superName)) {
+            throw new IllegalStateException("Unexpected spliterator superclass: " + node.superName);
+        }
+        for (var method : node.methods) {
+            if (method.name.equals("trySplit") && method.desc.equals("()Ljava/util/Spliterator;")
+                    || method.name.equals("estimateSize") && method.desc.equals("()J")
+                    || method.name.equals("characteristics") && method.desc.equals("()I")) {
+                throw new IllegalStateException("Partial spliterator transformation: " + method.name);
+            }
+        }
         node.superName = "java/lang/Object";
+        node.signature = null;
         if (!node.interfaces.contains("java/util/Spliterator")) {
             node.interfaces.add("java/util/Spliterator");
         }
@@ -1092,6 +1392,51 @@ public final class PlatformPatches {
         characteristics.maxLocals = 1;
         node.methods.add(characteristics);
         write(node, output);
+    }
+
+    private static void verifyDirectSpliterator(ClassNode node) {
+        if (!node.interfaces.contains("java/util/Spliterator")) {
+            throw new IllegalStateException("Direct spliterator interface is missing");
+        }
+        String prefix = node.fields.stream().anyMatch(f -> f.name.equals("gaiusRemaining"))
+                ? "gaius" : "browser";
+        for (String[] field : new String[][]{{prefix + "Remaining", "J"}, {prefix + "Characteristics", "I"}}) {
+            if (node.fields.stream().filter(f -> f.name.equals(field[0]) && f.desc.equals(field[1])).count() != 1) {
+                throw new IllegalStateException("Incomplete direct spliterator field: " + field[0]);
+            }
+        }
+        for (String[] signature : new String[][]{{"trySplit", "()Ljava/util/Spliterator;"},
+                {"estimateSize", "()J"}, {"characteristics", "()I"}}) {
+            var methods = node.methods.stream().filter(m -> m.name.equals(signature[0]) && m.desc.equals(signature[1])).toList();
+            if (methods.size() != 1) throw new IllegalStateException("Incomplete direct spliterator method: " + signature[0]);
+            MethodNode method = methods.get(0);
+            var code = java.util.stream.StreamSupport.stream(method.instructions.spliterator(), false)
+                    .filter(i -> i.getOpcode() >= 0).toList();
+            boolean split = signature[0].equals("trySplit");
+            if (split ? code.size() != 2 || code.get(0).getOpcode() != Opcodes.ACONST_NULL || code.get(1).getOpcode() != Opcodes.ARETURN
+                    : code.size() != 3 || !(code.get(0) instanceof VarInsnNode load) || load.getOpcode() != Opcodes.ALOAD || load.var != 0
+                    || !(code.get(1) instanceof FieldInsnNode read) || read.getOpcode() != Opcodes.GETFIELD || !read.owner.equals(node.name)
+                    || !read.name.equals(prefix + (signature[0].equals("estimateSize") ? "Remaining" : "Characteristics"))
+                    || !read.desc.equals(signature[0].equals("estimateSize") ? "J" : "I")
+                    || code.get(2).getOpcode() != (signature[0].equals("estimateSize") ? Opcodes.LRETURN : Opcodes.IRETURN)) {
+                throw new IllegalStateException("Unknown direct spliterator body: " + signature[0]);
+            }
+        }
+        if (node.methods.stream().noneMatch(m -> m.name.equals("<init>"))) throw new IllegalStateException("Direct spliterator constructor is missing");
+        for (MethodNode constructor : node.methods) {
+            if (!constructor.name.equals("<init>")) continue;
+            java.util.Set<String> initialized = new java.util.HashSet<>();
+            for (var instruction : constructor.instructions) {
+                if (instruction instanceof MethodInsnNode call && call.name.equals("<init>")
+                        && call.owner.equals("java/util/Spliterators$AbstractSpliterator")) {
+                    throw new IllegalStateException("Direct spliterator still calls abstract superclass");
+                }
+                if (instruction instanceof FieldInsnNode field && field.getOpcode() == Opcodes.PUTFIELD && field.owner.equals(node.name)) initialized.add(field.name);
+            }
+            if (!initialized.containsAll(java.util.List.of(prefix + "Remaining", prefix + "Characteristics"))) {
+                throw new IllegalStateException("Direct spliterator constructor is incomplete");
+            }
+        }
     }
 
     public static void patchDetectedVersion(String jar, Path output, String minecraftVersion)
@@ -1197,6 +1542,15 @@ public final class PlatformPatches {
                     "BuiltInRegistries createContents entry lambda was not found");
         }
         int patchedReturns = 0;
+        createContentsEntry.instructions.insertBefore(createContentsEntry.instructions.getFirst(),
+                new InsnNode(Opcodes.POP));
+        createContentsEntry.instructions.insertBefore(createContentsEntry.instructions.getFirst(),
+                new MethodInsnNode(
+                        Opcodes.INVOKESTATIC,
+                        "dev/gaius/browser/BrowserStartupScheduler",
+                        "beginInitSnapshotAdoption",
+                        "()Z",
+                        false));
         for (AbstractInsnNode instruction = createContentsEntry.instructions.getFirst();
                 instruction != null;
                 instruction = instruction.getNext()) {

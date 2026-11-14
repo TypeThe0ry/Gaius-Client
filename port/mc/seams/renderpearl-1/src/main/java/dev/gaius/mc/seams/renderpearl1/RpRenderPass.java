@@ -8,6 +8,7 @@ import com.mojang.renderpearl.backend.api.BackendRenderPipeline;
 import com.mojang.renderpearl.backend.api.RenderPassBackend;
 import com.mojang.renderpearl.util.TextureViewAndSampler;
 import dev.gaius.gpu.webgpu.CorePass;
+import dev.gaius.gpu.webgpu.CoreBuffer;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.util.function.Supplier;
@@ -120,7 +121,8 @@ final class RpRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndexedIndirect(GpuBufferSlice commands, int drawCount) {
-        this.core.drawIndexedIndirect(RpBuffer.core(commands.buffer()), (int) commands.offset(), drawCount);
+        CoreBuffer source = RpBuffer.core(commands.buffer());
+        this.core.drawIndexedIndirectGpuTerrain(source, (int) commands.offset(), drawCount);
     }
 
     @Override

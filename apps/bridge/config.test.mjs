@@ -14,6 +14,17 @@ function load(env) {
     });
 }
 
+function readResourcePackStreamTimeout(env = {}) {
+    const childEnv = {...process.env, ...env};
+    for (const [name, value] of Object.entries(env)) {
+        if (value === undefined) delete childEnv[name];
+    }
+    return spawnSync(process.execPath, ["--input-type=module", "-e",
+        `import {loadConfig} from ${JSON.stringify(moduleUrl)}; console.log(loadConfig().resourcePackStreamOverallTimeoutMs);`], {
+        env: childEnv, encoding: "utf8",
+    });
+}
+
 test("null origin requires an explicit deployment opt-in", () => {
     const rejected = load({GAIUS_ALLOWED_ORIGINS: "https://play.example,null",
         GAIUS_ALLOW_NULL_ORIGIN: undefined});
@@ -39,4 +50,18 @@ test("legacy query token compatibility is enabled by default and can be disabled
     assert.equal(defaultConfig.status, 0, defaultConfig.stderr);
     const disabledConfig = load({GAIUS_BRIDGE_TOKEN: "bridge-token", GAIUS_ALLOW_LEGACY_QUERY_TOKEN: "0"});
     assert.equal(disabledConfig.status, 0, disabledConfig.stderr);
+});
+
+test("streaming resource-pack timeout defaults to ten minutes and remains configurable", () => {
+    const defaultTimeout = readResourcePackStreamTimeout({
+        GAIUS_RESOURCE_PACK_STREAM_OVERALL_TIMEOUT_MS: undefined,
+    });
+    assert.equal(defaultTimeout.status, 0, defaultTimeout.stderr);
+    assert.equal(defaultTimeout.stdout.trim(), "600000");
+
+    const configuredTimeout = readResourcePackStreamTimeout({
+        GAIUS_RESOURCE_PACK_STREAM_OVERALL_TIMEOUT_MS: "300000",
+    });
+    assert.equal(configuredTimeout.status, 0, configuredTimeout.stderr);
+    assert.equal(configuredTimeout.stdout.trim(), "300000");
 });

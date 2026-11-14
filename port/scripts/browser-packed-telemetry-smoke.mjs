@@ -112,7 +112,7 @@ function checkLayout(source, prefix, label) {
   assert.deepEqual(body.params, ["v"]);
   const publish = new Function(...body.params, body.script);
   const booleans = new Set(["taskRunning", "highWaterActive", "lastTaskBudgetExhausted",
-    "uploadBudgetExhausted", "pumpWaitingForFrame"]);
+    "uploadBudgetExhausted", "pumpWaitingForFrame", "adaptiveInstallBudget"]);
   delete globalThis.__gaiusChunkPipelineTelemetry;
   const packed = new Float64Array(count);
   for (const [name, index] of layout) packed[index] = booleans.has(camel(name)) ? 1 : index + 0.5;
@@ -145,7 +145,8 @@ function checkLayout(source, prefix, label) {
   const keys = Object.keys(state).filter(key => !key.endsWith("Histogram")
     && !key.endsWith("HistogramCount"));
   assert.deepEqual(keys.slice(0, 3), ["pendingTasks", "queueCapacity", "taskRunning"]);
-  assert.deepEqual(keys.slice(-3), ["meshResultsReady", "failedTasks", "pumpDriver"]);
+  assert.deepEqual(keys.slice(-7), ["meshResultsReady", "failedTasks", "installNanosPerFrame",
+    "frameInstallNanos", "adaptiveInstallBudget", "lastFrameDurationMillis", "pumpDriver"]);
   delete globalThis.__gaiusChunkPipelineTelemetry;
 }
 
@@ -361,8 +362,69 @@ function checkLayout(source, prefix, label) {
 
 // --- BrowserMemory (WebAssembly GC) -------------------------------------------------------------
 {
+  const sectionOverride = jsBody(wasmMemory, "private static native int sectionPackOverride();");
+  const sectionTelemetry = jsBody(wasmMemory, "private static native void publishSectionBuilderTelemetry(");
   const body = jsBody(wasmMemory, "private static native void publishTelemetryBrowser(");
+  const poolBytes = jsBody(wasmMemory, "private static native int runtimePoolBytes();");
+  assert.deepEqual(sectionOverride.params, []);
+  assert.deepEqual(sectionTelemetry.params, ["count", "requested", "perPack", "maxMemory", "processors"]);
   assert.deepEqual(body.params, ["v"]);
+  assert.deepEqual(poolBytes.params, []);
+
+  const oldLocation = globalThis.location;
+  const oldEnabled = globalThis.__gaiusMemoryTelemetryEnabled;
+  const oldLowMemory = globalThis.__gaiusIsLowMemoryTier;
+  const sectionPacks = new Function(sectionOverride.script);
+  const sectionReport = new Function(...sectionTelemetry.params, sectionTelemetry.script);
+  const poolLimit = new Function(poolBytes.script);
+  try {
+    globalThis.location = {search: "?gaiusSectionPacks=12"};
+    assert.equal(sectionPacks(), 12);
+    globalThis.location.search = "?gaiusSectionPacks=0";
+    assert.equal(sectionPacks(), 1);
+    globalThis.location.search = "?gaiusSectionPacks=65";
+    assert.equal(sectionPacks(), 64);
+    globalThis.location.search = "?gaiusSectionPacks=bad";
+    assert.equal(sectionPacks(), 1);
+    delete globalThis.location;
+    assert.equal(sectionPacks(), 1, "missing location preserves the default");
+
+    globalThis.__gaiusMemoryTelemetryEnabled = false;
+    delete globalThis.__gaiusMemoryTelemetry;
+    sectionReport(3, 8, 4096, 100000, 16);
+    assert.equal(globalThis.__gaiusMemoryTelemetry, undefined, "disabled telemetry has no side effect");
+    globalThis.__gaiusMemoryTelemetryEnabled = true;
+    sectionReport(3, 8, 4096, 100000, 16);
+    assert.deepEqual(globalThis.__gaiusMemoryTelemetry.sectionBuffers,
+      {count: 3, requested: 8, perPackBytes: 4096, maxMemory: 100000,
+        availableProcessors: 16, totalBytes: 12288});
+    const priorSection = globalThis.__gaiusMemoryTelemetry.sectionBuffers;
+    sectionReport(2, 4, 2048, 50000, 8);
+    assert.notEqual(globalThis.__gaiusMemoryTelemetry.sectionBuffers, priorSection);
+    assert.equal(globalThis.__gaiusMemoryTelemetry.sectionBuffers.totalBytes, 4096);
+
+    globalThis.location = {search: "?gaiusMemoryReuse=0"};
+    assert.equal(poolLimit(), 0);
+    globalThis.location.search = "?gaiusMemoryTier=low";
+    assert.equal(poolLimit(), 512 * 1024);
+    globalThis.location.search = "";
+    assert.equal(poolLimit(), 2 * 1024 * 1024);
+    globalThis.__gaiusIsLowMemoryTier = () => true;
+    assert.equal(poolLimit(), 512 * 1024, "low-memory callback takes precedence");
+    globalThis.__gaiusIsLowMemoryTier = () => false;
+    assert.equal(poolLimit(), 2 * 1024 * 1024);
+    globalThis.__gaiusIsLowMemoryTier = () => { throw new Error("probe"); };
+    assert.equal(poolLimit(), 2 * 1024 * 1024, "callback exceptions preserve the normal default");
+  } finally {
+    if (oldLocation === undefined) delete globalThis.location;
+    else globalThis.location = oldLocation;
+    if (oldEnabled === undefined) delete globalThis.__gaiusMemoryTelemetryEnabled;
+    else globalThis.__gaiusMemoryTelemetryEnabled = oldEnabled;
+    if (oldLowMemory === undefined) delete globalThis.__gaiusIsLowMemoryTier;
+    else globalThis.__gaiusIsLowMemoryTier = oldLowMemory;
+    delete globalThis.__gaiusMemoryTelemetry;
+  }
+
   const publish = new Function(...body.params, body.script);
   // 23 scalars, 5 owner pairs and 8 size-bucket pairs.
   const packed = Float64Array.from({length: 49}, (_, i) => i * 10 + 1);

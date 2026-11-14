@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import gzip
 import hashlib
@@ -10,6 +11,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -42,6 +44,21 @@ MAKE_WASM_PAGE = load_script(
 
 
 class BuildPortableHTMLTest(unittest.TestCase):
+    def test_site_boot_preloads_are_removed_before_offline_validation(self) -> None:
+        site = ('<head><link data-gaius-preload="boot" rel="preload" as="script" '
+                'href="gaius-boot.0123456789abcdef.js">\n'
+                '<script data-gaius-preload="wasm">window.__gaiusWasmHttpPreload={url:"classes.wasm"};</script>\n'
+                '<link rel="icon" href="data:image/png;base64,AA=="></head>')
+        portable = PORTABLE.drop_site_boot_preloads(site)
+        self.assertNotIn('gaius-boot.0123456789abcdef.js', portable)
+        self.assertNotIn('__gaiusWasmHttpPreload', portable)
+        self.assertIn('<link rel="icon"', portable)
+        PORTABLE.validate_portable_no_relative_urls(portable)
+        # Unmarked relative references still fail closed rather than being silently removed.
+        with self.assertRaises(RuntimeError):
+            PORTABLE.validate_portable_no_relative_urls(PORTABLE.drop_site_boot_preloads(
+                '<link rel="preload" as="script" href="other.js">'))
+
     def test_relative_url_check_ignores_encoded_payload_bodies(self) -> None:
         payload = (f'<script type="{PORTABLE.PAYLOAD_TYPE}" data-gaius-asset="a" data-part="0">'
                    'x src="T;%4*g" y</script>')
@@ -84,10 +101,90 @@ class BuildPortableHTMLTest(unittest.TestCase):
         self.assertNotIn("__gaiusCanvasViewportTimer", template)
         self.assertIn('addEventListener("resize", update)', template)
 
-    def test_release_portable_path_does_not_expose_javascript(self) -> None:
-        source = SCRIPT.read_text(encoding="utf-8")
-        self.assertNotIn("frozen_js", source)
-        self.assertNotIn("frozen_js=frozen_js", source)
+    def test_portable_releases_only_unused_js_after_wasm_main_commit(self) -> None:
+        decoder = PORTABLE.PORTABLE_BOOTSTRAP
+        decoder = decoder[decoder.index("      function gaiusPortableDecoder(scope) {"):decoder.index("      const decodeAsset =")]
+        release = PORTABLE.PORTABLE_WASM_CLIENT
+        release = release[:release.index("      const portableWasmClient")]
+        script = r"""
+const assert = require("node:assert/strict"), vm = require("node:vm"), zlib = require("node:zlib");
+const {webcrypto} = require("node:crypto");
+const input = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+function fixture() {
+  const texts = {classes: "globalThis.main = function() {};", server: "globalThis.serverMain = function() {};", wasmserver: "wasm-server"};
+  const assets = {}, nodes = {}, compressed = {};
+  for (const [name, text] of Object.entries(texts)) {
+    const bytes = zlib.gzipSync(text); compressed[name] = bytes;
+    assets[name] = {bytes: bytes.length, parts: 1};
+    const node = {textContent: bytes.toString("base64"), removed: false};
+    node.parentNode = {removeChild(element) {element.removed = true;}};
+    nodes[name] = node;
+  }
+  const context = {console, crypto: webcrypto, atob, TextDecoder, Blob, Response, ReadableStream,
+    DecompressionStream, Uint8Array, ArrayBuffer, Map, Set, Promise, URL, Object,
+    portablePayload: {encoding: "gaius-b64-v1", assets}, portableServerGzipDataPromise: null,
+    __gaiusRuntimeSelection: {selected: "wasm", mainStarted: false}, __gaiusBoot: {serverRuntime: "wasm"},
+    document: {querySelectorAll(query) {const name = query.match(/asset="([^"]+)"/)[1];
+      return nodes[name] && !nodes[name].removed ? [nodes[name]] : [];}}};
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(input.decoder + "\nglobalThis.testDecoder=decoder; const decodeAsset=(name,options)=>decoder.decode(name,options||{});\n" + input.release, context);
+  return {context, nodes, assets, compressed};
+}
+(async () => {
+  const normal = fixture(), c = normal.context;
+  assert.equal(c.__gaiusPortableReleaseJsFallback(), false);
+  assert.ok(normal.nodes.classes.textContent && normal.nodes.server.textContent);
+  c.__gaiusRuntimeSelection.mainStarted = true;
+  assert.equal(c.__gaiusPortableReleaseJsFallback(), true);
+  for (const name of ["classes", "server"]) {
+    assert.equal(normal.nodes[name].removed, true); assert.equal(normal.nodes[name].textContent, "");
+    assert.equal(normal.assets[name], undefined);
+  }
+  assert.equal(c.__gaiusPortableLoadJsClient, undefined);
+  assert.equal(c.__gaiusSingleplayerServerGzipDataPromise, null);
+  assert.equal(normal.nodes.wasmserver.removed, false);
+  for (let reopen = 0; reopen < 2; reopen++) {
+    const value = await c.testDecoder.decode("wasmserver", {gunzip: false});
+    assert.deepEqual(Buffer.from(value), normal.compressed.wasmserver);
+  }
+  const fallback = fixture(), f = fallback.context;
+  f.__gaiusRuntimeSelection.selected = "js";
+  const url = await f.__gaiusPortableLoadJsClient();
+  assert.match(await (await fetch(url)).text(), /globalThis.main/);
+  assert.equal(f.__gaiusPortableReleaseJsFallback(), false);
+  assert.equal(fallback.nodes.server.removed, false);
+  for (let reopen = 0; reopen < 2; reopen++) {
+    const value = await f.testDecoder.decode("server", {gunzip: false});
+    assert.deepEqual(Buffer.from(value), fallback.compressed.server);
+  }
+  URL.revokeObjectURL(url);
+  const mixed = fixture();
+  mixed.context.__gaiusRuntimeSelection.mainStarted = true;
+  mixed.context.__gaiusBoot.serverRuntime = "js";
+  assert.equal(mixed.context.__gaiusPortableReleaseJsFallback(), false);
+  assert.ok(mixed.nodes.server.textContent, "a JavaScript server still needs its payload");
+  const busy = fixture(), b = busy.context;
+  const pending = b.testDecoder.decode("classes", {gunzip: false});
+  b.__gaiusRuntimeSelection.mainStarted = true;
+  assert.equal(b.__gaiusPortableReleaseJsFallback(), false, "pending decode must retain its input");
+  await pending;
+  assert.equal(b.__gaiusPortableReleaseJsFallback(), true);
+  console.log(JSON.stringify({ok:true, beforeMainRetained:true, afterWasmMainReleased:true,
+    wasmServerReopens:true, jsFallbackReopens:true, pendingProtected:true}));
+})().catch(error => {console.error(error); process.exitCode=1;});
+"""
+        completed = subprocess.run(["node", "-e", script], input=json.dumps({"decoder": decoder, "release": release}),
+                                   text=True, capture_output=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(json.loads(completed.stdout)["afterWasmMainReleased"])
+
+    def test_frozen_client_loader_is_lazy_and_available_before_boot(self) -> None:
+        source = PORTABLE.apply_portable_wasm_client(PORTABLE.PORTABLE_BOOTSTRAP)
+        self.assertIn("window.__gaiusPortableLoadJsClient = () =>", source)
+        self.assertLess(source.index("window.__gaiusPortableLoadJsClient"),
+                        source.index("const portableWasmClient"))
+        self.assertIn("frozenClientUrlPromise", source)
 
     def test_toolchain_identity_is_strict_for_release_portables(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
@@ -125,12 +222,116 @@ class BuildPortableHTMLTest(unittest.TestCase):
 
     def test_wasm_only_payload_lookup_does_not_reuse_previous_candidate(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("candidate = None\n            if not logical", source)
+        # The candidate is reset at the top of every payload iteration, before any lookup.
+        loop = source[source.index("        for name in payload_names:"):]
+        self.assertTrue(loop.split("\n", 3)[2].strip().startswith("candidate = None") or
+                        "            candidate = None\n" in loop[:400], loop[:400])
+
+    def test_wasm_only_kernel_index_embeds_every_present_variant(self) -> None:
+        import json, tempfile, importlib.util
+        spec = importlib.util.spec_from_file_location("portable_kernels_test", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory)
+            (site / "kernels").mkdir()
+            assets = {}
+            for name, variant in (("worldgen", "simd"), ("worldgen", "baseline"), ("light", "simd")):
+                logical = f"kernels/{name}.{variant}.0123456789abcdef.wasm"
+                (site / logical).write_bytes(b"\0asm\1\0\0\0")
+                assets[f"kernels/{name}.{variant}.wasm"] = logical
+            manifest = {"assets": assets, "kernels": {
+                "worldgen": {"kinds": ["terrain"], "sha256": {"simd": "a" * 64, "baseline": "b" * 64},
+                             "memory": {"initial": 2}, "variants": {}},
+                "light": {"kinds": ["light_column"], "sha256": {"simd": "c" * 64, "baseline": "d" * 64}, "variants": {}},
+                "noise": {"kinds": ["noise_points"], "sha256": {}, "variants": {}}}}
+            index, names = module.wasm_only_kernel_index(site, manifest)
+            self.assertEqual(sorted(index), ["light", "worldgen"], "a kernel without a file is omitted")
+            self.assertEqual(index["worldgen"]["variants"],
+                             {"simd": "kernels/worldgen.simd.wasm", "baseline": "kernels/worldgen.baseline.wasm"})
+            self.assertEqual(index["light"]["variants"], {"simd": "kernels/light.simd.wasm"})
+            self.assertEqual(index["light"]["sha256"], {"simd": "c" * 64})
+            self.assertEqual(index["worldgen"]["memory"], {"initial": 2})
+            self.assertEqual(sorted(names), ["kernels/light.simd.wasm", "kernels/worldgen.baseline.wasm",
+                                             "kernels/worldgen.simd.wasm"])
+            self.assertEqual(module.wasm_only_kernel_index(site, {"assets": assets}), ({}, []))
+            with self.assertRaises(RuntimeError):
+                module.wasm_only_kernel_index(site, {"assets": assets, "kernels": {"Bad Name": {}}})
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("window.__gaiusPortableKernels=_kernels", source)
+        self.assertIn("gaius-kernel-worker-source", source[source.index("wasm_only_kernel_index(site, site_manifest)"):])
+
+    def test_wasm_only_bootstrap_announces_embedded_translator(self) -> None:
+        # The single file on https://gaius.fun/ must not fetch runtime/webgpu/ relative to itself.
+        source = SCRIPT.read_text(encoding="utf-8")
+        body = source[source.index("window.__gaiusPortablePayloadBytes={};"):]
+        self.assertIn("window.__gaiusPortableWebGpu = {translator:", body)
+        self.assertIn("load: () => _bytes('runtime/webgpu/gaius-shaderxlat.wasm')", body)
+
+    def test_wasm_only_server_worker_scripts_are_inert_copies(self) -> None:
+        import tempfile, importlib.util
+        spec = importlib.util.spec_from_file_location("portable_worker_scripts_test", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory)
+            assets = {}
+            for name in module.SERVER_WORKER_MODULES:
+                logical = name.replace(".js", ".0123456789abcdef.js")
+                (site / logical).parent.mkdir(parents=True, exist_ok=True)
+                (site / logical).write_text("self.__x=1;\n")
+                assets[name] = logical
+            tags = module.wasm_only_server_worker_scripts(site, {"assets": assets})
+            for name in module.SERVER_WORKER_MODULES:
+                self.assertIn(f'type="text/plain" data-gaius-worker-script="{name}"', tags)
+            self.assertEqual(module.wasm_only_server_worker_scripts(site, {"assets": {}}), "")
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("inert += wasm_only_server_worker_scripts(site, site_manifest)", source)
+
+    def test_wasm_only_runtime_modules_inline_webgpu_quality_and_kernels(self) -> None:
+        import json, tempfile, importlib.util
+        spec = importlib.util.spec_from_file_location("portable_modules_test", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory)
+            assets = {}
+            for name in (list(module.KERNEL_RUNTIME_MODULES) + list(module.QUALITY_MODULES)
+                         + list(module.WEBGPU_MODULES) + ["kernels/mesh-job.js"]):
+                logical = name.replace(".js", ".0123456789abcdef.js")
+                (site / logical).parent.mkdir(parents=True, exist_ok=True)
+                (site / logical).write_text("window.__m=(window.__m||[]).concat(" + json.dumps(name) + ");\n")
+                assets[name] = logical
+            modules, hashes = module.wasm_only_runtime_modules(
+                site, {"assets": assets, "modules": ["kernels/mesh-job.js"]})
+            names = [name for name, _source in modules]
+            for required in module.WEBGPU_MODULES:
+                self.assertIn(required, names)
+            for required in module.QUALITY_MODULES:
+                self.assertIn(required, names)
+            self.assertLess(names.index("kernels/kernel-runtime.js"), names.index("kernels/mesh-job.js"))
+            self.assertEqual(set(hashes), set(names))
+            (site / assets["runtime/webgpu/gpu-glue.js"]).write_text("</script>")
+            with self.assertRaises(RuntimeError):
+                module.wasm_only_runtime_modules(site, {"assets": assets, "modules": []})
+
+    def test_wasm_only_scripts_follow_the_staged_site_glue(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('site / site_manifest["assets"][name]', source)
+        wasm_only = source[source.index('        client = require_nonempty(wasm_dist / "classes.wasm")'):]
+        self.assertNotIn('require_nonempty(wasm_dist / name).read_text', wasm_only)
+        self.assertIn("window.__gaiusWasmModuleCacheKey = 'wasmgc-js-string-v1:'", source)
 
     def test_wasm_only_uses_the_launcher_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("build(dist, output, wasm_dist=wasm_dist, wasm_server_dist=wasm_server_dist)", source)
+        self.assertIn("build(dist, output, wasm_dist=wasm_dist, wasm_server_dist=wasm_server_dist, frozen_js=frozen_js)", source)
         self.assertNotIn("__gaiusWasmClientBase64", source)
+
+    def test_wasm_only_portable_embeds_the_canonical_builtin_relay(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("window.__gaiusBridgeUrls=", source)
+        self.assertIn('load_nodes(site / "relay-nodes.json", root)', source)
+        self.assertIn("load_nodes(relay_registry_path, root)", source)
 
     def test_wasm_portable_declares_utf8_before_payloads_and_omits_js_server(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
@@ -187,6 +388,66 @@ class BuildPortableHTMLTest(unittest.TestCase):
         self.assertEqual(PORTABLE.parse_portable_payload(html)["blob"], data)
         with self.assertRaises(RuntimeError):
             payload.add("blob", b"again", gzipped=False)
+
+    def test_payload_part_chars_comes_from_the_build_environment(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(PORTABLE.PART_CHARS_ENV, None)
+            self.assertEqual(PORTABLE.payload_part_chars(), PORTABLE.B64_PART_CHARS)
+        # WI-9 default: 64 Ki-char parts; the pre-WI-9 4 Mi layout stays selectable explicitly.
+        self.assertEqual(PORTABLE.B64_PART_CHARS, 64 * 1024)
+        self.assertEqual(PORTABLE.LEGACY_B64_PART_CHARS, 4 * 1024 * 1024)
+        for raw, expected in (("65536", 65536), (" 4096 ", 4096), ("", PORTABLE.B64_PART_CHARS),
+                              (str(PORTABLE.LEGACY_B64_PART_CHARS), PORTABLE.LEGACY_B64_PART_CHARS)):
+            with mock.patch.dict(os.environ, {PORTABLE.PART_CHARS_ENV: raw}):
+                self.assertEqual(PORTABLE.payload_part_chars(), expected)
+        for raw in ("4000", "65537", "65540", "0", "-8", "64k"):
+            with mock.patch.dict(os.environ, {PORTABLE.PART_CHARS_ENV: raw}):
+                with self.assertRaises(RuntimeError):
+                    PORTABLE.payload_part_chars()
+
+    def test_payload_part_elements_are_whole_base64_quanta(self) -> None:
+        pattern = re.compile(
+            r'<script type="' + re.escape(PORTABLE.PAYLOAD_TYPE)
+            + r'" data-gaius-asset="([A-Za-z0-9_./-]+)" data-part="(\d+)">([^<]*)</script>')
+        part = 4096
+        per_part = part // 4 * 3
+        samples = [b"", b"\x00", bytes(range(256)) * 50, b"<\r\n\x00</script><!--" * 999, os.urandom(70_001)]
+        samples += [os.urandom(n) for n in (per_part - 1, per_part, per_part + 1, 2 * per_part + 2)]
+        for data in samples:
+            text = PORTABLE.encode_payload(data)
+            elements = PORTABLE.payload_part_elements("kernels/a.wasm", text, part)
+            matches = [pattern.fullmatch(element) for element in elements]
+            self.assertTrue(all(matches))
+            self.assertEqual([int(m.group(2)) for m in matches], list(range(len(elements))))
+            self.assertEqual({m.group(1) for m in matches} or {"kernels/a.wasm"}, {"kernels/a.wasm"})
+            bodies = [m.group(3) for m in matches]
+            self.assertEqual("".join(bodies), text)
+            self.assertEqual(len(bodies), -(-len(text) // part))
+            # Every part but the last is whole quanta, so part-by-part decoding equals the whole.
+            self.assertTrue(all(len(body) == part for body in bodies[:-1]))
+            self.assertEqual(b"".join(base64.b64decode(body, validate=True) for body in bodies), data)
+            self.assertEqual(PORTABLE.decode_payload("".join(bodies), len(data)), data)
+
+    def test_dual_payload_parts_follow_the_configured_part_size(self) -> None:
+        data = os.urandom(300_000)
+        for raw, part in (("", PORTABLE.B64_PART_CHARS), ("4096", 4096),
+                          (str(PORTABLE.LEGACY_B64_PART_CHARS), PORTABLE.LEGACY_B64_PART_CHARS)):
+            payload = PORTABLE.PortablePayload()
+            with mock.patch.dict(os.environ, {PORTABLE.PART_CHARS_ENV: raw}):
+                payload.add("blob", data, gzipped=False)
+            text = PORTABLE.encode_payload(data)
+            self.assertEqual(payload.assets["blob"]["parts"], -(-len(text) // part))
+            html = payload.html() + "const portablePayload = " + json.dumps(payload.index()) + ";\n"
+            self.assertEqual(PORTABLE.parse_portable_payload(html)["blob"], data)
+        # The dual page's decoder yields by characters, so smaller parts do not add yields.
+        self.assertIn("sinceYield >= 16 * 1024 * 1024", PORTABLE.PORTABLE_BOOTSTRAP)
+        self.assertNotIn("(index & 3) === 3", PORTABLE.PORTABLE_BOOTSTRAP)
+
+    def test_wasm_only_payload_elements_use_the_configured_part_size(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        wasm_only = source[source.index("        payloads_last = os.environ.get"):]
+        self.assertIn("part_chars = payload_part_chars()", wasm_only)
+        self.assertIn("payload_elements.extend(payload_part_elements(key, encode_payload(stored), part_chars))", wasm_only)
 
     def test_base64_payload_is_ascii_and_detects_corruption(self) -> None:
         data = os.urandom(70_001)
@@ -346,8 +607,13 @@ setTimeout(() => {
             (dist / "gaius-hotpath.wasm.gz").write_bytes(sibling)
             pack = gzip.compress(b"GAIUSVP1" + os.urandom(1000), mtime=0)
             (dist / "vanilla-assets.pack.gz").write_bytes(pack)
+            table = gzip.compress(b"GAIUSUH1" + os.urandom(100), mtime=0)
+            (dist / "gaius-unihex.bin.gz").write_bytes(table)
             index = PORTABLE.write_file_payloads(dist)
-            self.assertEqual(sorted(index), ["classes.wasm", "gaius-hotpath.wasm", "vanilla-assets.pack.gz"])
+            self.assertEqual(sorted(index), ["classes.wasm", "gaius-hotpath.wasm", "gaius-unihex.bin.gz",
+                                             "vanilla-assets.pack.gz"])
+            self.assertFalse(index["gaius-unihex.bin.gz"]["gzip"], "the gzip table is carried as it is")
+            self.assertEqual(index["gaius-unihex.bin.gz"]["sha256"], hashlib.sha256(table).hexdigest())
             self.assertEqual(index["classes.wasm"]["script"], "classes.wasm.payload.js")
             self.assertTrue(index["classes.wasm"]["gzip"])
             self.assertFalse(index["vanilla-assets.pack.gz"]["gzip"], "a .gz file is carried as it is")

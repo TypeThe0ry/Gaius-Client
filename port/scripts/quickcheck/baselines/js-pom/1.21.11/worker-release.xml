@@ -424,6 +424,7 @@
               <exclude>dev/gaius/browser/BrowserProfileScreen.java</exclude>
               <exclude>dev/gaius/browser/BrowserSectionAudit.java</exclude>
               <exclude>dev/gaius/browser/BrowserRenderCollections.java</exclude>
+              <exclude>dev/gaius/browser/BrowserSectionVisibilityFastPath.java</exclude>
             </excludes>
         </configuration>
       </plugin>

@@ -158,7 +158,20 @@
         return;
       }
       const request = indexedDB.open(databaseName, schema);
+      let settled = false;
+      let abandoned = false;
+      const fail = error => {
+        if (settled) return;
+        settled = true;
+        abandoned = true;
+        reject(error);
+      };
       request.onupgradeneeded = () => {
+        if (abandoned) {
+          // A blocked request can resume after its caller has already given up.
+          try { request.transaction.abort(); } catch (_) {}
+          return;
+        }
         const database = request.result;
         if (!database.objectStoreNames.contains(STORE_NAME)) {
           database.createObjectStore(STORE_NAME, {keyPath: "path"});
@@ -166,11 +179,16 @@
       };
       request.onsuccess = () => {
         const database = request.result;
+        if (abandoned) {
+          try { database.close(); } catch (_) {}
+          return;
+        }
+        settled = true;
         database.onversionchange = () => { try { database.close(); } catch (_) {} };
         resolve(database);
       };
-      request.onerror = () => reject(request.error || new Error("IndexedDB open failed"));
-      request.onblocked = () => reject(new Error("IndexedDB is blocked by another Gaius tab"));
+      request.onerror = () => fail(request.error || new Error("IndexedDB open failed"));
+      request.onblocked = () => fail(new Error("IndexedDB is blocked by another Gaius tab"));
     });
   }
 

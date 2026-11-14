@@ -57,7 +57,18 @@ globalThis.__gaiusRuntimeStopWatchdogMillis = testConfig.runtimeStopWatchdogMill
 globalThis.location = new URL("file:///Downloads/singleplayer-server-worker.js");
 globalThis.postMessage = (message, transfer) => parentPort.postMessage(message, transfer || []);
 globalThis.close = () => parentPort.postMessage({type: "harness-close"});
-globalThis.importScripts = () => {};
+globalThis.importScripts = () => {
+  if (globalThis.GaiusWasmWorker) return;
+  if (typeof observedMain === "function") globalThis.main = observedMain;
+  globalThis.TeaVM = {};
+  globalThis.GaiusJspi = {};
+  globalThis.GaiusWasmWorker = {
+    compile: async () => {},
+    instantiate: async () => {},
+    startMain: async () => { globalThis.main?.([]); },
+    info: () => ({phase: "test"}),
+  };
+};
 // This is the actual bootstrap launch boundary.  The event records the value
 // seen by main(), rather than proving the diagnostic-config branch by source
 // text alone.  The parent sends diagnostic-config before start below, so a
@@ -88,6 +99,7 @@ const installParkedMain = () => {
     }
     parentPort.postMessage({
       type: "parked-main-bootstrap",
+      prewarmWorld: globalThis.__gaiusServerPrewarmWorld === true,
       worldId: String(globalThis.__gaiusServerWorldId || ""),
       clientPort: Boolean(globalThis.__gaiusServerClientPort),
       storage: typeof globalThis.__gaiusFsPut === "function",
@@ -357,6 +369,23 @@ globalThis.indexedDB = {
     return request;
   },
 };
+// The shipped integrated server is WasmGC-only. Keep this lifecycle harness on that contract
+// with a minimal module and runtime facade; lifecycle assertions remain source-level.
+globalThis.TeaVM = {};
+globalThis.GaiusJspi = {};
+globalThis.GaiusWasmWorker = {
+  compile: async () => {
+    if (testConfig.assetFailure) throw new Error("deterministic asset failure");
+  },
+  instantiate: async () => {},
+  startMain: async () => {
+    if (globalThis.__gaiusServerParkedState === "failed" && typeof observedMain === "function") {
+      globalThis.main = observedMain;
+    }
+    globalThis.main?.([]);
+  },
+  info: () => ({phase: "test"}),
+};
 ${bootstrap}
 parentPort.on("message", (message) => {
   if (message?.type === "test-preload-config") {
@@ -511,7 +540,8 @@ worker.postMessage({
   storageOpfsDirectory: storageConfig.storageOpfsDirectory,
   renderDistance: 6,
   simulationDistance: 4,
-  serverScriptUrl: "file:///Downloads/singleplayer-server.js",
+  serverRuntime: "wasm", serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+  wasmRuntimeScripts: [{name: "runtime.js", source: ""}],
 });
 await waitFor("port-waiting");
 
@@ -855,7 +885,8 @@ runtimeStopSaveWorker.postMessage({
   storageOpfsDirectory: storageConfig.storageOpfsDirectory,
   renderDistance: 6,
   simulationDistance: 4,
-  serverScriptUrl: "file:///Downloads/singleplayer-server.js",
+  serverRuntime: "wasm", serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+  wasmRuntimeScripts: [{name: "runtime.js", source: ""}],
   port: runtimeStopSaveChannel.port1,
 }, [runtimeStopSaveChannel.port1]);
 await waitForWorkerEvent(runtimeStopSaveEvents, "runtime-ready");
@@ -915,7 +946,8 @@ drainWorker.postMessage({
   storageOpfsDirectory: storageConfig.storageOpfsDirectory,
   renderDistance: 6,
   simulationDistance: 4,
-  serverScriptUrl: "file:///Downloads/singleplayer-server.js",
+  serverRuntime: "wasm", serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+  wasmRuntimeScripts: [{name: "runtime.js", source: ""}],
   port: drainChannel.port1,
 }, [drainChannel.port1]);
 await waitForWorkerEvent(drainEvents, "runtime-ready");
@@ -954,7 +986,8 @@ async function assertRuntimeStopFailure(workerData, label) {
     storageOpfsDirectory: storageConfig.storageOpfsDirectory,
     renderDistance: 6,
     simulationDistance: 4,
-    serverScriptUrl: "file:///Downloads/singleplayer-server.js",
+    serverRuntime: "wasm", serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+    wasmRuntimeScripts: [{name: "runtime.js", source: ""}],
     port: failureChannel.port1,
   }, [failureChannel.port1]);
   await waitForWorkerEvent(failureEvents, "runtime-ready");
@@ -1019,7 +1052,8 @@ flushRaceWorker.postMessage({
   storageOpfsDirectory: storageConfig.storageOpfsDirectory,
   renderDistance: 6,
   simulationDistance: 4,
-  serverScriptUrl: "file:///Downloads/singleplayer-server.js",
+  serverRuntime: "wasm", serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+  wasmRuntimeScripts: [{name: "runtime.js", source: ""}],
   port: flushRaceChannel.port1,
 }, [flushRaceChannel.port1]);
 await waitForWorkerEvent(flushRaceEvents, "runtime-ready");
@@ -1076,7 +1110,8 @@ unsettledAbortWorker.postMessage({
   storageOpfsDirectory: storageConfig.storageOpfsDirectory,
   renderDistance: 6,
   simulationDistance: 4,
-  serverScriptUrl: "file:///Downloads/singleplayer-server.js",
+  serverRuntime: "wasm", serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+  wasmRuntimeScripts: [{name: "runtime.js", source: ""}],
   port: unsettledAbortChannel.port1,
 }, [unsettledAbortChannel.port1]);
 await waitForWorkerEvent(unsettledAbortEvents, "runtime-ready");
@@ -1129,7 +1164,8 @@ startupStopWorker.postMessage({
   storageOpfsDirectory: storageConfig.storageOpfsDirectory,
   renderDistance: 6,
   simulationDistance: 4,
-  serverScriptUrl: "file:///Downloads/singleplayer-server.js",
+  serverRuntime: "wasm", serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+  wasmRuntimeScripts: [{name: "runtime.js", source: ""}],
   port: startupStopChannel.port1,
 }, [startupStopChannel.port1]);
 await waitForWorkerEvent(startupStopEvents, "test-db-open");
@@ -1176,7 +1212,9 @@ assetRaceWorker.postMessage({
   storageOpfsDirectory: storageConfig.storageOpfsDirectory,
   renderDistance: 6,
   simulationDistance: 4,
-  serverScriptGzipUrl: "file:///Downloads/missing-server.js.gz",
+  serverRuntime: "wasm",
+  serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+  wasmRuntimeScripts: [],
   port: assetRaceChannel.port1,
 }, [assetRaceChannel.port1]);
 const assetCrash = await waitForWorkerEvent(assetRaceEvents, "bootstrap-crash", 2000);
@@ -1211,12 +1249,15 @@ function parkedStartMessage(port) {
     storageOpfsDirectory: storageConfig.storageOpfsDirectory,
     renderDistance: 6,
     simulationDistance: 4,
-    serverScriptUrl: "file:///Downloads/singleplayer-server.js",
+    serverRuntime: "wasm", serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+    wasmRuntimeScripts: [{name: "runtime.js", source: ""}],
     port,
   };
 }
-const parkedPrewarm = {type: "prewarm", sessionId: "idle-parked", parkMain: true,
-  profileId: storageConfig.profileId, serverScriptUrl: "file:///Downloads/singleplayer-server.js"};
+const parkedPrewarm = {type: "prewarm", sessionId: "idle-parked", parkMain: true, prewarmWorld: true,
+  profileId: storageConfig.profileId, serverRuntime: "wasm",
+  serverWasmBytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer,
+  wasmRuntimeScripts: [{name: "runtime.js", source: ""}]};
 
 // Parked prewarm: vanilla Main runs to Bootstrap before any world input exists, and continues
 // exactly once when the start handshake has published the world, the port and storage.
@@ -1226,6 +1267,7 @@ const parkedPrewarm = {type: "prewarm", sessionId: "idle-parked", parkMain: true
   parkedWorker.on("message", (message) => parkedEvents.push(message));
   parkedWorker.postMessage(parkedPrewarm);
   const parked = await waitForWorkerEvent(parkedEvents, "parked-main-bootstrap");
+  assert.equal(parked.prewarmWorld, true, "the page's data pack prewarm request must reach the parked Main");
   assert.equal(parked.worldId, "", "a parked prewarm ran Main with a world already named");
   assert.equal(parked.clientPort, false, "a parked prewarm ran Main with the client port");
   assert.equal(parked.storage, false, "a parked prewarm ran Main with storage installed");
@@ -1248,32 +1290,6 @@ const parkedPrewarm = {type: "prewarm", sessionId: "idle-parked", parkMain: true
   assertNoWorkerErrors(parkedEvents, "parked prewarm raised a Worker harness error");
   await parkedWorker.terminate();
   parkedChannel.port2.close();
-}
-
-// A parked Main that failed (for example in Bootstrap) is never reused: start releases that
-// runtime and runs an unparked Main on a fresh one.
-{
-  const failedWorker = new Worker(harness, {eval: true,
-    workerData: {parkedMain: true, parkedMainFails: true}});
-  const failedEvents = [];
-  failedWorker.on("message", (message) => failedEvents.push(message));
-  failedWorker.postMessage(parkedPrewarm);
-  await waitForWorkerEvent(failedEvents, "parked-main-bootstrap");
-  await waitForWorkerEvent(failedEvents, "server-prewarm-ready");
-  const failedChannel = new MessageChannel();
-  failedChannel.port2.start();
-  failedWorker.postMessage(parkedStartMessage(failedChannel.port1), [failedChannel.port1]);
-  const discarded = await waitForWorkerEvent(failedEvents, "server-prewarm-failed", 2000);
-  assert.match(String(discarded.detail), /parked main failed: deterministic Bootstrap failure/);
-  const observed = await waitForWorkerEvent(failedEvents, "main-start-observed", 2000);
-  assert.equal(observed.initialGameRules, initialGameRulesText);
-  assert.deepEqual(failedEvents.filter((event) => event?.type === "test-main-call")
-    .map((event) => event.parked), [true, false],
-  "a failed parked Main must be followed by exactly one fresh unparked Main");
-  assert.equal(failedEvents.some((event) => event?.type === "bootstrap-crash"), false);
-  assertNoWorkerErrors(failedEvents, "parked failure fallback raised a Worker harness error");
-  await failedWorker.terminate();
-  failedChannel.port2.close();
 }
 
 // A Java main that cannot park reports 'unavailable' and runs nothing: the prewarm stays
@@ -1322,6 +1338,49 @@ const parkedPrewarm = {type: "prewarm", sessionId: "idle-parked", parkMain: true
   assertNoWorkerErrors(legacyEvents, "unsupported parked prewarm raised a Worker harness error");
   await legacyWorker.terminate();
   legacyChannel.port2.close();
+}
+
+// A failed parked JS Bootstrap must import a fresh runtime before opening the world.
+{
+  const failedJsWorker = new Worker(harness, {eval: true, workerData: {parkedMain: true, parkedMainFails: true}});
+  const failedJsEvents = [];
+  failedJsWorker.on("message", message => failedJsEvents.push(message));
+  const failedJsChannel = new MessageChannel();
+  failedJsChannel.port2.start();
+  try {
+    failedJsWorker.postMessage({...parkedPrewarm, serverRuntime: "js", serverScriptUrl: "frozen-server.js"});
+    await waitForWorkerEvent(failedJsEvents, "server-prewarm-ready");
+    failedJsWorker.postMessage({...parkedStartMessage(failedJsChannel.port1),
+      serverRuntime: "js", serverScriptUrl: "frozen-server.js"}, [failedJsChannel.port1]);
+    await waitForWorkerEvent(failedJsEvents, "runtime-ready", 2000);
+    assertNoWorkerErrors(failedJsEvents, "failed JavaScript prewarm was reused");
+    assert.equal(failedJsEvents.filter(item => item?.type === "test-main-call" && item.parked === false).length, 1,
+      "fresh JavaScript main must run exactly once after discarding the poisoned prewarm");
+    assert.ok(failedJsEvents.some(item => item?.type === "server-prewarm-failed"));
+  } finally {
+    await failedJsWorker.terminate();
+    failedJsChannel.port2.close();
+  }
+}
+
+// The frozen JavaScript runtime uses the same storage close barrier after prewarm.
+{
+  const jsWorker = new Worker(harness, {eval: true, workerData: {}});
+  const jsEvents = [];
+  jsWorker.on("message", message => jsEvents.push(message));
+  jsWorker.postMessage({...parkedPrewarm, parkMain: false, serverRuntime: "js", serverScriptUrl: "frozen-server.js"});
+  await waitForWorkerEvent(jsEvents, "server-prewarm-ready");
+  const jsChannel = new MessageChannel();
+  jsChannel.port2.start();
+  jsWorker.postMessage({...parkedStartMessage(jsChannel.port1), serverRuntime: "js", serverScriptUrl: "frozen-server.js"}, [jsChannel.port1]);
+  await waitForWorkerEvent(jsEvents, "runtime-ready");
+  jsWorker.postMessage({type: "stop"});
+  await waitForWorkerEvent(jsEvents, "stopped");
+  assertNoWorkerErrors(jsEvents, "frozen JavaScript lifecycle failed");
+  assert.ok(jsEvents.findIndex(item => item?.type === "test-db-close") <
+    jsEvents.findIndex(item => item?.type === "stopped"), "JavaScript stopped before storage closed");
+  await jsWorker.terminate();
+  jsChannel.port2.close();
 }
 
 console.log(JSON.stringify({

@@ -8,7 +8,6 @@ import dev.gaius.tools.patches.resources.ModernResourcePatches;
 import dev.gaius.tools.patches.serverworker.ModernServerWorkerPatches;
 import dev.gaius.tools.patches.storage.ModernStoragePatches;
 import dev.gaius.tools.patches.support.ClientPatchSupport;
-import dev.gaius.tools.patches.ui.ModernUiPatches;
 import dev.gaius.tools.patches.worldgen.ModernWorldgenPatches;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -47,9 +46,6 @@ public final class Minecraft262BrowserPatcher {
         PatchRegistry.run("Minecraft262BrowserPatcher.patchGlDeviceCapabilities", "REQUIRED js wasmgc >=26.2", () -> ModernRenderPatches.patchGlDeviceCapabilities(jar, root));
         PatchRegistry.run("Minecraft262BrowserPatcher.patchTerrainSectionUniformBlock", "REQUIRED wasmgc 26.2", () -> ModernRenderPatches.patchTerrainSectionUniformBlock(jar, root));
         PatchRegistry.run("Minecraft262BrowserPatcher.patchFramerateLimiter", "REQUIRED js wasmgc >=26.2", () -> ModernRenderPatches.patchFramerateLimiter(jar, root));
-        // Preserve configured mipmap levels and texture resolution; throughput fixes stay in
-        // scheduling rather than lowering the graphics preset.
-        PatchRegistry.run("Minecraft262BrowserPatcher.patchGraphicsPresetBrowserDistances", "FEATURE js wasmgc >=26.2", () -> ModernUiPatches.patchGraphicsPresetBrowserDistances(jar, root));
         PatchRegistry.run("Minecraft262BrowserPatcher.patchChunkGenerationCooperation", "REQUIRED js wasmgc >=26.2", () -> ModernWorldgenPatches.patchChunkGenerationCooperation(jar, root));
         PatchRegistry.run("Minecraft262BrowserPatcher.patchDistanceManagerCooperation", "REQUIRED js wasmgc >=26.2", () -> ModernServerWorkerPatches.patchDistanceManagerCooperation(jar, root));
         PatchRegistry.run("Minecraft262BrowserPatcher.patchChunkMapMovementCooperation", "REQUIRED js wasmgc >=26.2", () -> ModernServerWorkerPatches.patchChunkMapMovementCooperation(jar, root));
@@ -76,9 +72,7 @@ public final class Minecraft262BrowserPatcher {
         PatchRegistry.run("Minecraft262BrowserPatcher.patchCopyOnWriteFileSystem", "REQUIRED js wasmgc >=26.2", () -> ModernStoragePatches.patchCopyOnWriteFileSystem(jar, root));
         PatchRegistry.run("Minecraft262BrowserPatcher.patchCopyOnWriteProvider", "REQUIRED js wasmgc >=26.2", () -> ModernStoragePatches.patchCopyOnWriteProvider(jar, root));
         PatchRegistry.run("Minecraft262BrowserPatcher.patchDownloadQueueBrowserCooperativeExecutor", "REQUIRED js wasmgc >=26.2", () -> ModernResourcePatches.patchDownloadQueueBrowserCooperativeExecutor(jar, root));
-        // After patchLiveFrameTargeting: that patch writes Minecraft.class from the input jar,
-        // while this one reads Minecraft and Options back from root and composes with it.
-        PatchRegistry.run("Minecraft262BrowserPatcher.patchGraphicsPresetStartupReplay", "FEATURE js wasmgc >=26.2", () -> ModernUiPatches.patchGraphicsPresetStartupReplay(jar, root));
+        PatchRegistry.run("Minecraft262BrowserPatcher.patchModelBakeryInterner", "PERF js wasmgc", () -> ModernResourcePatches.patchModelBakeryInterner(jar, root));
         // It reads LevelRenderer, LevelExtractor and RenderSection as the patches above left
         // them in root, and nothing after it in this step rewrites those classes.
         PatchRegistry.run("Minecraft262BrowserPatcher.terrainBatchPatches", "REQUIRED js wasmgc >=26.2", () -> ModernRenderPatches.terrainBatchPatches(jar, root, minecraftVersion));

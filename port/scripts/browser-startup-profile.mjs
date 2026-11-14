@@ -11,12 +11,8 @@ import {
   clinitSuspensionCount,
   runtimeGuardFailures,
 } from "../../tools/teavm-runtime-guards.mjs";
+import {chromeLaunchArgs, resolveChromeBinary} from "./chrome-binary.mjs";
 
-const defaultChrome = process.platform === "win32"
-  ? "C:/Program Files/Google/Chrome/Application/chrome.exe"
-  : process.platform === "darwin"
-    ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    : "google-chrome";
 const targetUrl = process.argv[2] || "http://127.0.0.1:8781/dist/?targetFps=120";
 const nativePath = (value) => {
   if (!value) return value;
@@ -33,7 +29,8 @@ const defaultOutputRoot = nativePath(process.env.GAIUS_BUILD_ROOT) ||
   (process.env.GAIUS_VERSION_PROFILE_PATH ? `port/target/${profileId}` : "port/target");
 const outputPrefix = resolve(nativePath(process.argv[3] || `${defaultOutputRoot}/client-startup-current`));
 const timeoutMillis = Math.max(30_000, Number(process.env.GAIUS_PROFILE_TIMEOUT_MS || "180000"));
-const chromeBinary = nativePath(process.env.GAIUS_CHROME_BIN) || defaultChrome;
+const chromeBinary = resolveChromeBinary({overrides: [nativePath(process.env.GAIUS_CHROME_BIN)]});
+const linuxChromeArgs = chromeLaunchArgs();
 const playerName = process.env.GAIUS_PROFILE_PLAYER || "GaiusProfile";
 const cpuProfiling = process.env.GAIUS_CPU_PROFILE !== "false";
 
@@ -189,7 +186,7 @@ async function waitFor(session, expression, timeout, label) {
 const profileDirectory = await mkdtemp(`${tmpdir()}/gaius-startup-profile-`);
 const debuggingPort = await freePort();
 const chromeOutput = [];
-const chrome = spawn(chromeBinary, [
+const chrome = spawn(chromeBinary, [...linuxChromeArgs,
   "--headless=new",
   `--remote-debugging-port=${debuggingPort}`,
   "--remote-allow-origins=*",

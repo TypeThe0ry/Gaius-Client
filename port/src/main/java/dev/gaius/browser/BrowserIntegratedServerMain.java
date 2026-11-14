@@ -10,7 +10,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.LinkedHashSet;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 import joptsimple.OptionParser;
@@ -26,9 +28,7 @@ import net.minecraft.world.flag.FeatureFlagSet;
 import net.minecraft.world.level.gamerules.GameRules;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.phys.Vec3;
 import org.teavm.classlib.java.lang.TModernRuntimeSupport;
 import org.teavm.jso.JSBody;
 import org.teavm.jso.JSExport;
@@ -71,29 +71,19 @@ public final class BrowserIntegratedServerMain {
     private static int networkInputDeferredRetriesRemaining;
     /** Set when a queued input task is observed during the outer packet pump. */
     private static boolean networkInputReschedulePending;
-    /** Last section tracked for the integrated player; movement packets within one section do not
-     * change the ChunkMap view and must not synchronously enumerate the whole entity map. */
-    private static ServerPlayer lastTrackedPlayer;
-    private static int lastTrackedSectionX = Integer.MIN_VALUE;
-    private static int lastTrackedSectionZ = Integer.MIN_VALUE;
-    private static long lastTrackedAtNanos;
-    private static ServerChunkCache pendingTrackedChunkCache;
-    private static ServerPlayer pendingTrackedPlayer;
-    private static int pendingTrackedSectionX = Integer.MIN_VALUE;
-    private static int pendingTrackedSectionZ = Integer.MIN_VALUE;
+    /** Latest tracking request per player, drained once per tick and cleared on server exit. */
+    private static final Set<ServerPlayer> pendingTrackedPlayers = new LinkedHashSet<>();
     /**
      * ChunkMap.move() is a resumable TeaVM continuation.  While it is suspended at a
      * cooperative pulse, a browser network callback can deliver another movement packet.
      * Never enter a second move invocation on top of that continuation: the vanilla
      * PlayerChunkSender/pending-set state is not re-entrant.  New movement only updates the
-     * pending center and is flushed by the next integrated-server tick after the active move
+     * pending request and is flushed by the next integrated-server tick after the active move
      * has returned.
      */
     private static boolean trackingMoveInFlight;
     private static long trackingMoveSequence;
     private static long trackingMoveInFlightSequence;
-    private static int trackingMoveInFlightSectionX = Integer.MIN_VALUE;
-    private static int trackingMoveInFlightSectionZ = Integer.MIN_VALUE;
     private static boolean storageFlushRequested;
     private static boolean storageFlushTimeoutReported;
     private static boolean indexedDbFallbackHydrationPending;
@@ -226,19 +216,9 @@ public final class BrowserIntegratedServerMain {
         networkInputFollowupsRemaining = 0;
         networkInputDeferredRetriesRemaining = 0;
         networkInputReschedulePending = false;
-        lastTrackedPlayer = null;
-        lastTrackedSectionX = Integer.MIN_VALUE;
-        lastTrackedSectionZ = Integer.MIN_VALUE;
-        lastTrackedAtNanos = 0L;
-        pendingTrackedChunkCache = null;
-        pendingTrackedPlayer = null;
-        pendingTrackedSectionX = Integer.MIN_VALUE;
-        pendingTrackedSectionZ = Integer.MIN_VALUE;
+        pendingTrackedPlayers.clear();
         trackingMoveInFlight = false;
-        trackingMoveSequence = 0L;
         trackingMoveInFlightSequence = 0L;
-        trackingMoveInFlightSectionX = Integer.MIN_VALUE;
-        trackingMoveInFlightSectionZ = Integer.MIN_VALUE;
         recordNetworkPumpState(-1, false);
         recordNetworkInputPending(false);
         storageFlushRequested = false;
@@ -263,10 +243,12 @@ public final class BrowserIntegratedServerMain {
         }
         // The Worker uses the dedicated-server implementation, so vanilla cannot
         // recognize the browser player as its integrated-server owner. This
-        // isolated server accepts one local player only.
-        BrowserPlayerListCompat.allowCommandsForAllPlayers(playerList);
+        // isolated server accepts one local player only. Its permissions still
+        // follow the world's saved command setting, including when a Worker is reused.
+        boolean allowCommands = playerList.getServer().getWorldData().isAllowCommands();
+        BrowserPlayerListCompat.setAllowCommandsForAllPlayers(playerList, allowCommands);
         applyActiveDistances();
-        report("local-player-list-ready", "commands=true");
+        report("local-player-list-ready", "commands=" + allowCommands);
     }
 
     @JSExport
@@ -336,6 +318,11 @@ public final class BrowserIntegratedServerMain {
             sentChunkBatches.addLast(batchSize);
             recordDistanceRampTelemetry("sent");
         }
+    }
+
+    /** Keeps vanilla's four-batch ACK window until ordered transport evidence permits a change. */
+    public static int browserChunkBatchLimit() {
+        return 4;
     }
 
     /** Applies the configured distances after the first matching batch ACK. */
@@ -523,82 +510,67 @@ public final class BrowserIntegratedServerMain {
         }
     }
 
-    /**
-     * Updates server-side chunk tracking only when the player enters a new section. The vanilla
-     * movement listener invokes {@code ServerChunkCache.move} for every position packet; in the
-     * browser Worker that call walks the complete tracking view synchronously and can hold one
-     * packet handler for seconds while worldgen is active. Physics and position validation remain
-     * in the listener; this wrapper only removes redundant same-section view walks.
-     */
+    /** Coalesces tracking requests at the tick boundary; vanilla owns the processed view. */
     public static void moveServerPlayerChunkTracking(
             ServerChunkCache chunkCache, ServerPlayer player) {
         if (chunkCache == null || player == null) {
             return;
         }
-        int sectionX = floorSectionCoordinate(player.getX());
-        int sectionZ = floorSectionCoordinate(player.getZ());
-        if (lastTrackedPlayer == player
-                && lastTrackedSectionX == sectionX
-                && lastTrackedSectionZ == sectionZ) {
+        if (!isWorkerRuntime()) {
+            chunkCache.move(player);
             return;
         }
-        long nowNanos = System.nanoTime();
-        if (lastTrackedPlayer == player
-                && lastTrackedAtNanos != 0L
-                && nowNanos - lastTrackedAtNanos < 100_000_000L) {
-            return;
+        MinecraftServer current = server;
+        if (current != null && !serverThreadExited
+                && current.getPlayerList().getPlayers().contains(player)) {
+            pendingTrackedPlayers.removeIf(
+                    pending -> !current.getPlayerList().getPlayers().contains(pending));
+            BrowserChunkTaskPriority.recordPlayerView(player.getX(), player.getZ(), player.getYRot());
+            // Never suppress a request using a captured section or elapsed time: a yielded
+            // vanilla walk can process a different position from the one seen by this caller.
+            pendingTrackedPlayers.add(player);
         }
-        pendingTrackedChunkCache = chunkCache;
-        pendingTrackedPlayer = player;
-        pendingTrackedSectionX = sectionX;
-        pendingTrackedSectionZ = sectionZ;
     }
 
     private static void flushPendingPlayerChunkTracking() {
-        // ChunkMap.move can be suspended by BrowserWorldgenScheduler.pulse().  A resumed
-        // continuation owns the live tracking view until its call returns; starting another
-        // invocation here would let two difference walks mutate PlayerChunkSender in parallel.
+        MinecraftServer current = server;
+        if (current == null || serverThreadExited) {
+            pendingTrackedPlayers.clear();
+            return;
+        }
+        pendingTrackedPlayers.removeIf(
+                player -> !current.getPlayerList().getPlayers().contains(player));
+        // Prune departed players even while a suspended continuation owns the live view.
         if (trackingMoveInFlight) {
-            recordTrackingMoveTelemetry(1, pendingTrackedPlayer != null);
+            recordTrackingMoveTelemetry(1, !pendingTrackedPlayers.isEmpty());
             return;
         }
-        ServerChunkCache chunkCache = pendingTrackedChunkCache;
-        ServerPlayer player = pendingTrackedPlayer;
-        // This runs only at the integrated-server tick boundary.  The packet handler has
-        // already been kept off the synchronous ChunkMap walk; delaying the pending view update
-        // here when the worldgen queue is busy leaves the client stranded over unloaded terrain.
-        // ChunkMap.move itself is instrumented with cooperative pulses, so let the tick-boundary
-        // operation make progress rather than dropping the latest tracking center indefinitely.
-        if (chunkCache == null || player == null) {
-            return;
-        }
-        int sectionX = pendingTrackedSectionX;
-        int sectionZ = pendingTrackedSectionZ;
-        pendingTrackedChunkCache = null;
-        pendingTrackedPlayer = null;
-        long invocation = ++trackingMoveSequence;
-        trackingMoveInFlight = true;
-        trackingMoveInFlightSequence = invocation;
-        trackingMoveInFlightSectionX = sectionX;
-        trackingMoveInFlightSectionZ = sectionZ;
-        recordTrackingMoveTelemetry(0, true);
-        try {
-            // This call may suspend and resume at any of the cooperative ChunkMap pulses.  Do
-            // not move the completion bookkeeping above the call: lastTracked* must describe
-            // only a fully returned vanilla walk, never a partially enumerated view.
-            chunkCache.move(player);
-            if (trackingMoveInFlightSequence == invocation) {
-                lastTrackedPlayer = player;
-                lastTrackedSectionX = sectionX;
-                lastTrackedSectionZ = sectionZ;
-                lastTrackedAtNanos = System.nanoTime();
+        // Bound this tick's work to its initial players. Requests received during a walk
+        // remain queued, including requests for the player whose walk is currently suspended.
+        ServerPlayer[] players = pendingTrackedPlayers.toArray(new ServerPlayer[0]);
+        for (ServerPlayer player : players) {
+            pendingTrackedPlayers.remove(player);
+            if (!current.getPlayerList().getPlayers().contains(player)) {
+                continue;
             }
-        } finally {
-            if (trackingMoveInFlightSequence == invocation) {
-                trackingMoveInFlight = false;
-                trackingMoveInFlightSectionX = Integer.MIN_VALUE;
-                trackingMoveInFlightSectionZ = Integer.MIN_VALUE;
-                recordTrackingMoveTelemetry(2, pendingTrackedPlayer != null);
+            ServerChunkCache chunkCache = player.level().getChunkSource();
+            long invocation = ++trackingMoveSequence;
+            trackingMoveInFlight = true;
+            trackingMoveInFlightSequence = invocation;
+            recordTrackingMoveTelemetry(0, true);
+            try {
+                // Use the live player in the vanilla call. ChunkMap owns lastSectionPos and
+                // chunkTrackingView; neither a queued nor a captured section is a safe cache.
+                chunkCache.move(player);
+            } finally {
+                if (trackingMoveInFlightSequence == invocation) {
+                    trackingMoveInFlight = false;
+                    recordTrackingMoveTelemetry(2, !pendingTrackedPlayers.isEmpty());
+                }
+            }
+            if (server != current || serverThreadExited
+                    || trackingMoveInFlightSequence != invocation) {
+                return;
             }
         }
     }
@@ -668,83 +640,6 @@ public final class BrowserIntegratedServerMain {
             int playerChunkX, int playerChunkZ);
 
     /**
-     * Applies the local browser player's absolute movement without entering vanilla collision
-     * lookup.  The browser integrated player is a creative owner; the normal movement packet
-     * path performs a synchronous ServerLevel collision scan and can pull the cooperative Worker
-     * into a multi-second chunk wait.  Chunk priority still receives the exact position, while
-     * chunk-view maintenance remains outside the packet handler.
-     */
-    public static void applyWorkerMovement(
-            ServerPlayer player, ServerboundMovePlayerPacket packet) {
-        if (player == null || packet == null) {
-            return;
-        }
-        double x = packet.getX(player.getX());
-        double y = packet.getY(player.getY());
-        double z = packet.getZ(player.getZ());
-        float yaw = packet.getYRot(player.getYRot());
-        float pitch = packet.getXRot(player.getXRot());
-        if (Double.isNaN(x) || Double.isInfinite(x)
-                || Double.isNaN(y) || Double.isInfinite(y)
-                || Double.isNaN(z) || Double.isInfinite(z)
-                || Float.isNaN(yaw) || Float.isInfinite(yaw)
-                || Float.isNaN(pitch) || Float.isInfinite(pitch)) {
-            return;
-        }
-        double previousX = player.getX();
-        double previousY = player.getY();
-        double previousZ = player.getZ();
-        player.absSnapTo(x, y, z, yaw, pitch);
-        applyWorkerMovementBookkeeping(player, packet, previousX, previousY, previousZ);
-        BrowserChunkTaskPriority.recordPlayerPosition(x, z);
-        moveServerPlayerChunkTracking(player.level().getChunkSource(), player);
-    }
-
-    /**
-     * The movement bookkeeping vanilla's handlePlayerPositionChange does after moving the player:
-     * ground state, fall distance and fall damage (doCheckFallDamage), the known movement that
-     * spear and mace attacks read, and the fall-distance reset when moving up. Without it the
-     * Worker player never took fall damage, the mace smash never triggered and spear jabs did
-     * nothing. Fall and ground checks read blocks under the player, so they only run when that
-     * chunk is already loaded: hasChunkAt never loads or generates a chunk, which keeps the
-     * reason for this fast path (no synchronous chunk wait in the packet handler).
-     */
-    private static void applyWorkerMovementBookkeeping(ServerPlayer player,
-            ServerboundMovePlayerPacket packet, double previousX, double previousY, double previousZ) {
-        boolean onGround = packet.isOnGround();
-        if (!packet.hasPosition()) {
-            player.setOnGround(onGround);
-            return;
-        }
-        Vec3 movement = new Vec3(player.getX() - previousX, player.getY() - previousY,
-                player.getZ() - previousZ);
-        if (player.level().hasChunkAt(player.blockPosition())) {
-            player.setOnGroundWithMovement(onGround, packet.horizontalCollision(), movement);
-            player.doCheckFallDamage(movement.x, movement.y, movement.z, onGround);
-        } else {
-            player.setOnGround(onGround);
-        }
-        if (movement.lengthSqr() > 1.0E-5D) {
-            player.resetLastActionTime();
-        }
-        player.setKnownMovement(movement);
-        if (movement.y > 0.0D) {
-            player.resetFallDistance();
-        }
-    }
-
-    private static int floorSectionCoordinate(double coordinate) {
-        double section = Math.floor(coordinate / 16.0D);
-        if (section <= Integer.MIN_VALUE) {
-            return Integer.MIN_VALUE;
-        }
-        if (section >= Integer.MAX_VALUE) {
-            return Integer.MAX_VALUE;
-        }
-        return (int) section;
-    }
-
-    /**
      * {@code MinecraftServer.pollTask} is a patched server-loop boundary. TeaVM can resume the
      * helper coroutine with a Java {@link Thread} object that is not the one which actually runs
      * that boundary, so the constructor-provided thread is not a reliable execution identity.
@@ -767,6 +662,67 @@ public final class BrowserIntegratedServerMain {
         }
         return true;
     }
+
+    /** 0: the page switch is not read yet, 1: server wake on, 2: off. */
+    private static int serverWakeMode;
+    private static int serverWakeCalls;
+    private static int serverWakeUnparks;
+
+    /**
+     * The server thread parks in {@code MinecraftServer.waitForTasks} until its next tick when its
+     * queue is empty, and only a main-thread task unparks it earlier. Work that another thread
+     * queues for the server thread's {@code pollTask} (the light engine update, which only
+     * {@code ServerChunkCache$MainThreadExecutor.pollTask} schedules, ticket updates, pending
+     * generation tasks) therefore waits for the tick, once per dependent wave of the chunk
+     * pipeline; vanilla's many worker threads keep waking it, the one cooperative Worker does not.
+     * This wakes the thread when such work is queued (the worldgen dispatcher went idle, a light
+     * task was queued: {@code ThreadedLevelLightEngine}'s queue lambda, patched by
+     * {@code LightKernelPatches.patchServerWake}) so that it polls now instead of at the tick.
+     * It changes only when {@code pollTask} runs, which vanilla leaves to arbitrary thread timing
+     * anyway, never what it does; the tick code, its schedule and every game rule are untouched.
+     * Only with the page switch {@code ?gaiusServerWake=1}; otherwise a single field read. Nothing
+     * happens (and no permit is left) while the thread is running or already woken, so it is cheap and safe from
+     * any thread of the Worker.
+     */
+    public static void wakeServerForPoll() {
+        int mode = serverWakeMode;
+        if (mode != 1) {
+            if (mode == 2 || (mode = readServerWakeMode()) != 1) {
+                return;
+            }
+        }
+        Thread currentServerThread = serverThread;
+        if (currentServerThread == null || serverThreadExited) {
+            return;
+        }
+        int calls = ++serverWakeCalls;
+        boolean parked = HostLoop.unparkIfIdle(currentServerThread);
+        if (parked) {
+            serverWakeUnparks++;
+        }
+        if (parked || (calls & 127) == 0) {
+            publishServerWake(calls, serverWakeUnparks);
+        }
+    }
+
+    private static int readServerWakeMode() {
+        serverWakeMode = serverWakeEnabled() ? 1 : 2;
+        return serverWakeMode;
+    }
+
+    @JSBody(script = "return !!globalThis.__gaiusServerWake;")
+    private static native boolean serverWakeEnabled();
+
+    @JSBody(params = {"calls", "unparks"}, script = """
+            try {
+              const wake = globalThis.__gaiusServerWake;
+              if (wake) {
+                wake.calls = calls;
+                wake.unparks = unparks;
+              }
+            } catch (ignored) {}
+            """)
+    private static native void publishServerWake(int calls, int unparks);
 
     /** Wakes the parked server thread without executing packet handlers from JavaScript. */
     @JSExport
@@ -964,9 +920,13 @@ public final class BrowserIntegratedServerMain {
     }
 
     public static DataFixer dataFixer() {
-        return isWorkerRuntime()
-                ? BrowserLazyDataFixer.instance()
-                : net.minecraft.util.datafix.DataFixers.getDataFixer();
+        if (isWorkerRuntime()) {
+            return BrowserLazyDataFixer.instance();
+        }
+        DataFixer fixer = net.minecraft.util.datafix.DataFixers.getDataFixer();
+        // The registration schema checks wait for the real fixer (BrowserChoiceTypeChecks).
+        BrowserChoiceTypeChecks.replay();
+        return fixer;
     }
 
     /**
@@ -1278,7 +1238,9 @@ public final class BrowserIntegratedServerMain {
         if (!isWorkerRuntime() || current == null || !current.isRunning()) {
             return;
         }
-        current.execute(() -> {
+        // A JSPI export callback cannot suspend. Start a cooperative activation before entering
+        // the server executor so version-specific save paths may park while flushing chunks.
+        HostLoop.startThread(() -> current.execute(() -> {
             try {
                 current.saveAllChunks(false, true, false);
                 beginIntegratedServerStorageFlush();
@@ -1286,7 +1248,7 @@ public final class BrowserIntegratedServerMain {
             } catch (Throwable exception) {
                 report("save-all-failed", describeWithStack(exception));
             }
-        });
+        }));
     }
 
     @JSExport
@@ -1319,6 +1281,9 @@ public final class BrowserIntegratedServerMain {
     public static void markIntegratedServerStopped(MinecraftServer minecraftServer) {
         if (server == minecraftServer) {
             serverThreadExited = true;
+            pendingTrackedPlayers.clear();
+            trackingMoveInFlight = false;
+            trackingMoveInFlightSequence = 0L;
             serverThread = null;
             appliedDistancePlayerList = null;
             appliedViewDistance = Integer.MIN_VALUE;
@@ -1420,6 +1385,13 @@ public final class BrowserIntegratedServerMain {
                     "Parked integrated server Main cannot suspend after Bootstrap");
         }
         markParkedStartWaiting();
+        // The idle Worker has nothing else to do until the world is named: decode the default
+        // data pack's registries now (BrowserWorldLoadPrewarm). The release flag is only read
+        // between the Main thread's suspensions, so a click during the prewarm waits for it to
+        // end; the load that follows then finds its stages already computed.
+        if (!parkedStartReleased()) {
+            BrowserWorldLoadPrewarm.runWhileParked();
+        }
         // Nothing in either runtime wakes this thread from the start message itself, so it polls
         // the release flag; each poll suspends the main thread for PARKED_START_POLL_MILLIS.
         while (!parkedStartReleased()) {

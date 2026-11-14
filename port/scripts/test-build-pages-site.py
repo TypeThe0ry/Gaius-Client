@@ -8,6 +8,8 @@ import hashlib
 import importlib.util
 import json
 import re
+import struct
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -40,6 +42,7 @@ def fixture_pack() -> bytes:
         ("assets/minecraft/sounds/music/menu/menu1.ogg", b"music" * 100),
         ("assets/minecraft/sounds/mob/cow/say1.ogg", b"moo"),
         ("assets/minecraft/sounds.json", b"{}"),
+        ("data/minecraft/worldgen/biome/test.json", b"{\"temperature\":0.8}"),
     ]), mtime=0)
 
 
@@ -50,7 +53,8 @@ def make_dist(directory: Path) -> Path:
     for name, body in (
         ("classes.js", b"var main = 1;"), ("singleplayer-server.js", b"var main = 2;"),
         ("singleplayer-server-worker.js", b"self.onmessage = null;"), ("gaius-hotpath.wasm", b"\0asm\1\0\0\0"),
-        ("relay-nodes.json", b'{"nodes": []}'), ("gaius-shader-toolchain.js", b"// loader"),
+        ("relay-nodes.json", (SITE.ROOT / "relay-nodes.json").read_bytes()),
+        ("gaius-shader-toolchain.js", b"// loader"),
         ("relay-protocol.js", b"Object.defineProperty(globalThis, '__gaiusRelayProtocolDeclaration', {value: Object.freeze({formatVersion: 1})});\n"),
         ("gaius-shaderc.js", b"// shaderc"), ("gaius-shaderc.wasm", b"\0asm shaderc"),
         ("gaius-spvc.js", b"// spvc"), ("gaius-spvc.wasm", b"\0asm spvc"),
@@ -65,6 +69,7 @@ def make_dist(directory: Path) -> Path:
     for name in ("classes.js", "singleplayer-server.js"):
         (dist / f"{name}.gz").write_bytes(gzip.compress((dist / name).read_bytes(), mtime=0))
     (dist / "vanilla-assets.pack.gz").write_bytes(fixture_pack())
+    write_profile_sidecar(dist / "vanilla-assets.pack.gz", RENDERPEARL_ID)
     simd, baseline = b"\0asm simd", b"\0asm baseline"
     (dist / "kernels" / "mesh.simd.wasm").write_bytes(simd)
     (dist / "kernels" / "mesh.baseline.wasm").write_bytes(baseline)
@@ -85,6 +90,36 @@ def write_profile_sidecar(path: Path, profile: str) -> None:
 
 
 class BuildPagesSiteTest(unittest.TestCase):
+    def test_module_headers_bind_mime_and_encoding_to_exact_assets(self) -> None:
+        assets = {"classes.wasm": "classes.0123456789abcdef.wasm",
+                  "classes.wasm.br": "classes.wasm.0000111122223333.br",
+                  "classes.wasm.gz": "classes.wasm.abcdef0123456789.gz",
+                  "singleplayer-server.wasm.gz": "singleplayer-server.wasm.1122334455667788.gz",
+                  "gaius-shaderc.wasm.gz": "gaius-shaderc.wasm.9988776655443322.gz",
+                  "vanilla-assets.pack.gz": "vanilla-assets.pack.1234567890abcdef.gz"}
+        headers = SITE.pages_headers(assets).decode("ascii")
+        self.assertTrue(headers.startswith(SITE.PAGES_HEADERS.decode("ascii")))
+        self.assertIn("/classes.0123456789abcdef.wasm\n  Content-Type: application/wasm\n"
+                      "  Cache-Control: public, max-age=31536000, immutable\n", headers)
+        for logical in ("classes.wasm.gz", "singleplayer-server.wasm.gz"):
+            self.assertIn(f"/{assets[logical]}\n  Content-Type: application/wasm\n"
+                          "  Content-Encoding: gzip\n"
+                          "  Cache-Control: public, max-age=31536000, immutable\n", headers)
+        self.assertEqual(headers.count("Content-Encoding: gzip"), 2)
+        self.assertIn(f'/{assets["classes.wasm.br"]}\n  Content-Type: application/wasm\n'
+                      '  Content-Encoding: br\n'
+                      '  Cache-Control: public, max-age=31536000, immutable\n', headers)
+        self.assertNotIn(assets["gaius-shaderc.wasm.gz"], headers)
+        self.assertNotIn(assets["vanilla-assets.pack.gz"], headers)
+
+    def test_site_requires_the_canonical_relay_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist = make_dist(root)
+            (dist / "relay-nodes.json").unlink()
+            with self.assertRaisesRegex(RuntimeError, "no relay-nodes.json"):
+                SITE.build(dist, root / "site", None, True)
+
     def test_wasm_only_site_requires_wasm_inputs_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -92,6 +127,137 @@ class BuildPagesSiteTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "require --wasm-dist"):
                 SITE.build(dist, root / "site", None, True, no_js_fallback=True)
             self.assertFalse((root / "site").exists())
+    def test_shell_preload_matches_boot_capabilities_before_fetch(self) -> None:
+        preload = SITE.wasm_client_preload("classes.wasm.br?gaiusWasmHttp=1", True)
+        script = re.search(r"<script[^>]*>(.*?)</script>", preload, re.DOTALL).group(1)
+        check = r"""
+const vm = require("node:vm");
+const source = JSON.parse(process.argv[1]);
+const rows = [];
+for (const mode of ["supported", "no-wasm", "no-validate", "no-gc", "no-try-table", "no-suspending", "no-promising", "no-inflate", "sw-inflate", "throw-probe"]) {
+  const requests = [], probes = [];
+  const w = {validate(bytes) {
+    probes.push(Array.from(bytes));
+    if (mode === "throw-probe") throw Error("probe");
+    return !((mode === "no-gc" && probes.length === 1) || (mode === "no-try-table" && probes.length === 2));
+  }, Suspending() {}, promising() {}};
+  if (mode === "no-validate") delete w.validate;
+  if (mode === "no-suspending") delete w.Suspending;
+  if (mode === "no-promising") delete w.promising;
+  const context = {WebAssembly: mode === "no-wasm" ? undefined : w,
+    DecompressionStream: ["no-inflate", "sw-inflate"].includes(mode) ? undefined : function() {},
+    navigator: mode === "sw-inflate" ? {serviceWorker: {controller: {}}} : {},
+    location: {href: "https://fixture.invalid/client/"}, URL, Uint8Array,
+    fetch(url) {requests.push(url); return Promise.resolve(null);}};
+  context.window = context;
+  vm.runInNewContext(source, context);
+  rows.push({mode, requests, probes});
+}
+console.log(JSON.stringify(rows));
+"""
+        rows = json.loads(subprocess.check_output(["node", "-e", check, json.dumps(script)], text=True))
+        for row in rows:
+            self.assertEqual(len(row["requests"]), 1 if row["mode"] in ("supported", "sw-inflate") else 0, row)
+        boot = (SITE.WEB / "boot/gaius-boot.js").read_text()
+        for name, observed in zip(("WASM_GC_PROBE", "WASM_TRY_TABLE_PROBE"), rows[0]["probes"]):
+            expected = json.loads(re.search(r"const\s+" + name + r"\s*=\s*(\[.*?\]);", boot, re.DOTALL).group(1))
+            self.assertEqual(observed, expected)
+        # Raw/Brotli HTTP Responses need no page-side decompression capability.
+        raw_script = SITE.wasm_client_preload("classes.wasm", False)
+        self.assertNotIn("DecompressionStream", raw_script)
+
+    def test_emitted_preloader_matches_boot_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist, wasm = make_dist(root / "js"), make_dist(root / "wasm")
+            for variant, options in (("raw", {}), ("gzip", {"frozen_js": True}),
+                                     ("wasm-only", {"no_js_fallback": True})):
+                site = root / variant
+                SITE.build(dist, site, None, True, wasm, **options)
+                portable_spec = importlib.util.spec_from_file_location(
+                    "portable_preload_test", Path(__file__).with_name("build-portable-html.py"))
+                portable = importlib.util.module_from_spec(portable_spec)
+                portable_spec.loader.exec_module(portable)
+                stripped = portable.drop_site_boot_preloads((site / "index.html").read_text())
+                self.assertNotIn('data-gaius-preload="wasm"', stripped)
+                self.assertNotIn('data-gaius-preload="boot"', stripped)
+                self.assertIn('window.__gaiusSite = ', stripped)
+                subprocess.run(["node", str(Path(__file__).with_name("test-capability-preload.mjs")),
+                                str(site / "index.html"), str(site / "gaius-site.json"),
+                                str(SITE.WEB / "boot/gaius-boot.js"), variant], check=True)
+
+    def test_frozen_fallback_ships_only_matching_gzip_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist = make_dist(root / "js")
+            wasm = make_dist(root / "wasm")
+            SITE.build(dist, root / "site", None, True, wasm, frozen_js=True)
+            descriptor = json.loads((root / "site/gaius-site.json").read_text())
+            self.assertEqual(descriptor["runtimePolicy"], "auto")
+            for name in ("classes.js", "singleplayer-server.js"):
+                self.assertNotIn(name, descriptor["assets"])
+                compressed = root / "site" / descriptor["assets"][name + ".gz"]
+                self.assertEqual(gzip.decompress(compressed.read_bytes()), (dist / name).read_bytes())
+            (dist / "classes.js.gz").write_bytes(gzip.compress(b"stale-client"))
+            with self.assertRaisesRegex(RuntimeError, "gzip differs from raw"):
+                SITE.build(dist, root / "bad-site", None, True, wasm, frozen_js=True)
+
+    def test_dual_runtime_uses_the_wasm_clients_sound_pack(self) -> None:
+        for split_sounds in (False, True):
+            with self.subTest(split_sounds=split_sounds), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                dist = make_dist(root / "js")
+                wasm = make_dist(root / "wasm")
+                current_pack = gzip.compress(SITE.write_pack([
+                    ("assets/minecraft/sounds/ambient/cave/cave1.ogg", b"current-cave"),
+                    ("assets/minecraft/sounds.json", b'{"ambient.cave":{"sounds":[]}}'),
+                ]), mtime=0)
+                (wasm / "vanilla-assets.pack.gz").write_bytes(current_pack)
+                write_profile_sidecar(wasm / "vanilla-assets.pack.gz", RENDERPEARL_ID)
+                SITE.build(dist, root / "site", None, split_sounds, wasm, False, False)
+                descriptor = json.loads((root / "site/gaius-site.json").read_text())
+                assets = descriptor["assets"]
+                expected_core, expected_sounds, _ = SITE.split_vanilla_pack(current_pack)
+                self.assertEqual((root / "site" / assets["vanilla-assets.pack.gz"]).read_bytes(),
+                                 expected_core if split_sounds else current_pack)
+                if split_sounds:
+                    self.assertEqual((root / "site" / assets["vanilla-sounds.pack"]).read_bytes(),
+                                     expected_sounds)
+                self.assertIn("classes.js", assets)
+
+    def test_unihex_table_comes_from_the_wasm_pack_dist(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist = make_dist(root / "js")
+            wasm = make_dist(root / "wasm")
+            (wasm / "vanilla-assets.pack.gz").write_bytes((dist / "vanilla-assets.pack.gz").read_bytes())
+            write_profile_sidecar(wasm / "vanilla-assets.pack.gz", RENDERPEARL_ID)
+            # The JavaScript dist's copy is not the table of the published pack.
+            (dist / "gaius-unihex.bin.gz").write_bytes(gzip.compress(b"GAIUSUH1 js", mtime=0))
+            SITE.build(dist, root / "plain", None, False, wasm, False, False)
+            self.assertNotIn("gaius-unihex.bin.gz", json.loads((root / "plain/gaius-site.json").read_text())["assets"])
+            table = gzip.compress(b"GAIUSUH1 wasm", mtime=0)
+            (wasm / "gaius-unihex.bin.gz").write_bytes(table)
+            SITE.build(dist, root / "site", None, True, wasm, False, False)
+            assets = json.loads((root / "site/gaius-site.json").read_text())["assets"]
+            self.assertEqual((root / "site" / assets["gaius-unihex.bin.gz"]).read_bytes(), table)
+            self.assertRegex(assets["gaius-unihex.bin.gz"], r"^gaius-unihex\.bin\.[0-9a-f]+\.gz$")
+
+    def test_dual_runtime_validates_the_wasm_pack_identity(self) -> None:
+        for invalid in ("profile", "bytes", "missing"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                dist = make_dist(root / "js")
+                wasm = make_dist(root / "wasm")
+                pack = wasm / "vanilla-assets.pack.gz"
+                if invalid == "profile":
+                    write_profile_sidecar(pack, "wrong-profile")
+                elif invalid == "bytes":
+                    pack.write_bytes(pack.read_bytes() + b"changed")
+                else:
+                    pack.with_name(pack.name + ".build.json").unlink()
+                with self.assertRaisesRegex(RuntimeError, "profile mismatch|build identity"):
+                    SITE.build(dist, root / "site", None, True, wasm, False, False)
 
     def test_wasm_site_inlines_phase_two_relay_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -101,6 +267,8 @@ class BuildPagesSiteTest(unittest.TestCase):
             report = SITE.build(dist, root / "site", None, True, wasm, False, False, False)
             index = (root / "site/index.html").read_text(encoding="utf-8")
             self.assertIn('<script data-gaius-relay-protocol>', index)
+            self.assertIn('window.__gaiusBridgeUrls = ', index)
+            self.assertIn('"id":"gaius-hk-1"', index)
             self.assertLess(index.index('data-gaius-relay-protocol'), index.index('data-gaius-boot="v1"'))
 
     def test_wasm_only_site_omits_js_fallback_and_marks_policy(self) -> None:
@@ -128,7 +296,7 @@ class BuildPagesSiteTest(unittest.TestCase):
             for name in ("NOTICE", "LICENSE", *(f"LICENSES/{path.name}" for path in
                                                   (SITE.ROOT / "LICENSES").glob("*.txt"))):
                 self.assertTrue((root / "site" / name).is_file(), name)
-            self.assertEqual((root / "site" / "_headers").read_bytes(), SITE.PAGES_HEADERS)
+            self.assertEqual((root / "site" / "_headers").read_bytes(), SITE.pages_headers(descriptor["assets"]))
             for name in ("__gaiusProfileId", "__gaiusRenderSeam", "__gaiusPatchSet",
                          "__gaiusTerrainSectionUniformBlock"):
                 self.assertIn(f"window.{name} = ", index)
@@ -280,6 +448,8 @@ class BuildPagesSiteTest(unittest.TestCase):
             self.assertEqual((site / mesh["variants"]["simd"]).read_bytes(), b"\0asm simd")
             # The page: site descriptor before the hashed boot tag, hashed toolchain loader.
             index = (site / "index.html").read_text(encoding="utf-8")
+            self.assertIn('window.__gaiusBridgeUrls = ', index)
+            self.assertIn('"name":"Gaius HK Relay"', index)
             self.assertNotIn('NOTICE', index)  # no notice link over the game page; the files still ship
             self.assertEqual((site / "NOTICE").read_bytes(), (SITE.ROOT / "NOTICE").read_bytes())
             self.assertEqual((site / "LICENSE").read_bytes(), (SITE.ROOT / "LICENSE").read_bytes())
@@ -290,7 +460,11 @@ class BuildPagesSiteTest(unittest.TestCase):
             self.assertIn("\nLICENSE\n=======\n", notices)
             self.assertIn("\nLICENSES/Apache-2.0.txt\n=======================\n", notices)
             self.assertIn('<script data-gaius-boot="v1" src="' + assets["gaius-boot.js"] + '"></script>', index)
-            self.assertLess(index.index("window.__gaiusSite = "), index.index(assets["gaius-boot.js"]))
+            boot_tag = f'<script data-gaius-boot="v1" src="{assets["gaius-boot.js"]}">'
+            self.assertLess(index.index("window.__gaiusSite = "), index.index(boot_tag))
+            preload = f'<link data-gaius-preload="boot" rel="preload" as="script" href="{assets["gaius-boot.js"]}">'
+            self.assertEqual(index.count(preload), 1)
+            self.assertLess(index.index(preload), index.index("window.__gaiusSite = "))
             self.assertNotIn('src="gaius-boot.js"', index)
             self.assertIn('src="' + assets["gaius-shader-toolchain.js"] + '"', index)
             urls = json.loads(re.search(r"window\.__gaiusShaderToolchainUrls = (\{.*?\});", index).group(1))
@@ -306,6 +480,18 @@ class BuildPagesSiteTest(unittest.TestCase):
             offset, length = sound_index["assets/minecraft/sounds/mob/cow/say1.ogg"]
             self.assertEqual(sound_payload[offset:offset + length], b"moo")
             self.assertEqual(report["sounds"], 2)
+            snapshot = (site / assets["gaius-init-snapshot.bin"]).read_bytes()
+            version, profile_length, count, payload_length = struct.unpack_from("<HHII", snapshot, 8)
+            self.assertEqual((version, profile_length, count, payload_length), (1, len(RENDERPEARL_ID), 1, 0))
+            cursor = 20 + profile_length
+            name_length, offset, length = struct.unpack_from("<HII", snapshot, cursor)
+            digest = snapshot[cursor + 10:cursor + 42]
+            cursor += 42
+            name = snapshot[cursor:cursor + name_length].decode("utf-8")
+            core_index, core_payload = SITE.read_pack(gzip.decompress((site / assets["vanilla-assets.pack.gz"]).read_bytes()))
+            self.assertEqual(name, "data/minecraft/worldgen/biome/test.json")
+            self.assertEqual((offset, length), tuple(core_index[name]))
+            self.assertEqual(hashlib.sha256(core_payload[offset:offset + length]).digest(), digest)
             # The archive holds exactly the site's files, as plain relative files.
             with tarfile.open(root / "site.tar.gz") as archive:
                 members = archive.getmembers()
@@ -401,6 +587,8 @@ class BuildPagesSiteTest(unittest.TestCase):
         (wasm / "singleplayer-server.wasm").write_bytes(b"\0asm\1\0\0\0server" * 40)
         (wasm / "gaius-wasm-gc-runtime.js").write_bytes(b"// runtime")
         (wasm / "singleplayer-server-worker.js").write_bytes(b"self.onmessage = wasm;")
+        (wasm / "vanilla-assets.pack.gz").write_bytes(fixture_pack())
+        write_profile_sidecar(wasm / "vanilla-assets.pack.gz", RENDERPEARL_ID)
         return wasm
 
     def boot_with(self, root: Path, marker: bool) -> Path:
@@ -468,8 +656,26 @@ class BuildPagesSiteTest(unittest.TestCase):
             site = root / "site"
             descriptor = json.loads((site / "gaius-site.json").read_text(encoding="utf-8"))
             assets, inflate = descriptor["assets"], descriptor["inflate"]
+            index = (site / "index.html").read_text(encoding="utf-8")
+            for name in ("gaius-boot.js", "gaius-wasm-boot.js", "gaius-wasm-gc-runtime.js", "gaius-jspi.js"):
+                preload = f'<link data-gaius-preload="boot" rel="preload" as="script" href="{assets[name]}">'
+                self.assertEqual(index.count(preload), 1)
+                self.assertLess(index.index(preload), index.index("window.__gaiusSite = "))
+            module_preload = '<script data-gaius-preload="wasm">'
+            self.assertIn(json.dumps(assets["classes.wasm.br"] + "?gaiusWasmHttp=1"), index)
+            raw_client = (site / assets["classes.wasm"]).read_bytes()
+            compressed_client = (site / assets["classes.wasm.br"]).read_bytes()
+            decoded = subprocess.check_output(['node', '-e',
+                'process.stdout.write(require("node:zlib").brotliDecompressSync(require("node:fs").readFileSync(0)))'],
+                input=compressed_client)
+            self.assertEqual(decoded, raw_client)
+            self.assertIn('window.__gaiusWasmHttpPreload={url,response:fetch(url,{cache:"force-cache"})', index)
+            self.assertNotIn('rel="preload" as="fetch"', index)
+            self.assertEqual(index.count(module_preload), 1)
+            self.assertLess(index.index(module_preload), index.index("window.__gaiusSite = "))
             self.assertTrue(report["wasmGzipOnly"])
-            self.assertNotIn("classes.wasm", assets)
+            self.assertIn("classes.wasm", assets)
+            self.assertTrue((site / assets["classes.wasm"]).is_file())
             self.assertNotIn("singleplayer-server.wasm", assets)
             self.assertEqual(sorted(inflate), ["classes.wasm", "singleplayer-server.wasm"])
             for logical, module in (("classes.wasm", b"\0asm\1\0\0\0client" * 50),
@@ -531,6 +737,21 @@ class BuildPagesSiteTest(unittest.TestCase):
             report = SITE.check_total([root / "site"], 10 ** 9)
             self.assertFalse(report["ok"])
             self.assertEqual(report["rawWasmOverLimit"][0]["file"], "oversized.wasm")
+
+    def test_raw_client_allowance_requires_the_content_hashed_manifest_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            site = root / "site"
+            SITE.build(make_dist(root), site, None, True, js_gzip_copies=False)
+            module = b"\0asm" + b"x" * SITE.MAX_RAW_WASM_BYTES
+            name = SITE.hashed_name("classes.wasm", module)
+            (site / name).write_bytes(module)
+            descriptor = json.loads((site / "gaius-site.json").read_text())
+            descriptor["assets"]["classes.wasm"] = name
+            (site / "gaius-site.json").write_text(json.dumps(descriptor))
+            self.assertEqual(SITE.site_size(site)["rawWasmOverLimit"], [])
+            (site / name).write_bytes(module[:-1] + b"y")
+            self.assertEqual(SITE.site_size(site)["rawWasmOverLimit"][0]["file"], name)
 
     def test_hashed_names(self) -> None:
         self.assertRegex(SITE.hashed_name("classes.js", b"x"), r"^classes\.[0-9a-f]{16}\.js$")

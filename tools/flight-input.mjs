@@ -15,7 +15,8 @@ const sleepFor = ms => new Promise(resolve => setTimeout(resolve, ms));
 // lift(player): puts the player well above the terrain (a vanilla command). Resolves to
 // {enabled, attempts: [{attempt, y0, y1, dy, stable, airborne}]}.
 export async function enableCreativeFlight({tap, readPlayer, lift, sleep = sleepFor, attempts = 5,
-    tapGapMs = 120, settleMs = 1500, probeMs = 1000, stableBlocks = 0.2, minAirborneGain = 8}) {
+    tapGapMs = 120, liftSettleMs = 100, settleMs = 1500, probeMs = 1000,
+    stableBlocks = 0.2, minAirborneGain = 8}) {
   const log = [];
   let start = await readPlayer();
   if (!start || ![start.x, start.y, start.z].every(Number.isFinite)) {
@@ -24,7 +25,9 @@ export async function enableCreativeFlight({tap, readPlayer, lift, sleep = sleep
   const baselineY = start.y;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     await lift(start);
-    await sleep(1200);
+    // The lift is intentionally short-lived: after a teleport vanilla gravity starts immediately,
+    // so waiting for a full second makes the player land before the double-tap is delivered.
+    await sleep(liftSettleMs);
     await tap();
     await sleep(tapGapMs);
     await tap();

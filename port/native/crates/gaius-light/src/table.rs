@@ -82,6 +82,12 @@ pub struct LightTable {
     faces: Vec<u16>,
     face_count: usize,
     matrix: Vec<u8>,
+    /// Precomputed class-pair occlusion masks. The hot propagation loop asks
+    /// this question for every candidate neighbour; keeping one byte per
+    /// `(from_class, to_class)` removes two face lookups and a bit-position
+    /// multiply from that loop while retaining the vanilla face matrix as the
+    /// wire-format and audit source of truth.
+    class_occlusion: Vec<u8>,
 }
 
 impl LightTable {
@@ -125,12 +131,35 @@ impl LightTable {
                 }
             }
         }
-        Ok(LightTable {
+        let mut table = LightTable {
             props,
             faces: flat,
             face_count,
             matrix,
-        })
+            class_occlusion: Vec::new(),
+        };
+        table.rebuild_class_occlusion();
+        Ok(table)
+    }
+
+    fn rebuild_class_occlusion(&mut self) {
+        let class_count = self.faces.len() / 6;
+        self.class_occlusion.clear();
+        self.class_occlusion.resize(class_count * class_count, 0);
+        for from in 0..class_count {
+            for to in 0..class_count {
+                let mut mask = 0u8;
+                for dir in 0..6 {
+                    let a = self.faces[from * 6 + dir] as usize;
+                    let b = self.faces[to * 6 + (dir ^ 1)] as usize;
+                    let bit = a * self.face_count + b;
+                    if self.matrix[bit >> 3] & (1 << (bit & 7)) != 0 {
+                        mask |= 1 << dir;
+                    }
+                }
+                self.class_occlusion[from * class_count + to] = mask;
+            }
+        }
     }
 
     /// Decodes the wire format described in the module docs.
@@ -262,6 +291,18 @@ impl LightTable {
         let bit = a * self.face_count + b;
         self.matrix[bit >> 3] & (1 << (bit & 7)) != 0
     }
+
+    /// Same result as [`Self::occludes`], using the class-pair cache for the
+    /// propagation hot path. This deliberately remains a separate method so
+    /// tests and diagnostics can continue to exercise the direct face matrix.
+    #[inline(always)]
+    pub fn occludes_fast(&self, from_class: usize, to_class: usize, dir: usize) -> bool {
+        if from_class | to_class == 0 {
+            return false;
+        }
+        let class_count = self.faces.len() / 6;
+        self.class_occlusion[from_class * class_count + to_class] & (1 << dir) != 0
+    }
 }
 
 #[cfg(test)]
@@ -282,6 +323,17 @@ mod tests {
         assert!(!decoded.occludes(1, 0, crate::dir::UP));
         assert!(!decoded.occludes(0, 0, crate::dir::UP));
         assert_eq!(decoded.props(9), None);
+        for from in 0..2 {
+            for to in 0..2 {
+                for dir in 0..6 {
+                    assert_eq!(
+                        decoded.occludes(from, to, dir),
+                        decoded.occludes_fast(from, to, dir),
+                        "from={from} to={to} dir={dir}"
+                    );
+                }
+            }
+        }
 
         // Alternating props are smaller raw than run-length coded.
         let props = (0..64).map(|i| make_props(i % 2, 0, 0)).collect();

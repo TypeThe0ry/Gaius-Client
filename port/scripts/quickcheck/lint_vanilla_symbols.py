@@ -6,8 +6,11 @@
 A vanilla symbol is a name in net.minecraft or com.mojang (the Minecraft client, blaze3d
 and the Mojang libraries: authlib, brigadier, datafixers, serialization, logging).  The
 core layers must work without them so that a new Minecraft version does not reach them.
-The default roots are port/gpu and port/core; a root that does not exist yet is listed and
-skipped.  Sources are scanned as text (comments excluded for Java, Rust, JS and WGSL); with
+The default roots also cover browser helpers and JVM fixtures outside port/mc. Existing
+references in those two transitional roots are pinned by file, symbol and occurrence count
+in vanilla-symbols-legacy.json; new files and additional references have no allowance.
+A root that does not exist yet is listed and skipped. Sources are scanned as text
+(comments excluded for Java, Rust, JS and WGSL); with
 --classes the constant pools of compiled classes are scanned too (the D14 enforcement).
 Zero findings are allowed.
 
@@ -24,13 +27,16 @@ import re
 import struct
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import javasrc  # noqa: E402
 
 ROOT = javasrc.ROOT
-DEFAULT_ROOTS = ("port/gpu", "port/core")
+BOUNDARY_ROOTS = ("port/src/main/java/dev/gaius/browser", "port/scripts/fixtures")
+DEFAULT_ROOTS = ("port/gpu", "port/core", *BOUNDARY_ROOTS)
+LEGACY_INVENTORY = "port/scripts/quickcheck/vanilla-symbols-legacy.json"
 SYMBOL = re.compile(r"\b(?:net[./]minecraft|com[./]mojang)(?:[./][\w$]+)+")
 C_LIKE = (".java", ".rs", ".js", ".mjs", ".ts", ".wgsl", ".kt", ".c", ".h", ".cpp")
 TEXT = C_LIKE + (".py", ".sh", ".toml", ".txt", ".glsl", ".vsh", ".fsh", ".json", ".md", ".xml")
@@ -94,14 +100,41 @@ def scan_classes(classes_dir: Path, repo: Path) -> list[dict]:
     return findings
 
 
+def legacy_allowances(repo: Path) -> Counter:
+    path = repo / LEGACY_INVENTORY
+    if not path.is_file():
+        return Counter()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("schema") != 1 or not data.get("reason"):
+        raise ValueError(f"invalid legacy inventory: {path}")
+    allowed = Counter()
+    for source in data["sources"]:
+        name = source["path"]
+        if ".." in name.split("/") or not name.startswith(tuple(root + "/" for root in BOUNDARY_ROOTS)):
+            raise ValueError(f"legacy inventory path outside transitional roots: {name}")
+        for symbol, count in source["symbols"].items():
+            if not SYMBOL.fullmatch(symbol) or type(count) is not int or count <= 0 or (name, symbol) in allowed:
+                raise ValueError(f"invalid legacy symbol allowance: {name}: {symbol}")
+            allowed[name, symbol] = count
+    return allowed
+
+
 def run(repo: Path, roots: list[str], classes: list[str]) -> dict:
-    result = {"roots": [], "findings": []}
+    result = {"roots": [], "findings": [], "legacyFindings": []}
+    allowed = legacy_allowances(repo)
     for root_name in roots:
         root_dir = (repo / root_name) if not Path(root_name).is_absolute() else Path(root_name)
         if not root_dir.is_dir():
             result["roots"].append({"root": root_name, "present": False})
             continue
-        found = scan_sources(root_dir, repo)
+        found = []
+        for finding in scan_sources(root_dir, repo):
+            key = (finding["where"].rsplit(":", 1)[0], finding["symbol"])
+            if allowed[key] > 0:
+                allowed[key] -= 1
+                result["legacyFindings"].append(finding)
+            else:
+                found.append(finding)
         result["roots"].append({"root": root_name, "present": True, "findings": len(found)})
         result["findings"].extend(found)
     for classes_dir in classes:
@@ -117,6 +150,8 @@ def report(result: dict, enforce: bool) -> None:
     mode = "enforce" if enforce else "warn"
     roots = ", ".join(f"{r['root']}" + ("" if r["present"] else " (not present)") for r in result["roots"])
     print(f"[lint P2 {mode}] vanilla symbols in core layers: {len(result['findings'])} (roots: {roots})")
+    if result["legacyFindings"]:
+        print(f"  pinned transitional references: {len(result['legacyFindings'])}; no new references allowed")
     annotate = os.environ.get("GITHUB_ACTIONS") == "true"
     for index, finding in enumerate(result["findings"][:200]):
         print(f"  {finding['where']}: {finding['symbol']}")
@@ -153,6 +188,41 @@ def self_test() -> int:
         result = run(repo, [], [str(classes)])
         if [f["symbol"] for f in result["findings"]] != ["net.minecraft.client.Minecraft"]:
             failures.append(f"class constant pool: {result['findings']}")
+        # The default scan must catch both new browser helpers and verification fixtures.
+        (gpu / "Bad.java").unlink()
+        browser = repo / BOUNDARY_ROOTS[0]
+        fixture = repo / BOUNDARY_ROOTS[1]
+        browser.mkdir(parents=True)
+        fixture.mkdir(parents=True)
+        helper = browser / "BrowserWorldPrewarm.java"
+        audit = fixture / "InitSnapshotRegistryAudit.java"
+        helper.write_text("import net.minecraft.client.Minecraft;\n", encoding="utf-8")
+        audit.write_text("import com.mojang.serialization.Codec;\n", encoding="utf-8")
+        result = run(repo, list(DEFAULT_ROOTS), [])
+        if sorted(f["symbol"] for f in result["findings"]) != [
+                "com.mojang.serialization.Codec", "net.minecraft.client.Minecraft"]:
+            failures.append(f"default boundary roots: {result['findings']}")
+        mc = repo / "port/mc/fixtures"
+        mc.mkdir(parents=True)
+        helper.rename(mc / helper.name)
+        audit.rename(mc / audit.name)
+        if run(repo, list(DEFAULT_ROOTS), [])["findings"]:
+            failures.append("relocated vanilla sources still fail the core boundary")
+        legacy = browser / "Legacy.java"
+        legacy.write_text("import net.minecraft.client.Minecraft;\n", encoding="utf-8")
+        inventory = repo / LEGACY_INVENTORY
+        inventory.parent.mkdir(parents=True)
+        inventory.write_text(json.dumps({"schema": 1, "reason": "test inventory", "sources": [
+            {"path": legacy.relative_to(repo).as_posix(), "symbols": {"net.minecraft.client.Minecraft": 1}}
+        ]}), encoding="utf-8")
+        if run(repo, list(DEFAULT_ROOTS), [])["findings"]:
+            failures.append("pinned legacy dependency rejected")
+        helper.write_text("import net.minecraft.client.Minecraft;\n", encoding="utf-8")
+        legacy.write_text('import net.minecraft.client.Minecraft; String s = "net.minecraft.client.Minecraft";\n',
+                          encoding="utf-8")
+        result = run(repo, list(DEFAULT_ROOTS), [])
+        if len(result["findings"]) != 2 or len(result["legacyFindings"]) != 1:
+            failures.append(f"new dependency bypassed legacy inventory: {result}")
     for failure in failures:
         print(f"self-test FAILED: {failure}", file=sys.stderr)
     if not failures:

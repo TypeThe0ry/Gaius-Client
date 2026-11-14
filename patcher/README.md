@@ -44,7 +44,7 @@ Steps 3 to 5 are being wired up; today the patcher implements `doctor`,
 ## Versions
 
 The patcher is versioned with the Gaius release it reproduces: patcher
-`0.4.0-pre.5` builds the same client as Gaius release `v0.4.0-pre.5`, and a
+`0.4.0-pre.6` builds the same client as Gaius release `v0.4.0-pre.6`, and a
 newer release needs a newer patcher. The built client reports the release's
 own version number (`0.4.0` in its About screen), exactly like the official
 build. `java patcher/GaiusPatcher.java version` prints both numbers, and

@@ -25,21 +25,26 @@ public final class CoreDevice {
     private static final String[] CAPABILITIES = {
         "wireframe-fill-mode", "shader-draw-parameters", "multi-draw-direct-interleaved",
         "multi-draw-direct-separate", "multi-draw-indirect", "draw-indirect",
-        "non-zero-first-instance", "persistent-mapping"
+        "non-zero-first-instance", "persistent-mapping", "gaius-gpu-indirect-frustum",
+        "gaius-gpu-indirect-hiz"
     };
 
     private final boolean debug;
+    private final boolean regionArenaEnabled;
     private final CoreCaps caps;
     private final Set<String> capabilities;
     private final StagingRing ring;
     private final CoreEncoder encoder;
     private final List<String> debugMessages = new ArrayList<>();
     private final HashMap<String, String> layoutKeys = new HashMap<>();
+    private RegionArena regionArena;
+    private int regionArenaGeneration = -1;
     private long pipelines;
     private long pipelineNanos;
 
     private CoreDevice(boolean debug) {
         this.debug = debug;
+        this.regionArenaEnabled = WebGpuGlue.regionArenaEnabled();
         this.caps = readCaps();
         this.capabilities = readCapabilities();
         this.ring = new StagingRing();
@@ -123,6 +128,41 @@ public final class CoreDevice {
         return this.encoder;
     }
 
+    /** Returns the opt-in persistent terrain arena, or {@code null} while its switch is off. */
+    public RegionArena regionArena() {
+        if (!this.regionArenaEnabled) {
+            return null;
+        }
+        int generation = syncRegionArenaGeneration();
+        if (!this.isUsable()) {
+            return null;
+        }
+        if (this.regionArena == null) {
+            this.regionArena = new RegionArena(this, RegionArena.DEFAULT_BUDGET_BYTES);
+            this.regionArenaGeneration = generation;
+        }
+        return this.regionArena;
+    }
+
+    /** Polls the opt-in arena without creating it when no caller has allocated a region. */
+    void reclaimRegionArena() {
+        if (this.regionArena != null) {
+            syncRegionArenaGeneration();
+        }
+        if (this.regionArena != null) {
+            this.regionArena.reclaim();
+        }
+    }
+
+    private int syncRegionArenaGeneration() {
+        int generation = WebGpuGlue.regionArenaGeneration();
+        if (this.regionArena != null && this.regionArenaGeneration != generation) {
+            this.regionArena.discardAfterDeviceLoss();
+            this.regionArena = null;
+        }
+        return generation;
+    }
+
     /** Records a debug message for the seam to report (bounded). */
     public void debugMessage(String message) {
         if (this.debugMessages.size() < 256) {
@@ -187,9 +227,41 @@ public final class CoreDevice {
 
     /** A buffer; {@code usage} has {@link CoreUsage} buffer bits. */
     public CoreBuffer createBuffer(String label, int usage, long size) {
+        CoreBuffer terrain = createTerrainBuffer(label, usage, size);
+        if (terrain != null) {
+            return terrain;
+        }
+        return createRawBuffer(label, usage, size);
+    }
+
+    CoreBuffer createRawBuffer(String label, int usage, long size) {
         int allocated = (int) allocatedSize(usage, size);
         int handle = WebGpuGlue.createBuffer(allocated, CoreUsage.webBufferUsage(usage), label);
         return new CoreBuffer(this, usage, size, handle, false);
+    }
+
+    /**
+     * Allocates large vertex/index heaps from the opt-in persistent arena. Vanilla slices retain
+     * their logical offsets; the seam adds each lease's physical base when recording GPU commands.
+     */
+    private CoreBuffer createTerrainBuffer(String label, int usage, long size) {
+        if (!this.regionArenaEnabled || size < 4L * 1024L * 1024L
+                || (usage & (CoreUsage.BUFFER_VERTEX | CoreUsage.BUFFER_INDEX)) == 0) {
+            return null;
+        }
+        RegionArena arena = this.regionArena();
+        if (arena == null) {
+            return null;
+        }
+        RegionArena.Domain domain = arena.domain(usage, 0, 0, usage);
+        RegionArena.Lease lease = domain.allocate(size, 4);
+        if (lease == null || lease.size() < size) {
+            if (lease != null) {
+                lease.close();
+            }
+            return null;
+        }
+        return new CoreBuffer(this, usage, size, lease.buffer().handle(), false, lease);
     }
 
     /** A buffer holding {@code data} (position to limit). */
@@ -207,7 +279,7 @@ public final class CoreDevice {
                 source.put(data.duplicate()).clear();
             }
         }
-        WebGpuGlue.writeBuffer(buffer.handle, 0, source);
+        WebGpuGlue.writeBuffer(buffer.handle, buffer.baseOffset(), source);
         if ((usage & CoreUsage.BUFFER_INDEX) != 0) {
             buffer.scanIdentity(data);
         }

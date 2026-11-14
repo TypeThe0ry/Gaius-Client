@@ -28,10 +28,9 @@
 //           off there) keeps worldgen on the Java path.
 // Without a runner, usable() is false and every chunk stays on the Java path.
 //
-// Scheduling: every job carries the chunk position and a distance hint derived from the server's
-// view of the player (BrowserChunkTaskPriority publishes it as __gaiusChunkPriorityStats), so
-// chunks in the player's movement direction run first. The worker host also feeds that position
-// to its own runtime's motion predictor.
+// Scheduling: BIOMES, TERRAIN and SURFACE jobs carry the chunk position, latest player view and
+// geometric distance. Kernel workers prioritize the conservative horizontal view-cone hint, then
+// near-to-far within it; vanilla status commits remain ordered by the Java frontier.
 //
 // Dispatched jobs are never dropped: each one settles exactly once, with its result, with an
 // error, or with "transient:timeout" when its deadline passes (the Java side then computes the
@@ -103,6 +102,7 @@
     transient: 0,
     timeouts: 0,
     hostFallbacks: Object.create(null),
+    vanilla: Object.create(null),
     late: 0,
     viaRuntime: 0,
     viaHost: 0,
@@ -230,8 +230,8 @@
     }
   }
 
-  // Server-side view of the player: BrowserChunkTaskPriority keeps the player chunk and the
-  // last chunk-to-chunk movement direction in __gaiusChunkPriorityStats.
+  // Server-side view of the player, published by the movement handler in
+  // __gaiusChunkPriorityStats.
   function serverViewer() {
     const stats = global.__gaiusChunkPriorityStats;
     if (!stats || typeof stats.playerChunk !== "string") return null;
@@ -240,7 +240,12 @@
     const cx = Number(chunk[0]);
     const cz = Number(chunk[1]);
     if (!isFinite(cx) || !isFinite(cz)) return null;
-    return {cx, cz, dx: Number(direction[0]) || 0, dz: Number(direction[1]) || 0};
+    const yaw = Number(stats.yaw);
+    const x = Number(stats.playerX);
+    const z = Number(stats.playerZ);
+    return {cx, cz, dx: Number(direction[0]) || 0, dz: Number(direction[1]) || 0,
+      x: isFinite(x) ? x : cx * 16 + 8, z: isFinite(z) ? z : cz * 16 + 8,
+      yaw: isFinite(yaw) ? yaw : null};
   }
 
   function viewDistance() {
@@ -248,8 +253,7 @@
     return isFinite(distance) && distance > 0 ? distance : 8;
   }
 
-  // Feeds the worker host's runtime with the server's player position (block centre of the
-  // player chunk; the predictor derives the velocity from successive samples).
+  // Feeds the worker host's runtime with the latest server-side view.
   function startViewerFeed(runtime) {
     if (state.viewerTimer !== null || typeof global.setInterval !== "function") return;
     state.viewerTimer = global.setInterval(() => {
@@ -257,7 +261,8 @@
       if (!viewer || !state.runtime) return;
       try {
         runtime.setViewer({
-          x: viewer.cx * 16 + 8, y: 64, z: viewer.cz * 16 + 8, t: now(), viewDistance: viewDistance(),
+          x: viewer.x, y: 64, z: viewer.z, yaw: viewer.yaw,
+          t: now(), viewDistance: viewDistance(),
         });
       } catch (_) {
         // the predictor is a hint only
@@ -412,6 +417,27 @@
     byStage[reason] = (byStage[reason] || 0) + 1;
   }
 
+  // Opt-in diagnostics (off by default): how many status tickets took the vanilla supplier and why,
+  // plus the registered/kernel totals, per stage. Switch: ?gaiusWorldgenVanillaTrace=1, the global
+  // __gaiusWorldgenVanillaTrace, __gaiusWorldgenKernelConfig.vanillaTrace, or the kernel job timeline
+  // switch (__gaiusKernelTimeline), which the server worker already follows from the page.
+  function vanillaTraceEnabled() {
+    const c = config();
+    if (global.__gaiusWorldgenVanillaTrace === true || (c && c.vanillaTrace === true)) return true;
+    if (urlParam("gaiusWorldgenVanillaTrace") === "1") return true;
+    const timeline = global.__gaiusKernelTimeline;
+    return timeline !== undefined && timeline !== null && timeline !== false && timeline !== 0
+      && timeline !== "" && timeline !== "0";
+  }
+
+  function recordVanilla(stage, reason) {
+    if (!vanillaTraceEnabled()) return;
+    stage = String(stage || "unknown");
+    reason = String(reason || "unknown");
+    const byStage = state.vanilla[stage] || (state.vanilla[stage] = Object.create(null));
+    byStage[reason] = (byStage[reason] || 0) + 1;
+  }
+
   function generatorFailed(key, error) {
     const g = state.generators.get(key >>> 0);
     if (g) g.failed = true;
@@ -525,28 +551,48 @@
 
   // ---- scheduling hints ----
 
-  // Forward-biased chunk distance from the server's player chunk: chunks along the movement
-  // direction rank as if up to three chunks closer.
+  // Geometric distance from the latest server-side player position, measured in chunks.
   function chunkDistance(chunkX, chunkZ) {
     const viewer = serverViewer();
     if (!viewer) return null;
-    const ox = chunkX - viewer.cx;
-    const oz = chunkZ - viewer.cz;
-    const distance = Math.sqrt(ox * ox + oz * oz);
-    const forward = (ox * viewer.dx + oz * viewer.dz) / (Math.sqrt(viewer.dx * viewer.dx + viewer.dz * viewer.dz) || 1);
-    return Math.max(0, distance - Math.max(-3, Math.min(3, forward * 0.5)));
+    const ox = chunkX * 16 + 8 - viewer.x;
+    const oz = chunkZ * 16 + 8 - viewer.z;
+    return Math.hypot(ox, oz) / 16;
+  }
+
+  // Conservative horizontal view-cone estimate. The chunk radius keeps edge chunks in front of
+  // the camera from being classified as off-screen. This only orders pure kernel work; it never
+  // changes which chunks vanilla requests or generates.
+  function chunkVisible(chunkX, chunkZ) {
+    const viewer = serverViewer();
+    if (!viewer || viewer.yaw === null) return null;
+    const ox = chunkX * 16 + 8 - viewer.x;
+    const oz = chunkZ * 16 + 8 - viewer.z;
+    const distance = Math.hypot(ox, oz);
+    const radius = Math.sqrt(2) * 8;
+    if (distance <= radius) return true;
+    const radians = viewer.yaw * Math.PI / 180;
+    const dirX = -Math.sin(radians);
+    const dirZ = Math.cos(radians);
+    const cosine = (ox * dirX + oz * dirZ) / distance;
+    const margin = Math.asin(Math.min(1, radius / distance));
+    const halfFov = 80 * Math.PI / 180;
+    return halfFov + margin >= Math.PI || cosine >= Math.cos(halfFov + margin);
   }
 
   function jobOptions(via, chunkX, chunkZ, resultBytes) {
     const distance = chunkDistance(chunkX, chunkZ);
+    const visible = chunkVisible(chunkX, chunkZ);
     const opts = {cx: chunkX, cz: chunkZ, resultBytes};
+    if (visible !== null) opts.visible = visible;
     if (distance !== null) {
       opts.distance = distance;
       opts.near = distance <= Math.max(4, viewDistance() / 2);
     }
     if (via === "host" && state.pool) {
       // GaiusKernelPool: lowest priority first.
-      opts.priority = distance === null ? 0 : Math.round(distance * 16);
+      const offscreenBand = visible === false ? 1 << 20 : 0;
+      opts.priority = offscreenBand + (distance === null ? 0 : Math.round(distance * 16));
     } else {
       opts.priority = 0;
     }
@@ -805,6 +851,8 @@
       timeouts: state.timeouts,
       hostFallbacks: Object.fromEntries(Object.entries(state.hostFallbacks).map(([stage, reasons]) =>
         [stage, Object.fromEntries(Object.entries(reasons))])),
+      vanilla: Object.fromEntries(Object.entries(state.vanilla).map(([stage, reasons]) =>
+        [stage, Object.fromEntries(Object.entries(reasons))])),
       late: state.late,
       viaRuntime: state.viaRuntime,
       viaHost: state.viaHost,
@@ -843,6 +891,8 @@
     resume,
     telemetry,
     recordHostFallback,
+    vanillaTraceEnabled,
+    recordVanilla,
     snapshot: () => ({kernel: telemetry(), worldgen: global.__gaiusWorldgenStats || null,
       server: global.__gaiusServerTickTelemetry || null}),
   });

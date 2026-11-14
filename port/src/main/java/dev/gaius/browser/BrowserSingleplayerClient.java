@@ -508,13 +508,14 @@ public final class BrowserSingleplayerClient {
               const runtimes = globalThis.__gaiusRuntimes;
               const wasmServer = boot.serverRuntime === 'wasm';
               const bootstrapName = 'singleplayer-server-worker.js';
-              if (!wasmServer) {
-                return Promise.reject(new Error('the WebAssembly GC integrated server is unavailable'));
-              }
               const required = [bootstrapName];
-              required.push(String(runtimes && runtimes.wasm && runtimes.wasm.server ||
-                'singleplayer-server.wasm'), 'gaius-wasm-gc-runtime.js', 'gaius-jspi.js',
-                'gaius-wasm-worker.js');
+              if (wasmServer) {
+                required.push(String(runtimes && runtimes.wasm && runtimes.wasm.server ||
+                  'singleplayer-server.wasm'), 'gaius-wasm-gc-runtime.js', 'gaius-jspi.js',
+                  'gaius-wasm-worker.js');
+              } else {
+                required.push('singleplayer-server.js');
+              }
               const missing = required.filter(function(name) {
                 return !boot.hasFilePayload(name);
               });
@@ -1423,6 +1424,8 @@ public final class BrowserSingleplayerClient {
                 worldSeed: String(worldSeed),
                 newWorld: !!newWorld,
                 initialGameRules: String(initialGameRules || ''),
+                chunkPipelineBatching: !!(globalThis.__gaiusLauncherFlags &&
+                  globalThis.__gaiusLauncherFlags.chunkPipelineBatching === true),
                 profileId: globalThis.__gaiusProfileId || null,
                 skinDescriptor: globalThis.__gaiusSkinDescriptor || null,
                 worldVersion: globalThis.__gaiusWorldVersion || null,
@@ -1438,6 +1441,8 @@ public final class BrowserSingleplayerClient {
                   lowMemory ? Math.min(requestedSimulation, 4) : requestedSimulation)),
                 worldgenSliceMillis: 8,
                 distanceRampIntervalMillis: 250,
+                serverScriptUrl: globalThis.__gaiusSingleplayerServerUrl || null,
+                serverScriptGzipUrl: globalThis.__gaiusSingleplayerServerGzipUrl || null,
                 port: channel.port2
               };
               worker.__gaiusDistances = init.renderDistance + ':' + init.simulationDistance;

@@ -275,22 +275,50 @@
   // world is never scaled there, so there is no upscaling.
   function endLevelWebGpu(colorId, depthId, width, height, rectWidth, rectHeight, projection) {
     const post = Q.webgpuPost;
+    const shaderPack = Q.shaderPack;
     const gpu = root.GaiusWebGpu;
-    if (!post || !gpu || typeof gpu.debugObject !== "function" || !Q.profile || state.failed || colorId >= 0) return;
+    if ((!post && !shaderPack) || !gpu || typeof gpu.debugObject !== "function" || !Q.profile || state.failed || colorId >= 0) return;
     const s = settings();
     stats.width = width;
     stats.height = height;
     stats.rectWidth = rectWidth;
     stats.rectHeight = rectHeight;
-    if (!post.anyStage(s.post)) return;
+    const shaderOn = !!(shaderPack && typeof shaderPack.enabled === "function" && shaderPack.enabled());
+    const indirectHiZ = !!post && typeof gpu.gpuIndirectRequested === "function"
+      && gpu.gpuIndirectRequested() && typeof gpu.gpuIndirectHiZRequested === "function"
+      && gpu.gpuIndirectHiZRequested() && typeof post.updateHiZ === "function";
+    if (!shaderOn && (!post || !post.anyStage(s.post)) && !indirectHiZ) return;
     const color = gpu.debugObject(-colorId);
     if (!color) return;
+    const depth = depthId < 0 ? gpu.debugObject(-depthId) : null;
+    // Build the current frame's pyramid after terrain has finished. It is published only after
+    // encoding, so the indirect dispatcher on the next frame samples a previous-frame resource.
+    if (indirectHiZ && depth) {
+      const frame = {color: color, depth: depth, width: width, height: height,
+        rectWidth: rectWidth, rectHeight: rectHeight, projection: projection, zeroToOne: true};
+      if (post.updateHiZ(frame) && typeof gpu.gpuIndirectSetPreviousHiZ === "function") {
+        gpu.gpuIndirectSetPreviousHiZ(post.previousHiZ());
+      }
+    }
     const started = now();
-    const ran = post.run({color: color, depth: depthId < 0 ? gpu.debugObject(-depthId) : null, width: width,
+    let shaderRan = false;
+    if (shaderPack && typeof shaderPack.run === "function") {
+      shaderRan = shaderPack.run({color: color, depth: depth,
+        width: width, height: height, rectWidth: rectWidth, rectHeight: rectHeight,
+        projection: projection, zeroToOne: true});
+    }
+    if (!post || !post.anyStage(s.post)) {
+      if (shaderRan) stats.postFrames++;
+      stats.lastStages = shaderRan ? "shaderpack" : stats.lastStages;
+      stats.lastSubmitMs = Math.round((now() - started) * 1000) / 1000;
+      if (stats.lastSubmitMs > stats.maxSubmitMs) stats.maxSubmitMs = stats.lastSubmitMs;
+      return;
+    }
+    const ran = post.run({color: color, depth: depth, width: width,
       height: height, rectWidth: rectWidth, rectHeight: rectHeight, projection: projection, zeroToOne: true}, s.post);
-    if (ran) {
+    if (ran || shaderRan) {
       stats.postFrames++;
-      stats.lastStages = post.stats.lastStages;
+      stats.lastStages = (shaderRan ? "shaderpack+" : "") + (ran ? post.stats.lastStages : "");
     } else if (post.stats.lastError) {
       stats.lastError = post.stats.lastError;
     }
@@ -478,11 +506,6 @@
     return Q.profile.oitAllowed();
   }
 
-  function presetReplay() {
-    const s = settings();
-    return !!(s && s.presetReplay);
-  }
-
   function resolvePixelRatio(devicePixelRatio) {
     return Q.profile ? Q.profile.resolvePixelRatio(devicePixelRatio) : Math.min(devicePixelRatio || 1, 1);
   }
@@ -494,7 +517,6 @@
     inventoryDecision: inventoryDecision,
     worldFrameDone: worldFrameDone,
     oitAllowed: oitAllowed,
-    presetReplay: presetReplay,
     resolvePixelRatio: resolvePixelRatio,
     stats: function () {
       return stats;

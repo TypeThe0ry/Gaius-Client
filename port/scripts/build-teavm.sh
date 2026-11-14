@@ -2,11 +2,17 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
+node "$root/port/scripts/jsbody-wrapper-collision-smoke.mjs"
 source "$root/port/scripts/version-profile.sh"
 source "$root/port/scripts/teavm-publication-gate.sh"
 gaius_require_js_target || exit 2
 gaius_load_version_profile "$root"
 gaius_select_java_home
+if [[ "${GAIUS_SKIP_JSBODY_FIXTURE:-0}" != "1" ]]; then
+  fixture_out="${GAIUS_JSBODY_FIXTURE_OUT:-$(gaius_build_root "$root")/jsbody-minifier-fixture}"
+  rm -rf -- "$fixture_out"
+  JSBODY_FIXTURE_OUT="$fixture_out" bash "$root/port/scripts/jsbody-minifier-fixture.sh"
+fi
 version="$GAIUS_MINECRAFT_VERSION"
 work="$root/port/work/$version"
 build_root="$(gaius_build_root "$root")"
@@ -165,6 +171,7 @@ embedded_resource_list="$resource_list_dir/minecraft-embedded-resources.txt"
 generated_resources="$build_root/generated-resources"
 generated_assets="$build_root/generated-resources/assets"
 vanilla_asset_pack="$staged_target_directory/vanilla-assets.pack.gz"
+boot_init_snapshot="$staged_target_directory/gaius-init-snapshot.bin"
 mkdir -p "$resource_list_dir"
 jar tf "$overlay_directory/client-named-$version-gaius.jar" |
   awk '(index($0, "assets/") == 1 || index($0, "data/") == 1 || $0 == "pack.png") && substr($0, length($0), 1) != "/" { print }' >"$resource_list"
@@ -180,39 +187,11 @@ copied_sound_assets=0
 copied_font_assets=0
 if [[ -n "$asset_index_id" && -f "$asset_index" ]]; then
   browser_sound_manifest="$build_root/browser-sound-assets.tsv"
-  jq -r '
+  jq -L "$root/port/scripts" -r '
+    include "browser-sound-path";
     .objects
     | to_entries[]
-    | select(
-        .key as $path
-        | ($path == "minecraft/sounds/ui/toast/in.ogg")
-          or ($path == "minecraft/sounds/ui/toast/out.ogg")
-          or ($path == "minecraft/sounds/ui/toast/challenge_complete.ogg")
-          or ($path == "minecraft/sounds/ui/stonecutter/cut1.ogg")
-          or ($path == "minecraft/sounds/ui/stonecutter/cut2.ogg")
-          or (
-            ($path | endswith(".ogg"))
-            and (
-              ($path | startswith("minecraft/sounds/block/"))
-              or ($path | startswith("minecraft/sounds/random/"))
-              or ($path | startswith("minecraft/sounds/dig/"))
-              or ($path | startswith("minecraft/sounds/step/"))
-              or ($path | startswith("minecraft/sounds/mob/"))
-              or ($path | startswith("minecraft/sounds/entity/"))
-              or ($path | startswith("minecraft/sounds/item/"))
-              or ($path | startswith("minecraft/sounds/damage/"))
-              or ($path | startswith("minecraft/sounds/liquid/"))
-              or ($path | startswith("minecraft/sounds/fire/"))
-              or ($path | startswith("minecraft/sounds/portal/"))
-              or ($path | startswith("minecraft/sounds/minecart/"))
-              or ($path | startswith("minecraft/sounds/enchant/"))
-              or ($path | startswith("minecraft/sounds/fireworks/"))
-              or ($path | startswith("minecraft/sounds/event/"))
-              or ($path | startswith("minecraft/sounds/note/"))
-              or ($path | startswith("minecraft/sounds/tile/"))
-            )
-          )
-      )
+    | select(.key | browser_sound_path)
     | [.key, .value.hash]
     | @tsv
   ' "$asset_index" | tr -d '\r' >"$browser_sound_manifest"
@@ -303,27 +282,9 @@ if [[ -n "$asset_index_id" && -f "$asset_index" ]]; then
       sounds_json_target="$generated_assets/minecraft/sounds.json"
       allowed_sounds_json="$build_root/browser-sound-names.json"
       mkdir -p "$(dirname "$sounds_json_target")"
-      jq --slurpfile allowed "$allowed_sounds_json" '
-        def sound_name:
-          (if type == "string" then . else (.name // "") end)
-          | sub("^minecraft:"; "")
-          | sub("^sounds/"; "")
-          | sub("\\.ogg$"; "");
-        def playable_file:
-          . as $entry
-          | ((if ($entry | type) == "object" then ($entry.type // "file") else "file" end) == "file")
-          and (($allowed[0] | index($entry | sound_name)) != null);
-        with_entries(
-          .value |= (
-            if type == "object" and (.sounds | type) == "array" then
-              .sounds = (.sounds | map(select(playable_file)))
-            else
-              .
-            end
-          )
-          | select((.value.sounds | type) == "array" and (.value.sounds | length) > 0)
-        )
-      ' "$sounds_json_source" >"$sounds_json_target"
+      jq --slurpfile allowed "$allowed_sounds_json" \
+        -f "$root/port/scripts/browser-sounds-metadata.jq" \
+        "$sounds_json_source" >"$sounds_json_target"
       printf 'assets/minecraft/sounds.json\n' >>"$resource_list"
       echo "Filtered browser sounds.json: $(jq 'length' "$sounds_json_target") events"
     else
@@ -411,6 +372,9 @@ awk '
   "$generated_resources" \
   "$vanilla_asset_pack" \
   "$asset_index"
+"$root/port/scripts/run-python.sh" \
+  "$root/port/scripts/build-boot-snapshot.py" \
+  "$vanilla_asset_pack" "$version" "$boot_init_snapshot"
 echo "Generated browser resource list: $(wc -l <"$resource_list" | tr -d ' ') entries"
 echo "Embedded TeaVM resource subset: $(wc -l <"$embedded_resource_list" | tr -d ' ') entries"
 echo "Mapped browser sound assets: $copied_sound_assets"
@@ -513,6 +477,10 @@ if [[ "$build_status" -eq 0 && "$teavm_publish_allowed" == true ]]; then
   done
   "$root/port/scripts/run-python.sh" \
     "$root/port/scripts/postprocess-teavm-js.py" "$staged_target_js"
+  if ! node --check "$staged_target_js"; then
+    echo "Generated TeaVM client JavaScript failed syntax validation; refusing to publish it" >&2
+    exit 1
+  fi
   # A client on the renderpearl render API (26.3+) compiles its shaders with
   # the WebAssembly shader toolchain (PLAN D5, contract C7).  Stage its runtime
   # files next to index.html, where postprocess-index-html.py injects the
@@ -568,6 +536,7 @@ if [[ "$build_status" -eq 0 && "$teavm_publish_allowed" == true ]]; then
     "$vanilla_asset_pack" "$target_directory/vanilla-assets.pack.gz" \
     "${vanilla_asset_pack}.build.json" \
       "$target_directory/vanilla-assets.pack.gz.build.json" \
+    "$boot_init_snapshot" "$target_directory/gaius-init-snapshot.bin" \
     "$staged_target_directory/index.html" "$target_directory/index.html" \
     "${shader_toolchain_publish[@]}"
   # v0.4 page runtime next to index.html: gaius-boot.js (the launcher's one boot tag), the

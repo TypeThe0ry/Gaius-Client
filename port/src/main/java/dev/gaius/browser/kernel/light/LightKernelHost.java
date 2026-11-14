@@ -71,6 +71,16 @@ public final class LightKernelHost {
     }
 
     /**
+     * Opt-in Rust propagation hot path. The path only changes the lookup used
+     * for shape-class occlusion; its output is checked against the direct
+     * vanilla face matrix by the light parity corpus before enabling it for a
+     * browser profile.
+     */
+    public static boolean fastOcclusion() {
+        return fastOcclusionNative();
+    }
+
+    /**
      * Submits {@code bytes[0..length)} (a framed {@code light_column} job without its table). The
      * bytes are copied into a fresh transferable buffer before this returns, so the caller may
      * reuse the array; {@code table} (the job's light table) must stay unchanged while the job
@@ -154,6 +164,16 @@ public final class LightKernelHost {
             + "var value = config ? Number(config[name]) : NaN;"
             + "return isFinite(value) && value > 0 ? (value | 0) : fallback;")
     private static native int configInt(String name, int fallback);
+
+    @JSBody(script = SCOPE
+            + "var config = scope.__gaiusLightKernelConfig;"
+            + "if (config && config.fastOcclusion === true) { return true; }"
+            + "try { var search = String(scope.location && scope.location.search || '');"
+            + " var match = /[?&]lightFastOcclusion=([^&#]*)/i.exec(search);"
+            + " if (match) { return /^(1|on|true|yes)$/i.test(decodeURIComponent(match[1])); }"
+            + "} catch (ignored) {}"
+            + "return false;")
+    private static native boolean fastOcclusionNative();
 
     /**
      * Job framing the splice relies on (port/web/kernels/light-job.js withTable): 16-byte ABI

@@ -94,8 +94,7 @@ own keeps a name for what it does: `render/QualityTierPatches` (graphics quality
 `render/RenderpearlTerrainPatches` (the multi-draw-indirect pin and the terrain chain check),
 `worldgen/WorldgenStrictMath` (Java float semantics of the worldgen classes) and
 `platform/JdkCompatPatches` (the JDK APIs TeaVM's class library lacks) for
-Minecraft263BrowserPatcher, `ui/GraphicsPresetStartupPatcher` for the graphics preset replay of
-both patch set arms. No class name carries a Minecraft version: the profiles a patch reaches are
+Minecraft263BrowserPatcher. No class name carries a Minecraft version: the profiles a patch reaches are
 its spec (`>=26.3`), and a profile selects the renderpearl step through `extraPatchers`.
 Minecraft263BrowserPatcher registers its patches in the groups of contract C2 (render, input,
 terrain, worldgen, server, ui, then the worldgen float rewrite, the JDK API redirects and the
@@ -141,7 +140,37 @@ node port/tools/patchkit/patchkit.mjs lint
 node port/tools/patchkit/patchkit.mjs --self-test
 node --test port/tools/patchkit/target-lock.test.mjs
 node port/tools/patchkit/patchkit.mjs --bytecode-test
+node port/tools/patchkit/patchkit.mjs verify --overlay <complete-patched-classes> \
+  --classpath <patched-client-jar-and-real-library-jars> --out <verifier-report.json> \
+  --profile <id> --target <js-or-wasmgc> --dependencies <fresh-compiled-dependency-dir>
 ```
+
+Every `check` now scans **all classes of the merged client jar** for duplicate
+method name/descriptor and field name/descriptor pairs. The same mandatory check
+runs in `build-overlays.sh`: a legal patch outcome cannot excuse an illegal
+composed classfile. Receipts `overlay-members.<target>.json` contain class counts,
+failures and a SHA-256 for every inspected class, without changing manifest locks.
+
+Both production overlays and patchkit finish with the same frame writer. It reads
+the current class, current output directory, mutable client jar, actual libraries
+and JDK headers in that order, without loading or initializing game classes.
+It resolves inherited classes, interfaces and primitive/reference arrays; missing
+hierarchy entries fail closed. The final pass verifies that symbolic instruction
+hashes are unchanged when recalculating frames/maxima. Its per-class receipts are
+`overlay-frames.<target>.json`. A PERF spliterator patch recognizes the already
+complete REQUIRED direct implementation instead of injecting duplicate members.
+
+`verify` is a separate real JVM gate over **every patched class**. It runs with
+`-Xverify:all`, loads unchanged classfile bytes in an isolated loader, and resolves
+all declared methods, constructors and fields without executing initializers.
+Missing dependencies, `ClassFormatError` and `VerifyError` all fail the command.
+The classpath must contain the real game/library/TeaVM API dependencies, not test
+stubs. Optional profile/target/dependencies arguments stage the selected production
+source sets and use javac to compile the actual missing helper classes (including
+their source-path dependencies). No class is stubbed, instrumented or reframed by
+this gate. Attempts, compiler logs, root source hashes and the final class hashes
+are retained beside its report. Omit all three arguments if dependencies are
+already compiled. This does not execute native code or prove browser behavior.
 
 For an unregistered version, `check --profile-file /absolute/profile.draft.json
 --work /absolute/input-root --scratch /absolute/output-root --usage-lock

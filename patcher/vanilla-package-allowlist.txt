@@ -16,3 +16,4 @@ port/native/golden/worldgen/v26_2/net/minecraft/world/level/levelgen/WorldgenNoi
 port/src/main/java/net/minecraft/world/level/biome/GaiusClimateIndex.java
 port/src/main/java/net/minecraft/world/level/biome/GaiusClimateSubTree.java
 port/src/main/java/net/minecraft/world/level/lighting/GaiusLightColumnAccess.java
+port/mc/shared/canonical/src/java/net/minecraft/world/level/block/state/GaiusStateNeighbourTables.java

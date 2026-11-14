@@ -3,7 +3,7 @@
 //! glass and leaves.
 
 use crate::mesher::{step, Mesher, DOWN, EAST, NORTH, SOUTH, UP, WEST};
-use crate::mth::{fuzzy_equals, light_max, mth_atan2, mth_cos, mth_sin, normalize, red, scale_rgb};
+use crate::mth::{fuzzy_equals, light_max, mth_atan2, mth_cos, mth_sin, normalize, scale_rgb};
 use crate::output::Vertex;
 use crate::table::{flags, StateInfo, FACE_EMPTY, FACE_FULL, NO_TINT};
 
@@ -177,15 +177,7 @@ impl<'s> Mesher<'s, '_, '_> {
     }
 
     /// `FluidRenderer.addFace`: four vertices, then the reverse winding when `backface`.
-    fn fluid_quad(
-        &mut self,
-        layer: u8,
-        v: [(f32, f32, f32, f32, f32); 4],
-        color: i32,
-        light: i32,
-        tint: i32,
-        backface: bool,
-    ) {
+    fn fluid_quad(&mut self, layer: u8, v: [(f32, f32, f32, f32, f32); 4], color: i32, light: i32, backface: bool) {
         let mk = |p: (f32, f32, f32, f32, f32)| Vertex {
             x: p.0,
             y: p.1,
@@ -194,17 +186,12 @@ impl<'s> Mesher<'s, '_, '_> {
             u: p.3,
             v: p.4,
             light,
-            shade: 0,
         };
-        let mut q = [mk(v[0]), mk(v[1]), mk(v[2]), mk(v[3])];
-        let gray = fluid_shade(color, tint);
-        for vert in &mut q {
-            vert.shade = gray;
-        }
-        self.out.quad(layer, &q, tint);
+        let q = [mk(v[0]), mk(v[1]), mk(v[2]), mk(v[3])];
+        self.out.quad(layer, &q);
         if backface {
             let r = [q[0], q[3], q[2], q[1]];
-            self.out.quad(layer, &r, tint);
+            self.out.quad(layer, &r);
         }
     }
 
@@ -309,7 +296,6 @@ impl<'s> Mesher<'s, '_, '_> {
                 ],
                 color,
                 light,
-                tint,
                 backface,
             );
         }
@@ -329,7 +315,6 @@ impl<'s> Mesher<'s, '_, '_> {
                 ],
                 color,
                 light,
-                tint,
                 false,
             );
         }
@@ -387,22 +372,9 @@ impl<'s> Mesher<'s, '_, '_> {
                 ],
                 color,
                 light,
-                tint,
                 !overlay,
             );
         }
-    }
-}
-
-/// The gray factor of a fluid face color for the compact format: the brightness the face
-/// was scaled by, recovered from the white-tinted (or tinted) color.
-fn fluid_shade(color: i32, tint: i32) -> u8 {
-    let reference = red(tint).max(1);
-    let scaled = red(color);
-    if tint == -1 {
-        scaled as u8
-    } else {
-        ((scaled * 255 + reference / 2) / reference).clamp(0, 255) as u8
     }
 }
 

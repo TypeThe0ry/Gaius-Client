@@ -12,43 +12,55 @@ public final class BrowserChunkDrawTelemetry {
     private static final int MAX_UNIFORM_MAPPINGS = 32768;
     private static final int MAX_COLUMNS = 4096;
 
-    private static final long[] columnByUniform = new long[MAX_UNIFORM_MAPPINGS];
-    private static final int[] uniformGeneration = new int[MAX_UNIFORM_MAPPINGS];
-    private static final long[] seenColumns = new long[MAX_COLUMNS];
-    private static final boolean[] seenColumnSlots = new boolean[MAX_COLUMNS];
+    private static long[] columnByUniform;
+    private static int[] uniformGeneration;
+    private static long[] seenColumns;
+    private static boolean[] seenColumnSlots;
 
     private static Object activeWorld;
     private static boolean active;
+    private static boolean drawTelemetryActive;
     private static int generation;
     private static int worldSequence;
     private static int pendingUniformIndex = -1;
+    private static final boolean DRAW_ENABLED = BrowserBuildFlags.telemetry() && telemetryEnabledAtStartup();
 
     private BrowserChunkDrawTelemetry() {
     }
 
     /** Starts a new per-frame uniform map and clears all columns on a world switch. */
     public static void beginPrepare(Object world) {
-        if (!BrowserBuildFlags.telemetry() || !telemetryEnabled()) {
+        boolean drawEnabled = DRAW_ENABLED;
+        boolean causalEnabled = BrowserChunkPipelineTelemetry.enabled();
+        if (!drawEnabled && !causalEnabled) {
             active = false;
             activeWorld = null;
             pendingUniformIndex = -1;
             return;
         }
-        if (!active || activeWorld != world) {
+        if (!active || activeWorld != world || drawTelemetryActive != drawEnabled) {
             active = true;
             activeWorld = world;
-            worldSequence++;
-            if (worldSequence <= 0) {
-                worldSequence = 1;
+            if (drawEnabled) {
+                ensureDrawStorage();
+                worldSequence++;
+                if (worldSequence <= 0) {
+                    worldSequence = 1;
+                }
+                Arrays.fill(seenColumnSlots, false);
+                resetPublished(worldSequence);
             }
             generation = 0;
-            Arrays.fill(uniformGeneration, 0);
-            Arrays.fill(seenColumnSlots, false);
-            resetPublished(worldSequence);
+            if (drawEnabled) {
+                Arrays.fill(uniformGeneration, 0);
+            }
+            drawTelemetryActive = drawEnabled;
         }
         generation++;
         if (generation <= 0) {
-            Arrays.fill(uniformGeneration, 0);
+            if (drawEnabled) {
+                Arrays.fill(uniformGeneration, 0);
+            }
             generation = 1;
         }
         pendingUniformIndex = -1;
@@ -56,7 +68,7 @@ public final class BrowserChunkDrawTelemetry {
 
     /** Records the renderer-side inputs after building one ChunkSectionsToRender snapshot. */
     public static void recordPrepareStats(int visibleSections, int maxIndexCount) {
-        if (!active || !telemetryEnabled()) {
+        if (!active || !drawTelemetryActive) {
             return;
         }
         recordPrepareStatsJs(visibleSections, maxIndexCount);
@@ -78,18 +90,28 @@ public final class BrowserChunkDrawTelemetry {
     private static native void recordPrepareStatsJs(int visibleSections, int maxIndexCount);
 
     /** Associates the frame-local ChunkSection uniform index with one x/z column. */
+    /** Compatibility entry point used by the existing profile patchers. */
     public static void registerSection(int uniformIndex, int blockX, int blockZ) {
+        registerSection(uniformIndex, blockX, 0, blockZ);
+    }
+
+    public static void registerSection(int uniformIndex, int blockX, int blockY, int blockZ) {
         if (!active) {
             return;
         }
         if (uniformIndex < 0 || uniformIndex >= MAX_UNIFORM_MAPPINGS) {
-            recordUniformOverflow(uniformIndex);
+            if (drawTelemetryActive) {
+                recordUniformOverflow(uniformIndex);
+            }
             return;
         }
         int chunkX = blockX >> 4;
         int chunkZ = blockZ >> 4;
-        columnByUniform[uniformIndex] = packColumn(chunkX, chunkZ);
-        uniformGeneration[uniformIndex] = generation;
+        if (drawTelemetryActive) {
+            columnByUniform[uniformIndex] = packColumn(chunkX, chunkZ);
+            uniformGeneration[uniformIndex] = generation;
+        }
+        BrowserChunkPipelineTelemetry.registerDrawSection(uniformIndex, chunkX, blockY >> 4, chunkZ);
     }
 
     /** Clears any callback state left by an earlier failed draw submission. */
@@ -130,13 +152,19 @@ public final class BrowserChunkDrawTelemetry {
         if (!active) {
             return;
         }
-        if (!telemetryEnabled()) {
+        boolean drawEnabled = drawTelemetryActive;
+        boolean causalEnabled = BrowserChunkPipelineTelemetry.enabled();
+        if (!drawEnabled && !causalEnabled) {
             active = false;
             activeWorld = null;
             return;
         }
         if (indexCount <= 0) {
             recordZeroDraw();
+            return;
+        }
+        if (!drawEnabled) {
+            BrowserChunkPipelineTelemetry.firstDraw(uniformIndex, indexCount);
             return;
         }
         if (gpuSubmissionUnavailable()) {
@@ -149,6 +177,9 @@ public final class BrowserChunkDrawTelemetry {
             return;
         }
         long packed = columnByUniform[uniformIndex];
+        if (causalEnabled) {
+            BrowserChunkPipelineTelemetry.firstDraw(uniformIndex, indexCount);
+        }
         if (!markFirstColumn(packed)) {
             recordDuplicateColumnDraw();
             return;
@@ -191,8 +222,25 @@ public final class BrowserChunkDrawTelemetry {
         return (int) value;
     }
 
-    @JSBody(script = "return globalThis.__gaiusChunkDrawTelemetryEnabled === true;")
-    private static native boolean telemetryEnabled();
+    private static void ensureDrawStorage() {
+        if (columnByUniform == null) {
+            columnByUniform = new long[MAX_UNIFORM_MAPPINGS];
+            uniformGeneration = new int[MAX_UNIFORM_MAPPINGS];
+            seenColumns = new long[MAX_COLUMNS];
+            seenColumnSlots = new boolean[MAX_COLUMNS];
+        }
+    }
+
+    @JSBody(script = """
+            let enabled=globalThis.__gaiusChunkDrawTelemetryEnabled;
+            if(enabled!==true&&enabled!==false){
+              const params=new URLSearchParams(globalThis.location?globalThis.location.search:'');
+              enabled=/^(1|true|on)$/i.test(params.get('gaiusChunkDrawTelemetry')||'');
+              if(enabled)globalThis.__gaiusChunkDrawTelemetryEnabled=true;
+            }
+            return enabled===true;
+            """)
+    private static native boolean telemetryEnabledAtStartup();
 
     @JSBody(script = """
             return typeof performance !== 'undefined'

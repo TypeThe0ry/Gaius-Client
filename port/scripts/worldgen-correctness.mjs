@@ -44,12 +44,15 @@ export function hookCoverage(row, densityGraph) {
   if (!row.hooksAvailable || row.errors !== 0 || !['all', 'biomes', 'noise', 'terrain'].includes(row.hooks)) return false;
   const expected = row.hooks === 'biomes' ? ['402'] : row.hooks === 'noise' ? ['403']
     : densityGraph === 'sampler-f32' ? ['403'] : ['403', '404'];
-  if (row.hooks === 'all') expected.push('402');
-  if (!Object.entries(row.declines ?? {}).every(([kind, count]) => expected.includes(kind)
+  // Neither seam sends multi-noise BIOMES to the kernel (the Java hook returns before any job:
+  // vanilla's stored-biome search history stays on Java), so a BIOMES job is allowed but never
+  // required. TERRAIN (and, on the split router seam, SURFACE) must really execute.
+  const allowed = row.hooks === 'all' ? [...expected, '402'] : expected;
+  if (!Object.entries(row.declines ?? {}).every(([kind, count]) => allowed.includes(kind)
       && Number.isSafeInteger(count) && count >= 0 && count <= row.jobs?.[kind])) return false;
   if (!expected.every(kind => Number.isSafeInteger(row.jobs?.[kind]) && row.jobs[kind] > 0)) return false;
   return Object.entries(row.jobs).every(([kind, count]) => Number.isSafeInteger(count) && count >= 0
-    && (!['402', '403', '404'].includes(kind) || expected.includes(kind)));
+    && (!['402', '403', '404'].includes(kind) || allowed.includes(kind)));
 }
 
 export function executionCoverage(row, profile) {

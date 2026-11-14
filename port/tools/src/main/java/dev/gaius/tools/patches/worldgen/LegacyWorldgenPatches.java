@@ -713,15 +713,10 @@ public final class LegacyWorldgenPatches {
     }
 
     private static void writeComputeFrames(ClassNode node, Path output) throws IOException {
-        ClassWriter writer = new ClassWriter(
-                ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS) {
-            @Override
-            protected String getCommonSuperClass(String type1, String type2) {
-                return "java/lang/Object";
-            }
-        };
-        node.accept(writer);
-        Files.createDirectories(output.getParent());
-        Files.write(output, writer.toByteArray());
+        try (var writer = dev.gaius.tools.HierarchyClassWriter.create(node, output)) {
+            node.accept(writer);
+            Files.createDirectories(output.getParent());
+            Files.write(output, writer.toByteArray());
+        }
     }
 }

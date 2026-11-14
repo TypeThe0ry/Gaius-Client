@@ -309,7 +309,7 @@ public final class AudioPatches {
                 "continueDestroyBlock",
                 "(Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/Direction;)Z");
         boolean foundHitSound = false;
-        int patchedVolumeDivisors = 0;
+        int vanillaVolumeDivisors = 0;
         for (var instruction = method.instructions.getFirst();
                 instruction != null;
                 instruction = instruction.getNext()) {
@@ -325,16 +325,15 @@ public final class AudioPatches {
                     && Float.valueOf(8.0f).equals(constant.cst)
                     && nextOpcode(instruction) != null
                     && nextOpcode(instruction).getOpcode() == Opcodes.FDIV) {
-                constant.cst = Float.valueOf(4.0f);
-                patchedVolumeDivisors++;
+                vanillaVolumeDivisors++;
                 break;
             }
         }
-        if (!foundHitSound || patchedVolumeDivisors != 1) {
+        if (!foundHitSound || vanillaVolumeDivisors != 1) {
             throw new IllegalStateException(
-                    "MultiPlayerGameMode browser hit sound volume patch point was not found");
+                    "MultiPlayerGameMode vanilla hit sound volume shape was not found");
         }
-        write(node, output);
+        // The historical registration is now a shape guard and leaves the vanilla class intact.
     }
 
     /**
@@ -342,10 +341,10 @@ public final class AudioPatches {
      * {@code ClientLevel.addBreakingBlockEffects(BlockPos, Direction, boolean)} (which replaced
      * 26.2's {@code addBreakingBlockEffect(BlockPos, Direction)}) plays it through the private
      * {@code playBreakingSound(BlockPos, BlockState)}, for the first hit and for the server's
-     * periodic level event 2020. This patch is therefore dropped; UiPatches263 applies the same
-     * 8.0f to 4.0f volume change to playBreakingSound at the tail of the chain, reading the
-     * ClientLevel that patchClientLevelBrowserBlockBreakEffects wrote. Both facts are checked
-     * here, so neither a leftover MultiPlayerGameMode hit sound nor a missing new target can pass.
+     * periodic level event 2020. This patch is therefore dropped; UiPatches263 validates the
+     * corresponding vanilla volume shape at the tail of the chain, reading the ClientLevel that
+     * patchClientLevelBrowserBlockBreakEffects wrote. Both facts are checked here, so neither a
+     * leftover MultiPlayerGameMode hit sound nor a missing new target can pass.
      */
     private static void dropMultiPlayerGameModeBrowserHitSound(String jar) throws IOException {
         String patchId = "MinecraftClientPatcher.patchMultiPlayerGameModeBrowserHitSound";

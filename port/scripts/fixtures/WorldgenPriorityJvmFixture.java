@@ -78,6 +78,7 @@ public final class WorldgenPriorityJvmFixture {
     public static void main(String[] args) throws Exception {
         bookkeepingFloodIsCountBounded();
         bookkeepingFloodIsWallClockBounded();
+        bookkeepingTurnsKeepTheirBudgetWithFewerClockReads();
         generationRunsAloneAtTurnStart();
         suspendedGenerationIsNeverReentered();
         pumpContinuesThroughMessageTurns();
@@ -151,6 +152,84 @@ public final class WorldgenPriorityJvmFixture {
                 "bookkeeping turns ignored the wall-clock budget: " + turns);
         check(stops(STOP_BUDGET) == 4 && stops(STOP_IDLE) == 1 && !dispatcher.hasWork(),
                 "wall-clock bounded turns reported the wrong stop reasons");
+    }
+
+    /**
+     * The turn reads the clock on the runnables its stride picks. With a steady cost per runnable
+     * the turns are exactly the ones a read on every runnable gives; with costs that vary, or a
+     * heavy runnable now and then, a turn ends at most {@code MAX_SKIP} runnables later than it
+     * would have, and the clock is read a fraction as often.
+     */
+    private static void bookkeepingTurnsKeepTheirBudgetWithFewerClockReads() {
+        final long budget = 2_000_000L;
+        final int maxSkip = 7;
+        final String[] models = {"constant", "uniform", "rare-heavy"};
+        for (String model : models) {
+            long state = 0x2545F4914F6CDD1DL ^ model.hashCode();
+            final int taskCount = 20_000;
+            final long[] costs = new long[taskCount];
+            for (int i = 0; i < taskCount; i++) {
+                state ^= state << 13;
+                state ^= state >>> 7;
+                state ^= state << 17;
+                double u = ((state >>> 11) & ((1L << 53) - 1)) / (double) (1L << 53);
+                switch (model) {
+                    case "constant": costs[i] = 20_000L; break;
+                    case "uniform": costs[i] = 5_000L + (long) (30_000L * u); break;
+                    default: costs[i] = u < 0.02 ? 500_000L : 15_000L; break;
+                }
+            }
+            reset();
+            Gate gate = new Gate();
+            PriorityConsecutiveExecutor dispatcher = new PriorityConsecutiveExecutor(4, gate, WORLDGEN);
+            AtomicInteger index = new AtomicInteger();
+            for (int i = 0; i < taskCount; i++) {
+                int slot = i % 3;
+                dispatcher.schedule(task(slot, () -> {
+                    WorldgenDispatcherFixtureRuntime.nanoTime += costs[index.getAndIncrement()];
+                }));
+            }
+            List<Integer> turns = new ArrayList<>();
+            gate.drainOne();
+            turns.add(index.get());
+            while (Platform.pendingThreads() > 0) {
+                int before = index.get();
+                Platform.runNextThread();
+                gate.drainOne();
+                turns.add(index.get() - before);
+            }
+            check(index.get() == taskCount && !dispatcher.hasWork(), model + ": backlog did not drain");
+            int lateCalls = 0;
+            // Per turn: what a read on every runnable gives is a turn that ends after the runnable
+            // taking the elapsed time to the budget (or at the runnable cap). Never fewer
+            // runnables than the reference turn that starts at the same runnable, at most
+            // maxSkip more.
+            int start = 0;
+            for (int turn : turns) {
+                long elapsed = 0;
+                int reference = 0;
+                int position = start;
+                while (position < taskCount && reference < TURN_RUNNABLE_CAP) {
+                    elapsed += costs[position++];
+                    reference++;
+                    if (elapsed >= budget) break;
+                }
+                int extra = turn - reference;
+                check(extra >= 0 && extra <= maxSkip,
+                        model + ": turn at " + start + " ran " + turn + " runnables, reference " + reference);
+                if (model.equals("constant")) {
+                    check(extra == 0, "constant cost: the turn must end where a read per runnable ends it");
+                }
+                lateCalls = Math.max(lateCalls, extra);
+                start += turn;
+            }
+            int referenceReads = taskCount; // one continueTurn read per runnable
+            int reads = WorldgenDispatcherFixtureRuntime.reads;
+            check(reads * 3 <= referenceReads + 2 * turns.size(),
+                    model + ": " + reads + " clock reads for " + taskCount + " runnables");
+            System.out.println("DISPATCHER_STRIDE " + model + " turns=" + turns.size() + " reads=" + reads
+                    + "/" + (referenceReads + 2 * turns.size()) + " lateRunnables<=" + lateCalls);
+        }
     }
 
     /** Priority 3 (ChunkTaskDispatcher.pollTask) may suspend: never after other work, never followed. */

@@ -3,10 +3,11 @@ package dev.gaius.browser.quality;
 import org.teavm.jso.JSBody;
 
 /**
- * Initial capacity of the hot uniform storages ({@code DynamicGpuData}'s "Dynamic Transforms
- * UBO" and "Chunk Sections UBO", or {@code DynamicUniforms}' two storages), chosen at run time
+ * Initial capacity of hot GPU storages ({@code DynamicGpuData}'s "Dynamic Transforms UBO",
+ * "Chunk Sections UBO", instanced section data and indirect command buffer, or
+ * {@code DynamicUniforms}' two storages), chosen at run time
  * on the WebAssembly GC build. {@code MinecraftClientPatcher.patchDynamicGpuDataBrowserInitialCapacity}
- * (and its alternate shape) replaces the vanilla initial capacity 2 with a call to {@link #capacity};
+ * (and its alternate shape) replaces the vanilla initial capacities with a call to {@link #capacity};
  * the JavaScript build keeps the fixed 32767-entry slab.
  *
  * <p>The browser slab exists so that the first multiplayer terrain burst does not reallocate the

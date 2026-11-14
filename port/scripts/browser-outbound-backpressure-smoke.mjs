@@ -63,6 +63,10 @@ assert.match(outboundSchedulerScript, /!hasFlushableOutbound\(entry\)/,
   "idle inbound polling must not manufacture empty outbound turns");
 assert.match(outboundSchedulerScript, /outboundFlushGeneration/,
   "microtask cancellation must be generation guarded");
+assert.match(source, /__gaiusChunkPipelineBatching/,
+  "local chunk batching switch is missing");
+assert.match(source, /localBatchBytesLimit/,
+  "local batch size telemetry is missing");
 
 function delay(millis) {
   return new Promise((resolve) => setTimeout(resolve, millis));
@@ -76,7 +80,7 @@ async function waitFor(predicate, label, timeoutMillis = 3000) {
   }
 }
 
-function createContext(WebSocketImpl, localPorts = new Map(), localWorkers = new Map()) {
+function createContext(WebSocketImpl, localPorts = new Map(), localWorkers = new Map(), batching = false) {
   const context = {
     AbortController,
     Array,
@@ -117,12 +121,26 @@ function createContext(WebSocketImpl, localPorts = new Map(), localWorkers = new
     WebSocket: WebSocketImpl,
     __gaiusLocalServerPorts: localPorts,
     __gaiusSingleplayerWorkers: localWorkers,
+    __gaiusChunkPipelineBatching: batching,
   };
   context.globalThis = context;
   context.window = context;
   vm.runInNewContext(`(function() {${bridgeScript}\n})();`, context);
   vm.runInNewContext(`(function() {${outboundSchedulerScript}\n})();`, context);
   return context;
+}
+
+function runChunkBatchSwitchSmoke() {
+  const off = createContext(class {}, new Map(), new Map(), false);
+  const on = createContext(class {}, new Map(), new Map(), true);
+  assert.equal(off.__gaiusNetworkStats.localBatchBytesLimit, 16 * 1024,
+    "default local chunk batch limit changed");
+  assert.equal(on.__gaiusNetworkStats.localBatchBytesLimit, 64 * 1024,
+    "opt-in local chunk batch limit was not applied");
+  return {
+    offBytes: off.__gaiusNetworkStats.localBatchBytesLimit,
+    onBytes: on.__gaiusNetworkStats.localBatchBytesLimit,
+  };
 }
 
 function assertBounded(stats, label) {
@@ -431,5 +449,6 @@ async function runWebSocketSmoke() {
 
 const local = await runLocalMessagePortSmoke();
 const webSocket = await runWebSocketSmoke();
+const chunkBatchSwitch = runChunkBatchSwitchSmoke();
 await delay(20);
-console.log(JSON.stringify({ok: true, local, webSocket}));
+console.log(JSON.stringify({ok: true, local, webSocket, chunkBatchSwitch}));

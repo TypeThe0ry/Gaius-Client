@@ -32,7 +32,7 @@ test("argument parsing requires an external output and known case IDs", () => {
   assert.deepEqual(options.profiles, [MODERN_PROFILE]);
   assert.deepEqual(options.cases, ["site-wasm-webgpu"]);
   assert.throws(() => parseArguments(["--staged", staged, "--out", out, "--cases", "missing"]), /unknown case/);
-  assert.throws(() => parseArguments(["--staged", staged, "--out", "port/artifacts"]), /outside the repository/);
+  assert.throws(() => parseArguments(["--staged", staged, "--out", new URL("../artifacts", import.meta.url).pathname]), /outside the repository/);
 });
 
 test("runner pins visible terrain policy and isolates ambient harness routing", () => {
@@ -45,7 +45,8 @@ test("runner pins visible terrain policy and isolates ambient harness routing", 
     GAIUS_GPU_EXPECT: "webgpu",
     OUT: "D:/wrong-out", PROFILE: "wrong", SEED: "wrong", KEEP_FOR_TEST: "yes",
     SETTLE_S: "12", BOOT_TIMEOUT_MS: "1", WORLD_TIMEOUT_MS: "2",
-    SLOT_TIMEOUT_S: "3", CDP_TIMEOUT_MS: "4", GAIUS_CHROME_BIN: "wrong-chrome.exe"});
+    SLOT_TIMEOUT_S: "3", CDP_TIMEOUT_MS: "4", GAIUS_CHROME_BIN: "/usr/bin/google-chrome",
+    GAIUS_CHROME_GPU_FLAGS_JSON: "[]"});
   assert.equal(env.ACCEPT_TERRAIN_VISIBLE, "1");
   assert.equal(env.ACCEPT_PAUSE_ON_LOST_FOCUS, "0");
   assert.equal(env.DIST, spec.dist);
@@ -61,8 +62,20 @@ test("runner pins visible terrain policy and isolates ambient harness routing", 
   assert.equal(env.BOOT_TIMEOUT_MS, "900000");
   assert.equal(env.WORLD_TIMEOUT_MS, "420000");
   assert.equal(env.SLOT_TIMEOUT_S, "2400");
-  assert.equal(env.CDP_TIMEOUT_MS, undefined);
-  assert.equal(env.GAIUS_CHROME_BIN, undefined);
+  assert.equal(env.CDP_TIMEOUT_MS, "4");
+  assert.equal(env.GAIUS_CHROME_BIN, "/usr/bin/google-chrome");
+  assert.equal(env.GAIUS_CHROME_GPU_FLAGS_JSON, "[]");
+});
+
+test("GAIUS_EXTRA_QUERY appends diagnostic page terms to the case query and nothing else", () => {
+  const options = {out: "D:/acceptance-out", seed: "20261014"};
+  const spec = {profile: MODERN_PROFILE, id: "site-wasm-webgl2", dist: `D:/staged/site-${MODERN_PROFILE}`,
+    runtime: "wasm", gpu: "webgl2", query: "runtime=wasm&gpu=webgl2", preflight: []};
+  assert.equal(buildHarnessEnv(spec, options, {GAIUS_EXTRA_QUERY: "gaiusServerTickTelemetry=1"}).QUERY,
+    "runtime=wasm&gpu=webgl2&gaiusServerTickTelemetry=1");
+  assert.equal(buildHarnessEnv(spec, options, {}).QUERY, spec.query);
+  const bare = {...spec, query: undefined};
+  assert.equal(buildHarnessEnv(bare, options, {GAIUS_EXTRA_QUERY: "a=1"}).QUERY, "runtime=wasm&a=1");
 });
 
 test("GPU fallback case expects rendered WebGL2 while retaining its WebGPU request", () => {
@@ -227,4 +240,36 @@ test("browser harness runs through GAIUS_SLOT when set and directly otherwise", 
   assert.equal(slotted.slotted, true);
   assert.equal(slotted.command, "bash");
   assert.deepEqual(slotted.args.slice(0, 5), ["/work/slot.sh", "chrome", "tag", "--", "node"]);
+});
+
+
+test("frozen fallback matrix keeps all capability probes and runs normal save checks", async () => {
+  const staged = await mkdtemp(join(tmpdir(), "release-frozen-plan-"));
+  try {
+    const manifest = {runtimePolicy: "auto", assets: {"classes.js.gz": "client.js.gz", "singleplayer-server.js.gz": "server.js.gz"}};
+    for (const form of ["site", "acceptance"]) {
+      await mkdir(join(staged, `${form}-${MODERN_PROFILE}`), {recursive: true});
+      await writeFile(join(staged, `${form}-${MODERN_PROFILE}`, "index.html"), "");
+    }
+    await mkdir(join(staged, `portable-${MODERN_PROFILE}`));
+    await writeFile(join(staged, `portable-${MODERN_PROFILE}`, `Gaius-${MODERN_PROFILE}.html`), "");
+    const row = planCases({staged, profiles: [MODERN_PROFILE], manifests: {[MODERN_PROFILE]: manifest}})
+      .find(item => item.id === "unsupported-browser");
+    assert.equal(row.frozenFallback, true);
+    assert.equal(row.unsupportedVariants.length, 4);
+    assert.deepEqual(row.preflight, []);
+    const spec = {...row, ...row.unsupportedVariants[0], unsupportedVariant: false,
+      runtime: "js", gpu: "webgl2", fallback: "runtime", reenter: "reload", preflight: []};
+    const env = buildHarnessEnv(spec, {out: join(staged, "result"), seed: "1"}, {});
+    assert.equal(env.ACCEPT_INJECT, "no-wasmgc");
+    assert.equal(env.REENTER, "reload");
+    assert.equal(env.UNSUPPORTED_BROWSER_ACCEPTANCE, undefined);
+    const report = completeReport(MODERN_PROFILE, "webgl2");
+    report.selection.runtime = {selected: "js", fallback: true, features: {gc: false}};
+    report.runtimes = {world: {client: "js", server: {runtime: "js"}}};
+    report.selection.injection = {mode: spec.inject, applied: true};
+    assert.deepEqual(assessCase(spec, report, 0), []);
+    report.selection.runtime.features.gc = true;
+    assert.match(assessCase(spec, report, 0).join(" "), /injected runtime capability/);
+  } finally { await rm(staged, {recursive: true, force: true}); }
 });

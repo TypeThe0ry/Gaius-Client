@@ -9,8 +9,8 @@
 
 use crate::job::{flags as job_flags, region_index, SectionJob, REGION, VOLUME};
 use crate::mth::{
-    block_seed, clamp_d, gray, light_pack, light_with_block, light_with_emission, multiply, red, scale_rgb,
-    smooth_blend, FULL_BRIGHT,
+    block_seed, clamp_d, gray, light_pack, light_with_block, light_with_emission, multiply, scale_rgb, smooth_blend,
+    FULL_BRIGHT,
 };
 use crate::output::{self, Output, ResultHead, Vertex};
 use crate::rng::Rng;
@@ -521,16 +521,9 @@ impl<'s> Mesher<'s, '_, '_> {
 
     /// `putQuadWithTint` + `BufferBuilder.putBlockBakedQuad`.
     fn put(&mut self, st: &StateInfo, place: &Place, q: &Quad, mut colors: [i32; 4], lights: [i32; 4]) {
-        let shades = [
-            red(colors[0]) as u8,
-            red(colors[1]) as u8,
-            red(colors[2]) as u8,
-            red(colors[3]) as u8,
-        ];
-        let mut tint = -1;
         if q.tint_index != -1 {
             let (wx, wy, wz) = place.world;
-            tint = self.tint_color(st, q.tint_index, wx, wy, wz);
+            let tint = self.tint_color(st, q.tint_index, wx, wy, wz);
             for c in &mut colors {
                 *c = multiply(*c, tint);
             }
@@ -549,11 +542,10 @@ impl<'s> Mesher<'s, '_, '_> {
                 u: uv[2 * k],
                 v: uv[2 * k + 1],
                 light: light_with_emission(lights[k], emission),
-                shade: shades[k],
             };
         }
         let layer = if place.force_solid { LAYER_SOLID } else { q.layer };
-        self.out.quad(layer, &v, tint);
+        self.out.quad(layer, &v);
     }
 }
 

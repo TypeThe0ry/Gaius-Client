@@ -15,6 +15,12 @@
 // already computing, is dropped), an older version is rejected as "stale". Payloads and
 // results move as transferred ArrayBuffers; a payload up to retryCopyLimit bytes keeps a
 // copy while in flight so a job can be re-queued once if its Worker dies.
+//
+// Job timeline (diagnostics, off by default): create({timeline: true | rows}) or
+// ?gaiusKernelTimeline=1 (global.__gaiusKernelTimeline) records enqueue/dispatch/worker
+// receive/start/finish per job attempt and the busy intervals of every worker in fixed-capacity
+// rings; pool.timelineExport({since, max}) reads them (same format as kernel-runtime.js).
+// Off, no ring exists and scheduling, messages and results are untouched.
 (function (global) {
   "use strict";
 
@@ -44,16 +50,171 @@
   const now = () => (global.performance && global.performance.now ? global.performance.now() : Date.now());
   const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
   const isArrayBuffer = (value) => Object.prototype.toString.call(value) === "[object ArrayBuffer]";
+  const isSharedArrayBuffer = (value) => Object.prototype.toString.call(value) === "[object SharedArrayBuffer]";
+  const isBuffer = (value) => isArrayBuffer(value) || isSharedArrayBuffer(value);
+
+  // --- job timeline ring begin (this block is kept identical in kernel-runtime.js and kernel-pool.js) ---
+  // Opt-in diagnostics: one row per job attempt (enqueue, dispatch, worker receive/start/finish,
+  // outcome) in a fixed-capacity ring of typed arrays, plus one row per busy interval of a worker
+  // (the stretch in which it had at least one job in flight). Nothing here exists unless a
+  // timeline was requested, and writing a row allocates nothing. Times are wall-clock
+  // milliseconds (performance.timeOrigin + performance.now()), so the stamps of different
+  // realms line up up to the clock resolution of the engine. Switch: ?gaiusKernelTimeline=1
+  // (or a row capacity), localStorage gaius.kernels.settings.v1 {timeline}, the global
+  // __gaiusKernelTimeline, or the create option `timeline`.
+  const TIMELINE_SCHEMA = "gaius-kernel-timeline/1";
+  const TIMELINE_DEFAULT_CAPACITY = 4096;
+  const TIMELINE_MIN_CAPACITY = 8;
+  const TIMELINE_MAX_CAPACITY = 65536;
+  const TIMELINE_EXPORT_MAX_ROWS = 8192;
+  const TIMELINE_NAME_LIMIT = 1024;
+  const TIMELINE_COLS = Object.freeze(["seq", "id", "w", "k", "kd", "st", "at", "cls", "enq", "dsp", "rcv", "t0", "t1", "exec", "port", "rid"]);
+
+  // true/"1"/"on" -> default capacity, a number -> that many rows, anything else -> 0 (off).
+  function timelineCapacity(value) {
+    if (value === true || value === "1" || value === "on" || value === "true") return TIMELINE_DEFAULT_CAPACITY;
+    const n = typeof value === "string" && value !== "" ? Number(value) : value;
+    if (typeof n !== "number" || !isFinite(n) || n < 1) return 0;
+    return n === 1 ? TIMELINE_DEFAULT_CAPACITY
+      : Math.min(TIMELINE_MAX_CAPACITY, Math.max(TIMELINE_MIN_CAPACITY, Math.floor(n)));
+  }
+
+  function timelineOrigin() {
+    const p = global.performance;
+    return p && typeof p.timeOrigin === "number" ? p.timeOrigin : Date.now() - now();
+  }
+
+  class JobTimeline {
+    constructor(capacity, busyCapacity) {
+      const n = this.capacity = capacity;
+      const m = this.busyCapacity = busyCapacity || capacity;
+      this.origin = timelineOrigin();
+      this.seq = 0;
+      this.id = new Float64Array(n);
+      this.w = new Int32Array(n);
+      this.k = new Int16Array(n);
+      this.kd = new Int16Array(n);
+      this.st = new Int16Array(n);
+      this.at = new Uint8Array(n);
+      this.cls = new Int8Array(n);
+      this.enq = new Float64Array(n);
+      this.dsp = new Float64Array(n);
+      this.rcv = new Float64Array(n);
+      this.t0 = new Float64Array(n);
+      this.t1 = new Float64Array(n);
+      this.exec = new Float64Array(n);
+      this.port = new Int32Array(n);
+      this.rid = new Float64Array(n);
+      this.busySeq = 0;
+      this.bw = new Int32Array(m);
+      this.bb = new Float64Array(m);
+      this.be = new Float64Array(m);
+      this.names = ["?"];
+      this.index = new Map();
+    }
+
+    intern(text) {
+      const known = this.index.get(text);
+      if (known !== undefined) return known;
+      if (this.names.length >= TIMELINE_NAME_LIMIT) return 0;
+      this.names.push(String(text));
+      this.index.set(text, this.names.length - 1);
+      return this.names.length - 1;
+    }
+
+    // Appends one attempt. Missing stamps are NaN. No allocation (names are interned once).
+    record(id, w, kernel, kind, status, attempt, cls, enq, dsp, rcv, t0, t1, exec, port, rid) {
+      const i = this.seq % this.capacity;
+      this.id[i] = id;
+      this.w[i] = w;
+      this.k[i] = this.intern(kernel);
+      this.kd[i] = this.intern(kind);
+      this.st[i] = this.intern(status);
+      this.at[i] = attempt > 255 ? 255 : attempt;
+      this.cls[i] = cls;
+      this.enq[i] = enq;
+      this.dsp[i] = dsp;
+      this.rcv[i] = rcv;
+      this.t0[i] = t0;
+      this.t1[i] = t1;
+      this.exec[i] = exec;
+      this.port[i] = port;
+      this.rid[i] = rid;
+      this.seq++;
+    }
+
+    busy(w, begin, end) {
+      const i = this.busySeq % this.busyCapacity;
+      this.bw[i] = w;
+      this.bb[i] = begin;
+      this.be[i] = end;
+      this.busySeq++;
+    }
+
+    stats() {
+      return {
+        capacity: this.capacity, total: this.seq, kept: Math.min(this.seq, this.capacity),
+        dropped: Math.max(0, this.seq - this.capacity),
+        busyTotal: this.busySeq, busyDropped: Math.max(0, this.busySeq - this.busyCapacity),
+      };
+    }
+
+    // Compact JSON-serializable view. Rows are arrays in TIMELINE_COLS order, oldest first; the
+    // k/kd/st columns index `strings`, times are milliseconds after `base` (epoch ms of this
+    // realm's time origin; a missing stamp is null). options.since is the `next` of an earlier
+    // export (rows lost to the ring in between are reported in `lost`), options.max bounds the
+    // rows, options.sinceBusy / `busy.next` do the same for the busy intervals.
+    export(options) {
+      const o = options || {};
+      const cap = this.capacity;
+      const limit = Math.min(TIMELINE_EXPORT_MAX_ROWS, Math.max(1,
+        Math.floor(Number(o.max)) || Math.min(cap, TIMELINE_DEFAULT_CAPACITY)));
+      const oldest = Math.max(0, this.seq - cap);
+      const hasSince = typeof o.since === "number" && isFinite(o.since) && o.since >= 0;
+      const start = hasSince ? Math.max(Math.floor(o.since), oldest) : Math.max(oldest, this.seq - limit);
+      const end = Math.min(this.seq, start + limit);
+      const base = this.origin;
+      const rel = (x) => (x !== x ? null : Math.round((x - base) * 1000) / 1000);
+      const rows = [];
+      for (let n = start; n < end; n++) {
+        const i = n % cap;
+        rows.push([n, this.id[i], this.w[i], this.k[i], this.kd[i], this.st[i], this.at[i], this.cls[i],
+          rel(this.enq[i]), rel(this.dsp[i]), rel(this.rcv[i]), rel(this.t0[i]), rel(this.t1[i]),
+          this.exec[i] !== this.exec[i] ? null : Math.round(this.exec[i] * 1000) / 1000, this.port[i],
+          this.rid[i]]);
+      }
+      const bcap = this.busyCapacity;
+      const boldest = Math.max(0, this.busySeq - bcap);
+      const hasBusy = typeof o.sinceBusy === "number" && isFinite(o.sinceBusy) && o.sinceBusy >= 0;
+      const bstart = hasBusy ? Math.max(Math.floor(o.sinceBusy), boldest) : Math.max(boldest, this.busySeq - limit);
+      const bend = Math.min(this.busySeq, bstart + limit);
+      const busyRows = [];
+      for (let n = bstart; n < bend; n++) {
+        const i = n % bcap;
+        busyRows.push([n, this.bw[i], rel(this.bb[i]), rel(this.be[i])]);
+      }
+      const stats = this.stats();
+      return {
+        schema: TIMELINE_SCHEMA, enabled: true, base, exportedAt: Math.round((base + now()) * 1000) / 1000,
+        capacity: cap, total: stats.total, kept: stats.kept, dropped: stats.dropped,
+        lost: hasSince ? Math.max(0, oldest - Math.floor(o.since)) : 0, next: end,
+        cols: TIMELINE_COLS, strings: this.names.slice(), rows,
+        busy: {cols: ["seq", "w", "b", "e"], rows: busyRows, total: stats.busyTotal, dropped: stats.busyDropped,
+          lost: hasBusy ? Math.max(0, boldest - Math.floor(o.sinceBusy)) : 0, next: bend},
+      };
+    }
+  }
+  // --- job timeline ring end ---
 
   function toArrayBuffer(payload) {
     if (payload == null) return new ArrayBuffer(0);
-    if (isArrayBuffer(payload)) return payload;
+    if (isBuffer(payload)) return payload;
     if (ArrayBuffer.isView(payload)) {
       const {buffer, byteOffset, byteLength} = payload;
-      if (isArrayBuffer(buffer) && byteOffset === 0 && byteLength === buffer.byteLength) return buffer;
+      if (isBuffer(buffer) && byteOffset === 0 && byteLength === buffer.byteLength) return buffer;
       return new Uint8Array(buffer, byteOffset, byteLength).slice().buffer;
     }
-    throw new TypeError("kernel payload must be an ArrayBuffer or a view of one");
+    throw new TypeError("kernel payload must be a buffer or a view of one");
   }
 
   // Default worker count: all cores but two (main thread and the integrated server), at most 8.
@@ -182,6 +343,22 @@
         transferMs: 0, maxTransferMs: 0,
       };
       this.kindStats = new Map();
+      // Job timeline (see the ring block): null unless requested.
+      this.timeline = null;
+      let requested = options.timeline;
+      if (requested === undefined) {
+        requested = global.__gaiusKernelTimeline;
+        try {
+          const param = new global.URLSearchParams(global.location && global.location.search || "").get("gaiusKernelTimeline");
+          if (param !== null) requested = param;
+        } catch (_) { /* no URL parameters here */ }
+      }
+      const timelineRows = timelineCapacity(requested);
+      if (timelineRows > 0) {
+        this.timeline = new JobTimeline(timelineRows);
+        const sources = global.__gaiusKernelTimelineSources || (global.__gaiusKernelTimelineSources = new Set());
+        sources.add(this);
+      }
       this.reconcile(false);
     }
 
@@ -233,9 +410,10 @@
           this.cancelJob(current, "superseded", `job ${String(key)} superseded by v${version}`);
         }
       }
+      const buffer = toArrayBuffer(payload);
       const job = {
         id: this.nextJobId++, seq: this.seq++, kind, key, version, priority,
-        payload: toArrayBuffer(payload), transfer: opts.transfer !== false, retry: opts.retry !== false,
+        payload: buffer, transfer: opts.transfer !== false && !isSharedArrayBuffer(buffer), retry: opts.retry !== false,
         attempts: 0, state: "queued", settled: false, slot: null, entry: null,
         submittedAt: now(), detachSignal: null, promise: null, resolve: null, reject: null,
       };
@@ -297,6 +475,9 @@
 
     settle(job, error, value) {
       if (job.settled) return;
+      // A job answered by a worker gets its row from finish()/crash(); this one never reached a
+      // worker (or is between two attempts).
+      if (this.timeline !== null && job.state !== "inflight") this.recordAttempt(job, null, error ? error.code : "ok", null, NaN);
       if (job.state === "queued") this.unqueue(job);
       job.settled = true;
       job.state = "done";
@@ -346,18 +527,23 @@
       job.state = "inflight";
       job.slot = slot;
       job.attempts++;
+      if (this.timeline !== null) job.dispatchedAt = now();
       if (job.transfer) {
         const keepCopy = job.retry && job.attempts < this.options.maxAttempts
           && buffer.byteLength <= this.options.retryCopyLimit;
         job.payload = keepCopy ? buffer.slice(0) : null;
       }
+      if (this.timeline !== null && slot.inflight.size === 0) slot.busySince = now();
       slot.inflight.set(job.id, job);
       const transferStarted = now();
       try {
-        slot.worker.postMessage({type: "job", id: job.id, kind: job.kind, payload: buffer},
-          job.transfer ? [buffer] : []);
+        const message = {type: "job", id: job.id, kind: job.kind, payload: buffer};
+        if (this.timeline !== null) message.tl = 1;
+        slot.worker.postMessage(message, job.transfer ? [buffer] : []);
       } catch (error) {
+        if (this.timeline !== null) this.recordAttempt(job, slot, "post-failed", null, NaN);
         slot.inflight.delete(job.id);
+        if (this.timeline !== null && slot.inflight.size === 0) this.closeBusy(slot);
         this.fail(job, new KernelPoolError("post-failed", String(error && error.message || error), {kind: job.kind}));
         return;
       }
@@ -440,7 +626,13 @@
     finish(slot, message) {
       const job = slot.inflight.get(message.id);
       if (!job) return;
+      if (this.timeline !== null) {
+        this.recordAttempt(job, slot, message.type === "result" ? (job.settled ? "dropped" : "ok")
+          : message.type === "error" ? (message.code || "kernel-error") : "cancelled",
+          Array.isArray(message.tl) ? message.tl : null, Number.isFinite(message.execMs) ? message.execMs : NaN);
+      }
       slot.inflight.delete(message.id);
+      if (this.timeline !== null && slot.inflight.size === 0) this.closeBusy(slot);
       this.armWatchdog(slot);
       if (message.type === "result") {
         slot.completed++;
@@ -480,6 +672,10 @@
       this.stats.crashes++;
       this.crashStreak++;
       this.lastCrash = error.message;
+      if (this.timeline !== null) {
+        for (const job of slot.inflight.values()) this.recordAttempt(job, slot, error.code || "worker-crashed", null, NaN);
+        this.closeBusy(slot);
+      }
       for (const job of slot.inflight.values()) {
         if (job.settled) continue;
         job.slot = null;
@@ -620,9 +816,11 @@
           this.settle(job, error);
         }
         slot.inflight.clear();
+        if (this.timeline !== null) this.closeBusy(slot);
         this.dropSlot(slot);
       }
       this.terminated = true;
+      if (this.timeline !== null && global.__gaiusKernelTimelineSources) global.__gaiusKernelTimelineSources.delete(this);
       if (this.respawnTimer !== null) clearTimeout(this.respawnTimer);
       this.respawnTimer = null;
       this.byKey.clear();
@@ -630,6 +828,35 @@
     }
 
     // --- telemetry --------------------------------------------------------------------------
+
+    // Timeline helpers: the row of one attempt (tl = worker [received, started, finished] stamps
+    // or null) and the end of a worker's busy interval (it started when its first job went out).
+    recordAttempt(job, slot, status, tl, execMs) {
+      const t = this.timeline;
+      const origin = t.origin;
+      t.record(job.id, slot ? slot.id : 0, this.name, job.kind, status, job.attempts, job.priority,
+        origin + job.submittedAt, slot && job.dispatchedAt !== undefined ? origin + job.dispatchedAt : NaN,
+        tl ? tl[0] : NaN, tl ? tl[1] : NaN, tl ? tl[2] : NaN, execMs, 0, -1);
+    }
+
+    closeBusy(slot) {
+      const begin = slot.busySince;
+      if (begin === undefined || begin !== begin) return;
+      slot.busySince = NaN;
+      this.timeline.busy(slot.id, this.timeline.origin + begin, this.timeline.origin + now());
+    }
+
+    timelineExport(options) {
+      const t = this.timeline;
+      if (t === null) return {schema: TIMELINE_SCHEMA, enabled: false, host: "pool", name: this.name};
+      const out = t.export(options);
+      out.host = "pool";
+      out.name = this.name;
+      out.workers = this.slots.map((slot) => ({id: slot.id, dead: slot.dead, draining: slot.draining,
+        completed: slot.completed, inFlight: slot.inflight.size,
+        busySince: slot.busySince === undefined || slot.busySince !== slot.busySince ? null : Math.round(slot.busySince * 1000) / 1000}));
+      return out;
+    }
 
     kindStat(kind) {
       let stat = this.kindStats.get(kind);
@@ -654,7 +881,7 @@
       }
       let inFlight = 0;
       for (const slot of this.slots) inFlight += slot.inflight.size;
-      return Object.assign({
+      const telemetry = Object.assign({
         name: this.name,
         size: this.size,
         targetSize: this.targetSize,
@@ -670,6 +897,8 @@
         })),
         kinds,
       }, this.stats);
+      if (this.timeline !== null) telemetry.timeline = this.timeline.stats();
+      return telemetry;
     }
   }
 

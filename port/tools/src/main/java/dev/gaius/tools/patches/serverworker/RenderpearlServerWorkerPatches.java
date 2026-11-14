@@ -28,8 +28,8 @@ import org.objectweb.asm.tree.VarInsnNode;
  *       {@code PlayerList.setAllowCommandsForAllPlayers}; {@code isOp} now ends in
  *       {@code iconst_0; ireturn}. The final {@code iconst_0} becomes
  *       {@code BrowserPlayerListCompat.commandsAllowedForAllPlayers()}, a Gaius flag that the
- *       26.3 {@code BrowserPlayerListCompat.allowCommandsForAllPlayers(PlayerList)} sets for the
- *       browser Worker. That is the 26.2 semantics (isOp &rarr; the dedicated server's
+ *       26.3 {@code BrowserPlayerListCompat.setAllowCommandsForAllPlayers(PlayerList, boolean)}
+ *       sets from the saved world's command setting. That is the 26.2 semantics (isOp &rarr; the dedicated server's
  *       operator permissions) without writing ops.json.</li>
  *   <li>{@link #patchMobSpawnOverlayCache}: serves repeated mob spawn overlays from a cache.</li>
  * </ul>

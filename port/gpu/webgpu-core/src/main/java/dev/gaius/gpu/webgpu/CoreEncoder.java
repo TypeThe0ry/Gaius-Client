@@ -271,6 +271,123 @@ public final class CoreEncoder {
         return this.renderPass;
     }
 
+    /** Records the default-off conservative frustum stage before the next render draw. */
+    public boolean encodeGpuIndirectFrustum(CoreBuffer input, CoreBuffer bounds, CoreBuffer planes,
+            CoreBuffer output, int count) {
+        if (!this.validGpuIndirectBuffers(input, bounds, planes, output, count)) {
+            return false;
+        }
+        if (this.device == null || !this.device.supportsCapability("gaius-gpu-indirect-frustum")) {
+            return false;
+        }
+        boolean suspended = this.suspendPass();
+        try {
+            return WebGpuGlue.gpuIndirectEncodeFrustum(input.handle, bounds.handle, planes.handle, output.handle,
+                    count);
+        } finally {
+            this.resumePass(suspended);
+        }
+    }
+
+    /** Builds a generated stream from the live terrain section table for one draw group. */
+    CoreSlice prepareGpuIndirectFrustum(CoreBuffer commands, int offset, int count,
+            float[] bounds, float[] planes, float[] projected, int sectionCount) {
+        if (commands == null || count <= 0 || bounds == null || planes == null
+                || projected == null || bounds.length < 8 || planes.length < 24 || projected.length < 8
+                || offset < 0 || (offset & 3) != 0 || (long) offset + count * 20L > commands.size()) {
+            return null;
+        }
+        int boundCount = bounds.length / 8;
+        int sectionBytes = Math.min(boundCount, Math.max(1, sectionCount)) * 32;
+        java.nio.ByteBuffer boundBytes = java.nio.ByteBuffer.allocateDirect(sectionBytes)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (int i = 0; i < sectionBytes / 4; i++) boundBytes.putFloat(bounds[i]);
+        boundBytes.flip();
+        java.nio.ByteBuffer planeBytes = java.nio.ByteBuffer.allocateDirect(96)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (int i = 0; i < 24; i++) planeBytes.putFloat(planes[i]);
+        planeBytes.flip();
+        java.nio.ByteBuffer projectedBytes = java.nio.ByteBuffer.allocateDirect(sectionBytes)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (int i = 0; i < sectionBytes / 4; i++) projectedBytes.putFloat(projected[i]);
+        projectedBytes.flip();
+        CoreSlice input = this.transientMemory.allocateIsolatedGpu(count * 20L);
+        CoreSlice boundsSlice = this.transientMemory.uploadIsolated(boundBytes);
+        CoreSlice planesSlice = this.transientMemory.uploadIsolated(planeBytes);
+        CoreSlice output = this.transientMemory.allocateIsolatedGpu(count * 20L);
+        CoreSlice projectedSlice = this.transientMemory.uploadIsolated(projectedBytes);
+        this.copyBuffer(commands, offset, input.buffer(), 0, count * 20L);
+        if (!this.encodeGpuIndirectFrustum(input.buffer(), boundsSlice.buffer(), planesSlice.buffer(),
+                output.buffer(), count)) {
+            return null;
+        }
+        if (!WebGpuGlue.gpuIndirectHiZRequested()) return output;
+        CoreSlice hizOutput = this.transientMemory.allocateIsolatedGpu(count * 20L);
+        boolean suspended = this.suspendPass();
+        boolean hizEncoded;
+        try {
+            hizEncoded = WebGpuGlue.gpuIndirectEncodeHiZLive(output.buffer().handle, projectedSlice.buffer().handle,
+                    hizOutput.buffer().handle, count);
+        } finally {
+            this.resumePass(suspended);
+        }
+        if (hizEncoded) {
+            return hizOutput;
+        }
+        return output;
+    }
+
+    /** Hi-Z is unavailable until its conservative projected-rectangle test is proven. */
+    public boolean encodeGpuIndirectHiZ(CoreBuffer input, CoreBuffer projected, CoreTextureView hiz,
+            CoreSampler sampler, CoreBuffer config, CoreBuffer output, int count) {
+        if (count <= 0 || input == null || projected == null || hiz == null || sampler == null
+                || config == null || output == null || input.isClosed() || projected.isClosed() || hiz.isClosed()
+                || sampler.isClosed() || config.isClosed() || output.isClosed()
+                || input.handle == 0 || projected.handle == 0 || hiz.handle == 0 || sampler.handle == 0
+                || config.handle == 0 || output.handle == 0
+                || input == output || projected == output || config == output) {
+            return false;
+        }
+        long recordBytes = (long) count * 20L;
+        long projectedBytes = (long) count * 32L;
+        int storage = CoreUsage.BUFFER_TEXEL;
+        if (recordBytes > Integer.MAX_VALUE || projectedBytes > Integer.MAX_VALUE
+                || (input.usage() & storage) == 0 || (projected.usage() & storage) == 0
+                || (config.usage() & CoreUsage.BUFFER_UNIFORM) == 0
+                || (output.usage() & (storage | CoreUsage.BUFFER_INDIRECT)) != (storage | CoreUsage.BUFFER_INDIRECT)
+                || input.size() < recordBytes || projected.size() < projectedBytes || config.size() < 16L
+                || output.size() < recordBytes || this.device == null
+                || !this.device.supportsCapability("gaius-gpu-indirect-hiz")) {
+            return false;
+        }
+        boolean suspended = this.suspendPass();
+        try {
+            return WebGpuGlue.gpuIndirectEncodeHiZ(input.handle, projected.handle, hiz.handle, sampler.handle,
+                    config.handle, output.handle, count);
+        } finally {
+            this.resumePass(suspended);
+        }
+    }
+
+    private boolean validGpuIndirectBuffers(CoreBuffer input, CoreBuffer bounds, CoreBuffer planes,
+            CoreBuffer output, int count) {
+        if (count <= 0 || input == null || bounds == null || planes == null || output == null
+                || input.isClosed() || bounds.isClosed() || planes.isClosed() || output.isClosed()
+                || input.handle == 0 || bounds.handle == 0 || planes.handle == 0 || output.handle == 0
+                || input == output || bounds == output || planes == output) {
+            return false;
+        }
+        long recordBytes = (long) count * 20L;
+        long boundBytes = (long) count * 32L;
+        int storage = CoreUsage.BUFFER_TEXEL;
+        return recordBytes <= Integer.MAX_VALUE && boundBytes <= Integer.MAX_VALUE
+                && (input.usage() & storage) != 0 && (bounds.usage() & storage) != 0
+                && (planes.usage() & storage) != 0
+                && (output.usage() & (storage | CoreUsage.BUFFER_INDIRECT)) == (storage | CoreUsage.BUFFER_INDIRECT)
+                && input.size() >= recordBytes && bounds.size() >= boundBytes && planes.size() >= 96L
+                && output.size() >= recordBytes;
+    }
+
     public void submit() {
         if (!this.device.isUsable()) {
             throw new IllegalStateException("WebGPU device is unavailable: " + CoreDevice.failure());
@@ -290,6 +407,7 @@ public final class CoreEncoder {
         this.transientMemory.flush();
         WebGpuGlue.submit();
         this.submits++;
+        this.device.reclaimRegionArena();
         this.transientMemory.rotate();
         for (int i = 0; i < this.pendingBufferCount; i++) {
             WebGpuGlue.destroyBuffer(this.pendingBuffers[i]);
@@ -548,7 +666,7 @@ public final class CoreEncoder {
         if (!this.ring.writeOrdered(destination, (int) offset, data, size)) {
             CoreSlice staged = this.transientMemory.stage(data, 4L);
             WebGpuGlue.copyBufferToBuffer(staged.buffer().handle, (int) staged.offset(), destination.handle,
-                    (int) offset, size);
+                    destination.baseOffset() + (int) offset, size);
         }
         this.resumePass(suspended);
     }
@@ -581,7 +699,8 @@ public final class CoreEncoder {
         this.plainRead(source, sourceOffset, length);
         this.plainRead(target, targetOffset, length);
         boolean suspended = this.suspendPass();
-        WebGpuGlue.copyBufferToBuffer(source.handle, (int) sourceOffset, target.handle, (int) targetOffset, (int) length);
+        WebGpuGlue.copyBufferToBuffer(source.handle, source.baseOffset() + (int) sourceOffset,
+                target.handle, target.baseOffset() + (int) targetOffset, (int) length);
         this.resumePass(suspended);
     }
 

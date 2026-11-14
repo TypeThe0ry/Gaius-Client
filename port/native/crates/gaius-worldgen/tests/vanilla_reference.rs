@@ -205,11 +205,15 @@ fn kernel_matches_vanilla_reference() {
                     failures.push(format!("{cx},{cz} heightmaps"));
                 }
                 if let Some(expected) = &post_ref {
-                    let actual: Vec<u32> = chunk
+                    // Vanilla keeps one ShortList per section (the reference lists them section by
+                    // section); the kernel reports marks in the order it made them. Order inside a
+                    // section is what the installed lists, and so the fluid tick order, depend on.
+                    let mut actual: Vec<u32> = chunk
                         .post_processing
                         .iter()
                         .map(|&(section, packed)| ((section as u32) << 16) | packed as u32)
                         .collect();
+                    actual.sort_by_key(|entry| entry >> 16);
                     if actual != *expected {
                         eprintln!(
                             "chunk {cx},{cz}: post-processing order mismatch (kernel {} entries, vanilla {} entries)",

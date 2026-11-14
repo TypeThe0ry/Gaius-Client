@@ -38,6 +38,7 @@ SOURCE_DIRECTORIES = (
     "port/gpu",
     "port/mc/seams",
     "port/tools/src/main",
+    "port/tools/atlasprebake",
     "port/wasm/hotpath",
     # The v0.4 page runtime every distribution ships next to (or inlined into) the launcher:
     # boot script, Service Worker, kernel runtime/worker/job codecs and the quality layer.
@@ -71,6 +72,11 @@ SOURCE_FILES = (
     "port/web/launcher/touch-controls.js",
     "port/web/launcher/world-archive.js",
     "port/scripts/build-vanilla-assets-pack.py",
+    "port/scripts/build-boot-snapshot.py",
+    "port/scripts/stage-browser-sounds.py",
+    "port/scripts/refresh-browser-sounds.py",
+    "port/scripts/browser-sound-path.jq",
+    "port/scripts/browser-sounds-metadata.jq",
     "port/scripts/build-wasm-hotpath.sh",
     "port/scripts/generate-wasm-hotpath.py",
 )

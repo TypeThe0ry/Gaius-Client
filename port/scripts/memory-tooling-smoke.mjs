@@ -23,6 +23,13 @@ assert.equal(summary.selfBytes, 180);
 assert.equal(summary.byType.native, 112);
 assert.equal(summary.largestNames.find(entry => entry.count === 2).name, snapshot.strings[0]);
 assert.equal(summary.largestNames[0].name.length, 180);
+const ownersPath = join(out, "owners.json");
+execFileSync(process.execPath, [fileURLToPath(new URL("memory-heap-owners.mjs", import.meta.url)), input, ownersPath]);
+const ownersSummary = JSON.parse(readFileSync(ownersPath, "utf8"));
+assert.equal(ownersSummary.nodeCount, 4);
+assert.equal(ownersSummary.byType.native.selfBytes, 112);
+assert.equal(ownersSummary.nativeAndLargeArrayOwners.find(owner => owner.selfBytes === 34).name,
+  snapshot.strings[1]);
 
 let resize, refreshes = 0;
 const memory = new WebAssembly.Memory({initial: 1, maximum: 64});
@@ -76,4 +83,26 @@ assert.equal(page.__gaiusMemoryExperiment.shadowBudgetApplied, true);
 execFileSync(process.execPath, [fileURLToPath(new URL("memory-budget-cdp.mjs", import.meta.url))],
   {env: {...process.env, OUT: out, MEMORY_PREPARE_ONLY: "1", MEMORY_INJECT: injectionPath}});
 execFileSync(process.execPath, ["--check", join(out, "memory-run.mjs")]);
-console.log("PASS bounded snapshot parser, loader telemetry, injection ordering, shadow budget and CDP harness syntax");
+
+class TestGpuBuffer { destroy() { this.destroyed = true; } }
+class TestGpuTexture { destroy() { this.destroyed = true; } }
+class TestGpuDevice {
+  createBuffer(descriptor) { return Object.assign(new TestGpuBuffer(), {descriptor}); }
+  createTexture(descriptor) { return Object.assign(new TestGpuTexture(), {descriptor}); }
+}
+const gpuTraceRoot = {GPUDevice: TestGpuDevice, GPUBuffer: TestGpuBuffer, GPUTexture: TestGpuTexture};
+gpuTraceRoot.globalThis = gpuTraceRoot;
+vm.runInNewContext(readFileSync(new URL("memory-gpu-trace.js", import.meta.url), "utf8"), gpuTraceRoot);
+const gpuDevice = new TestGpuDevice();
+const gpuBuffer = gpuDevice.createBuffer({size: 4096, label: "mesh vertices"});
+const gpuTexture = gpuDevice.createTexture({size: {width: 8, height: 8, depthOrArrayLayers: 1},
+  mipLevelCount: 4, format: "rgba8unorm", label: "post target"});
+let gpuMemory = gpuTraceRoot.__gaiusWebGpuMemoryTelemetry.snapshot();
+assert.equal(gpuMemory.installed, true);
+assert.deepEqual({...gpuMemory.totals.buffer}, {count: 1, bytes: 4096, unknown: 0});
+assert.deepEqual({...gpuMemory.totals.texture}, {count: 1, bytes: 340, unknown: 0});
+gpuBuffer.destroy();
+gpuTexture.destroy();
+gpuMemory = gpuTraceRoot.__gaiusWebGpuMemoryTelemetry.snapshot();
+assert.equal(gpuMemory.active, 0);
+console.log("PASS bounded heap owner parsing, GPU descriptor sizing, resource lifecycle and CDP harness syntax");

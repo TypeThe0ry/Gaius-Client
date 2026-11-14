@@ -15,7 +15,7 @@
 //   setTable(bytes, length, epoch)   new model table (Int8Array view of a Java byte[]): opens a
 //                                GaiusMeshJob session for that epoch and warms one worker
 //   hasTable(epoch)
-//   submitJob(header, ids, light, quarts, palette, swamp, floats)
+//   submitJob(header, ids, light, quarts, palette, swamp, floats, packedStates, packedLength)
 //                                copies one section snapshot (typed views of Java arrays) and
 //                                submits it; header is an Int32Array, see HEADER below
 //   cancelAll()                  cancels every section job still out (the level was reset or
@@ -43,6 +43,7 @@
   const FLAG_AO = 1;
   const FLAG_CUTOUT_LEAVES = 2;
   const FLAG_NEARBY = 4;
+  const FLAG_PACKED_STATES = 8;
   const NEARBY_PRIORITY_CHUNKS = 8;
   // Swamp column mask of a job with a biome blend radius: 20 x 20 columns (x, z in -2..17).
   const SWAMP_BLEND_BYTES = 50;
@@ -370,6 +371,29 @@
     return out;
   }
 
+  function viewOf(view, Type, count) {
+    if (!view || view.byteLength < count * Type.BYTES_PER_ELEMENT
+        || (view.byteOffset % Type.BYTES_PER_ELEMENT) !== 0) {
+      throw new RangeError("mesh snapshot view is too short or misaligned");
+    }
+    return new Type(view.buffer, view.byteOffset, count);
+  }
+
+  // The normal path owns an immutable snapshot. This opt-in path removes the intermediate
+  // typed-array allocations because GaiusMeshJob.meshSection frames synchronously before the
+  // runtime transfers its own ArrayBuffer. Keep it off until paired visual and throughput runs
+  // prove the browser/TeaVM bridge obeys that ownership contract on every profile.
+  function zeroCopyInputsEnabled() {
+    if (global.__gaiusMeshZeroCopy === true) return true;
+    try {
+      const value = new URLSearchParams(global.location && global.location.search || "")
+        .get("gaiusMeshZeroCopy");
+      return value === "1" || value === "on" || value === "true";
+    } catch (_) {
+      return false;
+    }
+  }
+
   function finish(record, key) {
     inFlight--;
     if (key !== undefined && outstanding.get(key) === record.ticket) outstanding.delete(key);
@@ -410,7 +434,7 @@
   // region of GaiusMeshJob.regionIndex); light, quarts, swamp: Int8Array; palette: Int32Array of
   // 5 ints per biome; floats: Float32Array cardinal[6] then camera[3]. Every array is a view of a
   // reused Java array, so this copies before anything asynchronous happens.
-  function submitJob(header, ids, light, quarts, palette, swamp, floats) {
+  function submitJob(header, ids, light, quarts, palette, swamp, floats, packed, packedLength) {
     if (!session || runtimeState !== "ready" || !runtime.available(KERNEL)) return false;
     const codec = global.GaiusMeshJob;
     if (!codec || !codec.enabled()) return false;
@@ -428,6 +452,11 @@
     if (blend < 0 || blend > MAX_BIOME_BLEND) return false;
     const seed = BigInt.asIntN(64, (BigInt(header[HEADER.SEED_HI] | 0) << BigInt(32))
       | BigInt(header[HEADER.SEED_LO] >>> 0));
+    const zeroCopy = zeroCopyInputsEnabled();
+    const snapshot = (view, Type, count) => zeroCopy ? viewOf(view, Type, count) : copyOf(view, Type, count);
+    const packedStates = (flags & FLAG_PACKED_STATES) !== 0 && packed != null
+      ? snapshot(packed, Int32Array, packedLength | 0) : null;
+    if ((flags & FLAG_PACKED_STATES) !== 0 && (!packedStates || packedStates.length < 2)) return false;
     const input = {
       requestSeq,
       sectionVersion: requestSeq,
@@ -441,12 +470,15 @@
       cardinal: [floats[0], floats[1], floats[2], floats[3], floats[4], floats[5]],
       camera: [floats[6], floats[7], floats[8]],
       biomeZoomSeed: seed,
-      states: wide ? copyOf(ids, Uint32Array, VOLUME) : copyOf(ids, Uint16Array, VOLUME),
-      light: copyOf(light, Uint8Array, VOLUME),
-      biomeQuarts: copyOf(quarts, Uint8Array, QUART_VOLUME),
-      biomePalette: copyOf(palette, Int32Array, paletteCount * 5),
+      states: packedStates
+        ? undefined
+        : (wide ? snapshot(ids, Uint32Array, VOLUME) : snapshot(ids, Uint16Array, VOLUME)),
+      packedStates,
+      light: snapshot(light, Uint8Array, VOLUME),
+      biomeQuarts: snapshot(quarts, Uint8Array, QUART_VOLUME),
+      biomePalette: snapshot(palette, Int32Array, paletteCount * 5),
       biomeBlend: blend,
-      swampMask: copyOf(swamp, Uint8Array, SWAMP_BLEND_BYTES),
+      swampMask: snapshot(swamp, Uint8Array, SWAMP_BLEND_BYTES),
     };
     const key = "s" + sx + "," + sy + "," + sz;
     const epochAtSubmit = sessionEpoch;
@@ -533,6 +565,10 @@
     return record;
   }
 
+  function hasResults() {
+    return head < done.length;
+  }
+
   // Java copied everything it needs out of the record (MeshKernelHooks.compile): its buffer goes
   // back to a kernel worker for reuse. Views into it must not be used afterwards. ?gaiusKernelRecycle=0
   // keeps every buffer for the collector.
@@ -587,7 +623,7 @@
 
   global.__gaiusMeshKernel = Object.freeze({
     version: 1, HEADER, ready, setTable, storeTable, takeCachedTable, tableCacheReady, hasTable, submitJob,
-    cancelAll, poll, release,
+    cancelAll, poll, hasResults, release,
     setWake, disable, status,
   });
 })(typeof globalThis !== "undefined" ? globalThis : self);

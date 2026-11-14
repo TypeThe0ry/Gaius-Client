@@ -229,12 +229,14 @@ test("a full capture reloads each view at its camera and brackets every screensh
   const {captureDeterministicWorld} = await import("./deterministic-world-capture.mjs");
   const directory = join(resolve(process.env.OUT), "synthetic-full-capture"); await mkdir(directory, {recursive: true});
   const commands = [], keys = [];
+  let gameTime = 0;
   let sample = 0, present = 0, player = {x: 0, y: 0, z: 0, yaw: 0, pitch: 0};
   const reloadedViews = [];
   const content = {blocks: "00000000", biomes: "00000000"};
   const evaluate = async expression => {
     if (expression === CAPTURE_CAPABILITIES_EXPRESSION) return capabilities;
     if (expression === captureOptionsReadbackExpression) return {cloudsOff: false, particlesMinimal: true};
+    if (expression.includes("let previous=null,streak=0,observed=0")) return {ok: true, consecutive: 120, observed: 121};
     if (expression.endsWith(".frame()")) { present += 2; return frame(present); }
     if (expression.includes(".snapshot(")) return snapshot(requestOf(expression), ++sample);
     if (expression.includes(".worldDigest(")) return Object.fromEntries(JSON.parse(expression.slice(expression.indexOf("(") + 1, -1)).map(([x, z]) => [x + "," + z, {packet: null, sky: "0", block: "0"}]));
@@ -246,15 +248,20 @@ test("a full capture reloads each view at its camera and brackets every screensh
   const result = await captureDeterministicWorld({
     command: async text => {
       commands.push(text);
+      if (text === "/time query gametime") return {ok: true, response: "The time is " + gameTime};
+      if (text.startsWith("/tick step ")) gameTime += Number(text.split(" ")[2]);
       if (text.startsWith("/tp ")) { const [x, y, z, yaw, pitch] = text.split(" ").slice(2).map(Number); player = {x, y, z, yaw, pitch}; }
       if (text.startsWith("/gamerule ") && text.split(" ").length === 2) return {ok: true, response: "Game rule x is currently set to " + (text.endsWith("random_tick_speed") ? "0" : "false")};
       return {ok: true};
     },
-    evaluate, waitFor: async () => true, key: async name => keys.push(name), sleep: async () => {}, screenshot: async () => true,
+    evaluate, waitFor: async () => true, key: async name => keys.push(name), sleep: async () => {},
+    screenshot: async name => { await writeFile(join(directory, name), encodePng({width: 1, height: 1, pixels: Buffer.alloc(4, 255)})); return true; },
     player: {x: 0, y: 67, z: 0}, outputPath: directory, seed: "fixture", profile: "fixture", drainMs: 0,
     reloadChunks: async name => { reloadedViews.push(name); return {method: "vanilla-f3-a"}; }, reloadEachView: true,
   });
   assert.equal(result.complete, true);
+  assert.equal(result.gameTime.confirmed.value, 600);
+  assert.ok(commands.includes("/tick step 600"));
   assert.deepEqual(reloadedViews, ["horizon", "entities", "high", "topdown"]);
   assert.deepEqual(Object.keys(result.reloads), reloadedViews);
   const views = captureViews({x: 0, y: 67, z: 0});

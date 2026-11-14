@@ -1322,6 +1322,15 @@ jar --update --file "$client_output" -C "$client_override_classes" .
 # properties, then fold everything written so far into the client jar.  Each
 # patcher reads the jar written by the previous one.  In bring-up mode a whole
 # step can be skipped as "step:<Class>".
+java_frame_input="$client_output"
+if command -v cygpath >/dev/null 2>&1; then
+  java_frame_input="$(cygpath -m "$client_output")"
+fi
+patch_registry_properties+=(
+  "-Dgaius.patch.input=$java_frame_input"
+  "-Dgaius.patch.vanilla=$java_client_jar"
+  "-Dgaius.patch.classpath=$java_work_classpath"
+)
 run_client_patcher() {
   local class="$1"
   shift
@@ -1447,6 +1456,11 @@ else
   while IFS= read -r source; do
     gpu_seam_sources+=("$source")
   done < <(target_merged_sources "$root/port/mc/seams/$render_seam/src/main/java")
+  if [[ "$teavm_target" == js && "$render_seam" == renderpearl-1 ]]; then
+    # This client-side utility is also used by RpRenderPass. Compile it in the seam
+    # layer, where the renderpearl javac classpath can resolve the selected client API.
+    gpu_seam_sources+=("$root/port/src/main/java/dev/gaius/browser/render/BrowserGpuIndirectTerrain.java")
+  fi
   echo "Compiling ${#gpu_seam_sources[@]} sources of render seam $render_seam for Minecraft $version"
   javac_with_source_argfile "$overlay_work/gpu-seam-sources.argfile" \
     --release 21 -proc:none \
@@ -1455,6 +1469,16 @@ else
     -- "${gpu_seam_sources[@]}"
   jar --update --file "$client_output" -C "$gpu_seam_classes" .
 fi
+
+# Validate the composed client, not just individual patch outcomes. The frame pass
+# is shared with patchkit and only recalculates verification metadata and maxima.
+java -classpath "$tool_classes:$asm_jar:$asm_tree_jar" \
+  dev.gaius.tools.OverlayClassCheck members "$client_output" "$overlay_work/overlay-members.json"
+java -classpath "$tool_classes:$asm_jar:$asm_tree_jar" \
+  "${patch_registry_properties[@]}" \
+  dev.gaius.tools.OverlayClassCheck frames "$client_patch_classes" "$client_output" \
+  "$java_work_classpath" "$overlay_work/overlay-frames.json"
+jar --update --file "$client_output" -C "$client_patch_classes" .
 
 if [[ "$bringup_active" == true ]]; then
   echo "BRINGUP_STEPS skipped=$bringup_skipped"

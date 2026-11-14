@@ -154,7 +154,7 @@ export function loadConfig() {
         maximumTargetRoutes: parseInteger(
             "GAIUS_MAXIMUM_TARGET_ROUTES", 4096, 16, 100_000),
         resourcePackCacheMs: parseInteger(
-            "GAIUS_RESOURCE_PACK_CACHE_MS", 5 * 60_000, 0, 24 * 60 * 60_000),
+            "GAIUS_RESOURCE_PACK_CACHE_MS", 6 * 60 * 60_000, 0, 24 * 60 * 60_000),
         resourcePackHeadersTimeoutMs: parseInteger(
             "GAIUS_RESOURCE_PACK_HEADERS_TIMEOUT_MS", 15_000, 1_000, 120_000),
         resourcePackBodyIdleTimeoutMs: parseInteger(
@@ -162,9 +162,9 @@ export function loadConfig() {
         resourcePackOverallTimeoutMs: parseInteger(
             "GAIUS_RESOURCE_PACK_OVERALL_TIMEOUT_MS", 110_000, 5_000, 120_000),
         resourcePackStreamOverallTimeoutMs: parseInteger(
-            "GAIUS_RESOURCE_PACK_STREAM_OVERALL_TIMEOUT_MS", 300_000, 5_000, 600_000),
+            "GAIUS_RESOURCE_PACK_STREAM_OVERALL_TIMEOUT_MS", 600_000, 5_000, 600_000),
         maximumResourcePackCacheBytes: parseInteger(
-            "GAIUS_RESOURCE_PACK_CACHE_BYTES", 512 * 1024 * 1024, 0, 4 * 1024 * 1024 * 1024),
+            "GAIUS_RESOURCE_PACK_CACHE_BYTES", 128 * 1024 * 1024, 0, 4 * 1024 * 1024 * 1024),
         maximumResourcePackCacheEntries: parseInteger(
             "GAIUS_RESOURCE_PACK_CACHE_ENTRIES", 64, 0, 4096),
         proxyKeepAlives,

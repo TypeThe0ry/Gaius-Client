@@ -120,41 +120,13 @@ browser_background_assets=()
 while IFS= read -r logical_path; do
   browser_background_assets+=("$logical_path")
 done < <(jq -r '.objects | keys[] | select(startswith("minecraft/textures/gui/title/background/"))' "$asset_index" | tr -d '\r')
-browser_sound_assets=(
-  "minecraft/sounds/ui/toast/in.ogg"
-  "minecraft/sounds/ui/toast/out.ogg"
-  "minecraft/sounds/ui/toast/challenge_complete.ogg"
-  "minecraft/sounds/ui/stonecutter/cut1.ogg"
-  "minecraft/sounds/ui/stonecutter/cut2.ogg"
-)
+browser_sound_assets=()
 while IFS= read -r logical_path; do
   browser_sound_assets+=("$logical_path")
 done < <(
-  jq -r '
-    .objects
-    | keys[]
-    | select(
-        endswith(".ogg")
-        and (
-          startswith("minecraft/sounds/block/")
-          or startswith("minecraft/sounds/random/")
-          or startswith("minecraft/sounds/dig/")
-          or startswith("minecraft/sounds/step/")
-          or startswith("minecraft/sounds/mob/")
-          or startswith("minecraft/sounds/entity/")
-          or startswith("minecraft/sounds/item/")
-          or startswith("minecraft/sounds/damage/")
-          or startswith("minecraft/sounds/liquid/")
-          or startswith("minecraft/sounds/fire/")
-          or startswith("minecraft/sounds/portal/")
-          or startswith("minecraft/sounds/minecart/")
-          or startswith("minecraft/sounds/enchant/")
-          or startswith("minecraft/sounds/fireworks/")
-          or startswith("minecraft/sounds/event/")
-          or startswith("minecraft/sounds/note/")
-          or startswith("minecraft/sounds/tile/")
-        )
-      )
+  jq -L "$root/port/scripts" -r '
+    include "browser-sound-path";
+    .objects | keys[] | select(browser_sound_path)
   ' "$asset_index" | tr -d '\r'
 )
 download_browser_asset() {

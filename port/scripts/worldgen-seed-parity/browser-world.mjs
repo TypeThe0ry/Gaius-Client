@@ -49,6 +49,7 @@ import {gunzipSync, gzipSync, inflateSync} from "node:zlib";
 import {extname, isAbsolute, join, normalize, relative, resolve} from "node:path";
 import {RUNTIME_TELEMETRY_EXPRESSION, chromeIsolationArgs, pageForRuntime} from "../bench/harness-common.mjs";
 import {KERNEL_TELEMETRY_EXPRESSION, kernelActivityFailures} from "./kernel-telemetry.mjs";
+import {chromeLaunchArgs, resolveChromeBinary} from "../chrome-binary.mjs";
 
 function usage(message) {
   console.error(`browser-world: ${message}`);
@@ -479,8 +480,8 @@ const report = {tool: "worldgen-seed-parity/browser-world", seed: options.seed, 
   phases: {}, workers: [], files: [], regions: [], error: null};
 const profileDir = await mkdtemp(join(tmpdir(), "gaius-seed-parity-"));
 const port = await freePort();
-const chromeBin = process.env.GAIUS_CHROME_BIN || "C:/Program Files/Google/Chrome/Application/chrome.exe";
-const chrome = spawn(chromeBin, ["--headless=new", `--remote-debugging-port=${port}`, "--remote-allow-origins=*",
+const chromeBin = resolveChromeBinary();
+const chrome = spawn(chromeBin, [...chromeLaunchArgs(), "--headless=new", `--remote-debugging-port=${port}`, "--remote-allow-origins=*",
   `--user-data-dir=${profileDir}`, "--window-size=1280,720", "--ignore-gpu-blocklist", "--enable-unsafe-swiftshader",
   ...chromeIsolationArgs(), "about:blank"], {stdio: "ignore"});
 const workers = new Map();

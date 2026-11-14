@@ -4,7 +4,6 @@
 // ({name: ArrayBuffer}) and then imports server-worker-bootstrap.js. This smoke runs the real
 // bootstrap in a Worker whose importScripts only accepts blob: URLs (as Chrome does for a disk
 // page's Worker) and checks that it takes
-//   - the JavaScript server (start message serverScriptUrl file:///.../singleplayer-server.js?v=..),
 //   - the WebAssembly GC server: singleplayer-server.wasm as bytes for GaiusWasmWorker.compile and
 //     the runtime scripts listed by URL in wasmRuntimeScripts,
 //   - the worldgen kernel scripts when the page's kernel port lists none,
@@ -57,9 +56,28 @@ globalThis.Blob = class extends NativeBlob {
   constructor(parts, options) {
     super(parts, options);
     this.__text = parts.map((part) => typeof part === "string" ? part
+      : typeof part.__text === "string" ? part.__text
       : new TextDecoder().decode(part instanceof ArrayBuffer ? new Uint8Array(part) : part)).join("");
   }
 };
+const NativeResponse = Response;
+globalThis.Response = class extends NativeResponse {
+  async blob() {
+    const blob = await super.blob();
+    return new Blob([await blob.arrayBuffer()], {type: blob.type});
+  }
+};
+if (workerData.httpBody) {
+  globalThis.fetch = async () => {
+    const bytes = new Uint8Array(workerData.httpBody);
+    const body = new ReadableStream({start(controller) {
+      controller.enqueue(bytes.subarray(0, 1));
+      controller.enqueue(bytes.subarray(1));
+      controller.close();
+    }});
+    return new Response(body, {headers: workerData.decoded ? {"Content-Encoding": "gzip"} : {}});
+  };
+}
 const nativeCreate = URL.createObjectURL;
 URL.createObjectURL = (blob) => {
   const url = nativeCreate(blob);
@@ -112,12 +130,6 @@ parentPort.on("message", (message) => {
 `;
 
 // Fakes of the runtime pieces the page hands over.
-const jsServer = script(`
-  globalThis.main = () => postMessage({type: "main-start-observed", runtime: "js"});
-  globalThis.__gaiusStartIntegratedServerPump = () => {};
-  globalThis.stopIntegratedServer = () => {};
-  globalThis.isIntegratedServerStopped = () => true;
-`);
 const wasmRuntime = {
   "gaius-wasm-gc-runtime.js": script(`globalThis.TeaVM = {wasmGC: {}};`),
   "gaius-jspi.js": script(`globalThis.GaiusJspi = {};`),
@@ -157,8 +169,8 @@ const kernelScripts = {
 const wasmModule = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
 const DIST = "file:///D:/Gaius/dist/";
 
-async function run(label, files, startFields, {kernelPort = false} = {}) {
-  const worker = new Worker(harness, {eval: true, workerData: {files}});
+async function run(label, files, startFields, {kernelPort = false, httpBody = null, decoded = false} = {}) {
+  const worker = new Worker(harness, {eval: true, workerData: {files, httpBody, decoded}});
   const events = [];
   let wake = null;
   worker.on("message", (message) => { events.push(message); if (wake) wake(); });
@@ -198,15 +210,37 @@ async function run(label, files, startFields, {kernelPort = false} = {}) {
   return {started, result};
 }
 
-// The JavaScript server, named by the page's sibling URL with a cache query.
+// The same persistent Worker bootstrap can run a frozen JavaScript server without JSPI.
 {
-  const {started, result} = await run("js", {"singleplayer-server.js": jsServer}, {
-    serverScriptUrl: DIST + "singleplayer-server.js?v=0123abcd",
-    serverScriptGzipUrl: DIST + "singleplayer-server.js.gz?v=0123abcd",
-  });
+  const files = {"singleplayer-server.js": script(`
+    globalThis.__gaiusStartIntegratedServerPump = () => {};
+    globalThis.stopIntegratedServer = () => {};
+    globalThis.isIntegratedServerStopped = () => true;
+    globalThis.main = () => postMessage({type: "main-start-observed", runtime: "js"});
+  `)};
+  const {started, result} = await run("frozen-js-file", files, {serverRuntime: "js"});
   assert.equal(started.runtime, "js");
-  assert.ok(result.imported.length >= 1 && result.imported.every((entry) => entry.url === "blob"),
-    "the disk Worker imported something other than a handed-over file: " + JSON.stringify(result.imported));
+  assert.equal(result.compiled, null, "JavaScript fallback must not compile a Wasm server");
+  assert.deepEqual(result.imported.map(item => item.url), ["blob"]);
+}
+
+// A remote frozen server script works with raw gzip and with Fetch's decoded body.
+{
+  const source = new TextEncoder().encode(`
+    globalThis.__gaiusStartIntegratedServerPump = () => {};
+    globalThis.stopIntegratedServer = () => {};
+    globalThis.isIntegratedServerStopped = () => true;
+    globalThis.main = () => postMessage({type: "main-start-observed", runtime: "js"});
+  `);
+  for (const decoded of [false, true]) {
+    const body = decoded ? source : gzipSync(source);
+    const {started, result} = await run("frozen-js-http-" + decoded, {}, {
+      serverRuntime: "js", serverScriptGzipUrl: "https://fixture.invalid/server.js.gz",
+    }, {httpBody: body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength), decoded});
+    assert.equal(started.runtime, "js");
+    assert.equal(result.compiled, null);
+    assert.deepEqual(result.imported.map(item => item.url), ["blob"]);
+  }
 }
 
 // The WebAssembly GC server: module bytes and runtime scripts named by sibling URLs, plus the
@@ -259,4 +293,4 @@ async function run(label, files, startFields, {kernelPort = false} = {}) {
   assert.equal(result.compiled.bytes, wasmModule.byteLength, "the gzip module did not inflate to the module");
 }
 
-console.log("singleplayer file Worker smoke passed (js and wasm servers from handed-over files, portable gzip module)");
+console.log("singleplayer file Worker smoke passed (WasmGC server from handed-over files, portable gzip module)");

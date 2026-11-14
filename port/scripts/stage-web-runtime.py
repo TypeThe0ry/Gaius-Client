@@ -2,6 +2,7 @@
 """Stage the browser runtime next to a profile's dist index.html.
 
     stage-web-runtime.py <dist> [--kernels DIR] [--wasm | --no-wasm] [--shaderxlat FILE] [--png FILE]
+                             [--atlas-prebake FILE]
 
 Copies, unhashed, what the launcher's gaius-boot.js tag loads in a plain dist directory (the
 local static-host deployment input and the source of the portable page):
@@ -12,8 +13,10 @@ local static-host deployment input and the source of the portable page):
     runtime/quality/*.js          port/web/runtime/quality (graphics quality layer)
     runtime/webgpu/gpu-glue.js,   the WebGPU backend glue (port/web/runtime/webgpu) and the shader
     runtime/webgpu/shaderxlat-job.js  translation job codec (port/native/golden/shaders), loaded
-                                  for ?gpu=webgpu, and the quality layer's WGSL post chain
+                                  for ?gpu=webgpu, the quality layer's WGSL post chain and the
+                                  opt-in shader-pack prototype
     runtime/webgpu/quality-post.js    (port/web/runtime/webgpu)
+    runtime/webgpu/shader-pack.js     (port/web/runtime/webgpu)
     runtime/webgpu/gaius-shaderxlat.wasm  the SPIR-V -> WGSL translator, from --shaderxlat FILE,
                                   else GAIUS_SHADERXLAT_WASM, else the default output of
                                   port/web/runtime/webgpu/build-translator.sh when it exists
@@ -24,6 +27,9 @@ local static-host deployment input and the source of the portable page):
     png-kernel.js                singleplayer-server.wasm; the optional --png FILE is staged as
     gaius-png.wasm               gaius-png.wasm and only loads when the runtime switch is on
                                   (build-wasmgc.sh writes the patched TeaVM loader itself)
+    gaius-atlas-prebake.bin.gz    the optional --atlas-prebake FILE (port/tools/atlasprebake
+                                  build), WebAssembly GC only: the vanilla mip chains and atlas
+                                  layouts BrowserAtlasPrebake replays for identical inputs
 
 and records the kernel job codecs in kernels/kernels.json ("scripts") so the boot script loads
 them. Missing optional inputs are skipped: the page then keeps its vanilla paths.
@@ -40,6 +46,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+ATLAS_PREBAKE = "gaius-atlas-prebake.bin.gz"
+ATLAS_PREBAKE_MAGIC = b"GAIUSAP1"
 WEB = ROOT / "port" / "web"
 WASM_RUNTIME_SCRIPTS = ("gaius-wasm-boot.js", "gaius-jspi.js", "gaius-wasm-worker.js", "png-kernel.js")
 WASM_MODULES = ("classes.wasm", "singleplayer-server.wasm")
@@ -48,6 +56,9 @@ WEBGPU_MODULES = {
     "runtime/webgpu/gpu-glue.js": WEB / "runtime" / "webgpu" / "gpu-glue.js",
     "runtime/webgpu/shaderxlat-job.js": ROOT / "port" / "native" / "golden" / "shaders" / "shaderxlat-job.js",
     "runtime/webgpu/quality-post.js": WEB / "runtime" / "webgpu" / "quality-post.js",
+    "runtime/webgpu/shader-pack-store.js": WEB / "runtime" / "webgpu" / "shader-pack-store.js",
+    "runtime/webgpu/shader-pack-compat.js": WEB / "runtime" / "webgpu" / "shader-pack-compat.js",
+    "runtime/webgpu/shader-pack.js": WEB / "runtime" / "webgpu" / "shader-pack.js",
 }
 # gaius-boot.js WEBGPU_TRANSLATOR and its default build (build-translator.sh).
 WEBGPU_TRANSLATOR = "runtime/webgpu/gaius-shaderxlat.wasm"
@@ -97,9 +108,25 @@ def stage_webgpu(dist: Path, translator: Path | None) -> list[str]:
     return staged
 
 
+def check_atlas_prebake(path: Path, profile: str | None) -> None:
+    """The envelope of a GAIUSAP1 payload (gzip, magic, version, lengths and, given one, the profile)."""
+    import gzip
+    import struct
+    data = gzip.decompress(path.read_bytes())
+    if data[:8] != ATLAS_PREBAKE_MAGIC or len(data) < 56:
+        raise ValueError(f"--atlas-prebake {path} is not a GAIUSAP1 payload")
+    version, header_length, body_length = struct.unpack_from("<III", data, 8)
+    if version != 1 or header_length + body_length != len(data):
+        raise ValueError(f"--atlas-prebake {path} has an unsupported version or wrong lengths")
+    (profile_length,) = struct.unpack_from("<H", data, 52)
+    payload_profile = data[54:54 + profile_length].decode("ascii")
+    if profile and payload_profile != profile:
+        raise ValueError(f"--atlas-prebake {path} is for profile {payload_profile}, not {profile}")
+
+
 def stage(dist: Path, kernels: Path | None, wasm: bool | None = None,
           translator: Path | None = None, profile: str | None = None,
-          png: Path | None = None) -> list[str]:
+          png: Path | None = None, atlas_prebake: Path | None = None) -> list[str]:
     dist.mkdir(parents=True, exist_ok=True)
     staged: list[str] = []
     if wasm is None:
@@ -111,8 +138,16 @@ def stage(dist: Path, kernels: Path | None, wasm: bool | None = None,
                 raise FileNotFoundError(f"--png {png} is not a file")
             copy(png, dist / "gaius-png.wasm")
             staged.append("gaius-png.wasm")
+        if atlas_prebake is not None:
+            if not atlas_prebake.is_file():
+                raise FileNotFoundError(f"--atlas-prebake {atlas_prebake} is not a file")
+            check_atlas_prebake(atlas_prebake, profile or os.environ.get("GAIUS_MINECRAFT_VERSION"))
+            copy(atlas_prebake, dist / ATLAS_PREBAKE)
+            staged.append(ATLAS_PREBAKE)
     elif png is not None:
         raise ValueError("--png requires a WebAssembly GC distribution")
+    elif atlas_prebake is not None:
+        raise ValueError("--atlas-prebake requires a WebAssembly GC distribution")
     for source, name in ((WEB / "boot" / "gaius-boot.js", "gaius-boot.js"),
                          (WEB / "sw" / "gaius-sw.js", "gaius-sw.js")):
         copy(source, dist / name)
@@ -167,10 +202,14 @@ def main(argv: list[str]) -> int:
                         help="the gaius-shaderxlat module (runtime/webgpu/gaius-shaderxlat.wasm)")
     parser.add_argument("--png", type=Path,
                         help="optional PNG kernel for a WebAssembly GC distribution (default off at runtime)")
+    parser.add_argument("--atlas-prebake", type=Path,
+                        help="optional GAIUSAP1 payload (port/tools/atlasprebake) for a WebAssembly GC distribution")
     args = parser.parse_args(argv)
+    atlas_prebake = args.atlas_prebake
     staged = stage(args.dist.resolve(), args.kernels.resolve() if args.kernels else None, args.wasm,
                    args.shaderxlat.resolve() if args.shaderxlat else None, args.profile,
-                   png=args.png.resolve() if args.png else None)
+                   png=args.png.resolve() if args.png else None,
+                   atlas_prebake=atlas_prebake.resolve() if atlas_prebake else None)
     print(f"Staged {len(staged)} runtime files into {args.dist}")
     return 0
 

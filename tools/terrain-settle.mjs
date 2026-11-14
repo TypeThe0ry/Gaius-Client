@@ -25,7 +25,20 @@ export function readRenderDistance(distance) {
 
 export function expectedLoadedChunks(renderDistance) {
   const distance = positive(renderDistance);
-  return distance === null ? null : (2 * distance + 1) ** 2;
+  if (distance === null) return null;
+  // 26.3 ChunkTrackingView.Positioned.forEach iterates center +/- (distance + 1)
+  // and calls contains(int,int), whose include-border path uses
+  // max(abs(delta) - 2, 0)^2 < distance^2. This is the vanilla circular tracking
+  // set, not the square storage-array capacity.
+  let count = 0;
+  for (let dx = -distance - 1; dx <= distance + 1; dx++) {
+    for (let dz = -distance - 1; dz <= distance + 1; dz++) {
+      const x = Math.max(Math.abs(dx) - 2, 0);
+      const z = Math.max(Math.abs(dz) - 2, 0);
+      if (x * x + z * z < distance * distance) count++;
+    }
+  }
+  return count;
 }
 
 // The 1.21.11 renderer does not publish the optional section audit. When available, the audit

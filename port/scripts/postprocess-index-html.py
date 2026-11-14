@@ -8,6 +8,7 @@ by applying them from this tracked script after every successful TeaVM build.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -667,7 +668,44 @@ GAIUS_SHELL_SCRIPT = r'''  <script>
 GAIUS_BOOT_ART_MARKER = 'data-gaius-boot-art="v1"'
 
 
-def apply_gaius_boot_art(text: str) -> str:
+def load_boot_panorama_faces(
+    minecraft_version: str, asset_index_id: str, work_root: Path | None = None
+) -> list[str]:
+    """Read the cached vanilla title cubemap without making the build download anything."""
+    work_root = work_root or (Path(__file__).resolve().parents[1] / "work")
+    assets = work_root / minecraft_version / "assets"
+    index_path = assets / "indexes" / f"{asset_index_id}.json"
+    try:
+        document = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return []
+    objects = document.get("objects") if isinstance(document, dict) else None
+    if not isinstance(objects, dict):
+        return []
+    faces: list[str] = []
+    for face in range(6):
+        name = f"minecraft/textures/gui/title/background/panorama_{face}.png"
+        entry = objects.get(name)
+        if not isinstance(entry, dict):
+            return []
+        digest = entry.get("hash")
+        size = entry.get("size")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{40}", digest):
+            return []
+        if not isinstance(size, int) or size <= 0:
+            return []
+        path = assets / "objects" / digest[:2] / digest
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return []
+        if len(content) != size or hashlib.sha1(content).hexdigest() != digest:
+            return []
+        faces.append("data:image/png;base64," + base64.b64encode(content).decode("ascii"))
+    return faces
+
+
+def apply_gaius_boot_art(text: str, panorama_faces: list[str] | None = None) -> str:
     """Install the vanilla-style boot screen art (port/web/launcher/boot-art.{css,js}).
 
     Separate from apply_gaius_client_shell: the launcher template already carries the shell, so
@@ -675,6 +713,17 @@ def apply_gaius_boot_art(text: str) -> str:
     their boot flow and progress logic.
     """
     if GAIUS_BOOT_ART_MARKER in text:
+        if panorama_faces and 'data-gaius-boot-panorama="v1"' not in text:
+            return replace_required(
+                text,
+                "</head>\n",
+                "  <script data-gaius-boot-panorama=\"v1\">\n"
+                "    window.__gaiusBootPanoramaFaces = "
+                + _inline_json(panorama_faces)
+                + ";\n"
+                "  </script>\n</head>\n",
+                "vanilla boot panorama faces",
+            )
         return text
     launcher = Path(__file__).resolve().parents[1] / "web" / "launcher"
     css = (launcher / "boot-art.css").read_text(encoding="utf-8")
@@ -687,6 +736,17 @@ def apply_gaius_boot_art(text: str) -> str:
         "  <style " + GAIUS_BOOT_ART_MARKER + ">\n" + css + "  </style>\n</head>\n",
         "Gaius boot art CSS",
     )
+    if panorama_faces:
+        text = replace_required(
+            text,
+            "</head>\n",
+            "  <script data-gaius-boot-panorama=\"v1\">\n"
+            "    window.__gaiusBootPanoramaFaces = "
+            + _inline_json(panorama_faces)
+            + ";\n"
+            "  </script>\n</head>\n",
+            "vanilla boot panorama faces",
+        )
     return replace_required(
         text,
         "</body>\n",
@@ -916,21 +976,24 @@ def patch_shader_toolchain_loader(text: str, classes_js: Path, index: Path, prof
         text,
     )
     text = replace_required(text, "</head>\n", loader + "</head>\n", "shader toolchain loader")
-    if "window.__gaiusShaderToolchainReady" not in text.split("</head>", 1)[1]:
-        text = replace_required(
-            text,
-            "      bootTimings.vanillaAssetsReady = performance.now();\n"
-            "      if (typeof main !== \"function\") {\n",
-            "      bootTimings.vanillaAssetsReady = performance.now();\n"
-            "      if (!window.__gaiusShaderToolchainReady) {\n"
-            "        throw new Error(\"gaius-shader-toolchain.js did not load; this client cannot compile shaders without it\");\n"
-            "      }\n"
-            "      setBootProgress(Math.max(bootProgressValue, 64), \"Starting the shader compiler...\");\n"
-            "      await window.__gaiusShaderToolchainReady;\n"
-            "      bootTimings.shaderToolchainReady = performance.now();\n"
-            "      if (typeof main !== \"function\") {\n",
-            "shader toolchain boot gate",
-        )
+    gate = (
+        "      if (!window.__gaiusShaderToolchainReady) {\n"
+        "        throw new Error(\"gaius-shader-toolchain.js did not load; this client cannot compile shaders without it\");\n"
+        "      }\n"
+        "      setBootProgress(Math.max(bootProgressValue, 64), \"Starting the shader compiler...\");\n"
+        "      await window.__gaiusShaderToolchainReady;\n"
+        "      bootTimings.shaderToolchainReady = performance.now();\n"
+    )
+    # Migrate the former gate, which ran before the boot-owned deferred loader.
+    text = text.replace(gate, "")
+    before_main = "if (window.__gaiusBoot) await window.__gaiusBoot.beforeMain();\n"
+    if before_main in text:
+        text = replace_required(text, before_main, before_main + gate,
+                                "shader toolchain after boot readiness")
+    else:
+        # Older standalone JavaScript shells load the compiler in their head.
+        anchor = "      bootTimings.vanillaAssetsReady = performance.now();\n"
+        text = replace_required(text, anchor, anchor + gate, "shader toolchain boot gate")
     return text
 
 
@@ -1272,6 +1335,9 @@ def patch_index(
       }
       const root = {bytes, index, dataOffset, resourceCount};
       window.__gaiusVanillaAssets = root;
+      if (typeof window.__gaiusValidateInitSnapshot === "function") {
+        window.__gaiusInitSnapshotValidation = window.__gaiusValidateInitSnapshot(root);
+      }
       bootTimings.vanillaAssetsDecoded = performance.now();
       return root;
     }
@@ -3193,19 +3259,20 @@ def patch_index(
         text,
         '''      async function putIndexedDbFile(path, value) {
         const transaction = db.transaction(storeName, "readwrite");
-        transaction.objectStore(storeName).put({ path: normalize(path), value: String(value || "") });
+        const store = transaction.objectStore(storeName);
+        const target = normalize(path);
+        const storedValue = value;
+        store.put({path: target, value: storedValue, updatedAt: Date.now()});
         await transactionDone(transaction);
       }
 ''',
         '''      async function putIndexedDbFile(path, value) {
         const transaction = db.transaction(storeName, "readwrite");
-        const bytes = copyPersistentBytes(value);
-        const storedValue = bytes === null ? String(value || "") : bytes;
-        transaction.objectStore(storeName).put({
-          path: normalize(path),
-          value: storedValue,
-          updatedAt: Date.now()
-        });
+        const store = transaction.objectStore(storeName);
+        const target = normalize(path);
+        const storedValue = value;
+        // One target put is committed atomically by the IDB transaction.
+        store.put({path: target, value: storedValue, updatedAt: Date.now()});
         await transactionDone(transaction);
       }
 ''',
@@ -3770,7 +3837,9 @@ def patch_index(
 
     text = patch_storage_persistence(text, selected_profile)
     text = apply_gaius_client_shell(text)
-    text = apply_gaius_boot_art(text)
+    text = apply_gaius_boot_art(text, load_boot_panorama_faces(
+        minecraft_version, asset_index_id
+    ))
     text = apply_gaius_touch_controls(text)
     text = apply_gaius_world_archive(text)
     text = patch_release_version(text)

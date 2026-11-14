@@ -16,7 +16,9 @@
 //!                       of the column when INITIAL is not set),
 //!                       bit 4 PULL_RING (seed the column from the ring levels),
 //!                       bit 5 EMIT_OUTGOING (report light leaving the column),
-//!                       bit 6 OMIT_UNCHANGED (return only changed layers)
+//!                       bit 6 OMIT_UNCHANGED (return only changed layers),
+//!                       bit 7 FAST_OCCLUSION (use the precomputed shape-class
+//!                       pair cache; parity-equivalent opt-in hot path)
 //! i32  chunk_x, chunk_z (informational)
 //! i32  min_section      LevelHeightAccessor.getMinSectionY()
 //! u32  section_count    1..=254
@@ -98,6 +100,7 @@ pub mod job_flags {
     pub const PULL_RING: u16 = 16;
     pub const EMIT_OUTGOING: u16 = 32;
     pub const OMIT_UNCHANGED: u16 = 64;
+    pub const FAST_OCCLUSION: u16 = 128;
 }
 
 pub mod encoding {
@@ -207,6 +210,7 @@ impl Kernel {
         };
         let column = &mut self.column;
         column.begin(spec).map_err(bad)?;
+        column.set_fast_occlusion(job_flags & job_flags::FAST_OCCLUSION != 0);
         let light_sections = column.light_sections();
         let slots: Vec<usize> = core::iter::once(0)
             .chain((0..4).filter(|side| neighbours & (1 << side) != 0).map(|side| side + 1))

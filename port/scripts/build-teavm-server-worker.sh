@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
+node "$root/port/scripts/jsbody-wrapper-collision-smoke.mjs"
 source "$root/port/scripts/version-profile.sh"
 source "$root/port/scripts/teavm-publication-gate.sh"
 gaius_require_js_target || exit 2
@@ -223,6 +224,10 @@ if [[ "$build_status" -eq 0 && "$teavm_publish_allowed" == true ]]; then
   final_worker_bootstrap="$dist/singleplayer-server-worker.js"
   "$root/port/scripts/run-python.sh" \
     "$root/port/scripts/postprocess-teavm-js.py" "$staged_server_js"
+  if ! node --check "$staged_server_js"; then
+    echo "Generated TeaVM server Worker JavaScript failed syntax validation; refusing to publish it" >&2
+    exit 1
+  fi
   cp "$root/port/web/singleplayer/server-worker-bootstrap.js" \
     "$staged_worker_bootstrap"
   "$root/port/scripts/run-python.sh" \

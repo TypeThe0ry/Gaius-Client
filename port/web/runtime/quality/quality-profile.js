@@ -15,7 +15,6 @@
 //                                   renderpearl generations, 1 on the blaze3d profiles)
 //   ?gaiusOit=0|1                   force improved transparency (OIT) off/on
 //   ?gaiusInventoryWorldFps=<n>     world refresh rate behind inventory screens (0 = freeze)
-//   ?gaiusPresetReplay=1            vanilla behaviour: re-apply the graphics preset at startup
 // Vanilla behaviour is one switch away: ?gaiusPost=0&gaiusRenderScale=1&gaiusOit=0.
 (function installGaiusQualityProfile(root) {
   "use strict";
@@ -274,8 +273,7 @@
       },
       oitTier: base.oit,
       oitForced: oitForced,
-      inventoryWorldFps: inventoryWorldFps,
-      presetReplay: bool(get("gaiusPresetReplay"), false)
+      inventoryWorldFps: inventoryWorldFps
     };
     state.settings = settings;
     try {
@@ -319,12 +317,12 @@
 
   // --- automatic video preset ----------------------------------------------------------------
   //
-  // BrowserFilePersistence seeds options.txt with the tier's vanilla video options on the first
+  // BrowserFilePersistence seeds options.txt with vanilla FAST video options on the first
   // start of a browser profile. This remembers what it wrote (localStorage
   // gaius.quality.autoPreset.v1, per storage profile) so a later start can tell whether the
   // player has changed any of those options since:
-  //   - unchanged: the options still follow the automatic preset, and a different tier (a new
-  //     classification, a ?gaiusTier override) re-applies that tier's values;
+  //   - unchanged: the options still follow the automatic preset; tier changes do not rewrite
+  //     vanilla FAST distances, simulation distance or transparency;
   //   - changed: the player's choice wins, and this profile is never adjusted again;
   //   - no record (a profile from before automatic presets, or blocked storage): left alone.
   // Options the game no longer writes (a key another version does not know) are not compared.
@@ -356,8 +354,8 @@
     return values;
   }
 
-  // Pure decision: {current (options.txt text, null when it was just seeded), seed (the options
-  // the tier seeds now), tier, marker (the stored record or null)} ->
+  // Pure decision: {current (options.txt text, null when it was just seeded), seed (the vanilla
+  // FAST options), tier, marker (the stored record or null)} ->
   // {action, options (new text or null), marker (record to store or null), changed}.
   // Actions: seeded, untracked, manual, manual-detected, auto-kept, reapplied.
   function reconcilePreset(input) {
@@ -384,7 +382,7 @@
       return {action: "manual-detected", options: null, changed: changed,
         marker: {tier: marker.tier, values: marker.values, manual: true, changed: changed}};
     }
-    let same = marker.tier === tier;
+    let same = true;
     const wanted = Object.keys(values);
     for (let i = 0; same && i < wanted.length; i++) {
       if (Object.prototype.hasOwnProperty.call(current, wanted[i])
@@ -438,11 +436,9 @@
     const values = presetValues(seed);
     const distance = values.renderDistance ? ", render distance " + values.renderDistance : "";
     const messages = {
-      "seeded": "first start, applied the automatic " + tier + " video preset" + distance,
-      "reapplied": "video settings untouched since the automatic "
-          + (result.marker && result.marker.from || "?") + " preset, applied the " + tier
-          + " preset" + distance,
-      "auto-kept": "video settings follow the automatic " + tier + " preset",
+      "seeded": "first start, applied vanilla FAST video settings" + distance,
+      "reapplied": "video settings restored to vanilla FAST values" + distance,
+      "auto-kept": "video settings follow vanilla FAST values",
       "manual-detected": "the player changed video settings (" + result.changed.join(", ")
           + "); automatic presets are off for this profile",
       "manual": "keeping the player's video settings (automatic presets off)",

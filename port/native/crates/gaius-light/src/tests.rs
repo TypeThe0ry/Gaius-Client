@@ -326,11 +326,18 @@ fn bucket_order_matches_vanilla_order_on_random_columns() {
     for seed in 1..41u64 {
         let scene = random_scene(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
         let mut fast = LightColumn::new();
+        let mut cached = LightColumn::new();
+        cached.set_fast_occlusion(true);
         let mut vanilla = LightColumn::new();
         vanilla.set_vanilla_increase_order(true);
         scene.light_first_time(&mut fast, &table);
+        scene.light_first_time(&mut cached, &table);
         scene.light_first_time(&mut vanilla, &table);
-        let (a, b) = (snapshot(&fast, scene.sections), snapshot(&vanilla, scene.sections));
+        let (a, b, c) = (
+            snapshot(&fast, scene.sections),
+            snapshot(&vanilla, scene.sections),
+            snapshot(&cached, scene.sections),
+        );
         let sky_diff = a.0.iter().zip(&b.0).filter(|(x, y)| x != y).count();
         let block_diff = a.1.iter().zip(&b.1).filter(|(x, y)| x != y).count();
         let rec_diff: Vec<_> = a.2.iter().filter(|(k, v)| b.2.get(k) != Some(v)).take(5).collect();
@@ -339,6 +346,7 @@ fn bucket_order_matches_vanilla_order_on_random_columns() {
             a == b,
             "first light, seed {seed}: sky {sky_diff} block {block_diff} records {rec_diff:?} / {rec_diff2:?}"
         );
+        assert_eq!(a, c, "fast occlusion cache changed first-light output, seed {seed}");
 
         // Then a burst of block changes through checkNode.
         let mut rng = Rng(seed);
@@ -348,7 +356,7 @@ fn bucket_order_matches_vanilla_order_on_random_columns() {
             let id = [AIR, STONE, TORCH, GLOWSTONE, BOTTOM_SLAB][rng.below(5) as usize];
             changes.push((x, y, z, table.props(id as u32).unwrap()));
         }
-        for column in [&mut fast, &mut vanilla] {
+        for column in [&mut fast, &mut cached, &mut vanilla] {
             for &(x, y, z, props) in &changes {
                 column.set_props(x, y, z, props);
             }
@@ -362,7 +370,11 @@ fn bucket_order_matches_vanilla_order_on_random_columns() {
             }
             column.propagate(Layer::Sky, &table);
         }
-        let (a, b) = (snapshot(&fast, scene.sections), snapshot(&vanilla, scene.sections));
+        let (a, b, c) = (
+            snapshot(&fast, scene.sections),
+            snapshot(&vanilla, scene.sections),
+            snapshot(&cached, scene.sections),
+        );
         let sky_diff: Vec<_> =
             a.0.iter()
                 .zip(&b.0)
@@ -381,6 +393,7 @@ fn bucket_order_matches_vanilla_order_on_random_columns() {
             a.0 == b.0 && a.1 == b.1,
             "after changes, seed {seed}: sky {sky_diff:?} block {block_diff:?} changes {changes:?}"
         );
+        assert_eq!(a, c, "fast occlusion cache changed incremental output, seed {seed}");
     }
 }
 

@@ -15,7 +15,9 @@ public final class BrowserChunkTaskPriority {
     private static int playerChunkZ;
     private static int movementX;
     private static int movementZ;
-
+    private static double playerX;
+    private static double playerZ;
+    private static float playerYaw = Float.NaN;
     private BrowserChunkTaskPriority() {
     }
 
@@ -35,6 +37,24 @@ public final class BrowserChunkTaskPriority {
         playerChunkZ = nextChunkZ;
         playerPositionKnown = true;
         recordPlayerChunk(nextChunkX, nextChunkZ, movementX, movementZ);
+    }
+
+    /** Publishes the latest server-side camera hint for pure worldgen kernel jobs. */
+    public static void recordPlayerView(double x, double z, float yaw) {
+        int nextChunkX = floorToChunk(x);
+        int nextChunkZ = floorToChunk(z);
+        if (playerPositionKnown
+                && (nextChunkX != playerChunkX || nextChunkZ != playerChunkZ)) {
+            movementX = Integer.compare(nextChunkX, playerChunkX);
+            movementZ = Integer.compare(nextChunkZ, playerChunkZ);
+        }
+        playerChunkX = nextChunkX;
+        playerChunkZ = nextChunkZ;
+        playerX = x;
+        playerZ = z;
+        playerPositionKnown = true;
+        if (Float.isFinite(yaw)) playerYaw = yaw;
+        recordPlayerViewStats(nextChunkX, nextChunkZ, movementX, movementZ, playerX, playerZ, playerYaw);
     }
 
     /**
@@ -105,6 +125,25 @@ public final class BrowserChunkTaskPriority {
             stats.direction = dx + ',' + dz;
             """)
     private static native void recordPlayerChunk(int x, int z, int dx, int dz);
+
+    @JSBody(params = {"x", "z", "dx", "dz", "playerX", "playerZ", "yaw"}, script = """
+            const stats = globalThis.__gaiusChunkPriorityStats ||
+              (globalThis.__gaiusChunkPriorityStats = {
+                playerUpdates: 0,
+                pops: 0,
+                reorderedPops: 0,
+                scannedCandidates: 0,
+                maxCandidates: 0
+              });
+            stats.playerUpdates++;
+            stats.playerChunk = x + ',' + z;
+            stats.direction = dx + ',' + dz;
+            stats.playerX = Number(playerX);
+            stats.playerZ = Number(playerZ);
+            stats.yaw = Number(yaw);
+            """)
+    private static native void recordPlayerViewStats(
+            int x, int z, int dx, int dz, double playerX, double playerZ, float yaw);
 
     @JSBody(params = {"reordered", "scanned", "distanceSquared"}, script = """
             const stats = globalThis.__gaiusChunkPriorityStats ||

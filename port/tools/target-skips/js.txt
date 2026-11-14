@@ -16,3 +16,11 @@ Minecraft12111BrowserPatcher.patchLineWidthVertexFormatAlignment | 1.21.11 | the
 MinecraftClientPatcher.patchSectionBufferBuilderPoolTelemetry | >=26.2 | sizes vanilla's section builder pool for WasmGC's cooperative compile threads via the WasmGC BrowserMemory; the JavaScript build keeps vanilla's pool sizing
 MinecraftClientPatcher.patchClimateRTreeBrowserFlatIndex | * | exact flat copy of the multi-noise biome RTree for the WasmGC server; the JavaScript build keeps its BrowserClimate double distance (the registration is unguarded, so a 1.21.11 JavaScript log skips it too although its spec names >=26.2)
 MinecraftClientPatcher.patchSingleplayerHostCompression | * | the host connection of the WasmGC server Worker is uncompressed like vanilla singleplayer; the JavaScript build keeps its compressed host connection
+MinecraftClientPatcher.patchTagKeyBrowserHashCodeCache | * | exact hash cache of TagKey for the WasmGC server's chunk generation; the JavaScript build is the frozen fallback and keeps vanilla TagKey
+MinecraftClientPatcher.patchWorldGenRegionBrowserCachedHeight | * | WorldGenRegion.getMinY/getHeight from the region's own DimensionType for the WasmGC server's chunk generation; the JavaScript build keeps vanilla
+MinecraftClientPatcher.patchWorldGenRegionBrowserLastChunk | * | WorldGenRegion.getChunk(x, z) last-answer memo for the WasmGC server's chunk generation; the JavaScript build keeps vanilla
+MinecraftClientPatcher.patchMultiNoiseBiomeSourceBrowserCachedParameters | * | MultiNoiseBiomeSource.parameters() computed once for the WasmGC server's chunk generation; the JavaScript build keeps vanilla
+MinecraftClientPatcher.patchMipmapGeneratorAtlasPrebake | * | the atlas prebake payload is copied through WasmGC linear memory; the JavaScript build keeps vanilla generateMipLevels
+MinecraftClientPatcher.patchStitcherAtlasPrebake | * | the atlas prebake payload is read through WasmGC linear memory; the JavaScript build keeps vanilla stitch and gatherSprites
+MinecraftServerWorkerPatcher.worldLoaderCache | >=26.3 | the world load cache is filled by the parked WasmGC server Worker; the JavaScript build keeps vanilla WorldLoader
+MinecraftServerWorkerPatcher.lightWakePatches | >=26.3 | wakes the parked WasmGC server thread (cooperative JSPI park) when light work is queued; the JavaScript build keeps vanilla scheduling

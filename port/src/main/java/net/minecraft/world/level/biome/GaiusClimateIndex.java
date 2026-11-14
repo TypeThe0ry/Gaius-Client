@@ -25,6 +25,15 @@ import java.util.Arrays;
  * depend on, is therefore identical to vanilla for every input
  * ({@code port/scripts/climate-rtree-parity.mjs} checks this on the JVM).
  *
+ * <p>The only pruning test, {@code best <= distance}, needs the full distance of a child only when
+ * it is below the current best; a child at or above it is skipped whatever the remaining
+ * dimensions add. {@link #distanceBelow} therefore stops summing the squared per-dimension
+ * distances as soon as the partial sum reaches the best distance, starting with the depth
+ * dimension, in which a real target is almost never inside a box (it is inside in about 0.02% of
+ * overworld lookups) and which therefore prunes most children by itself. That is exact while
+ * partial sums only grow, i.e. while no sum can wrap around in 64 bits; the bounds of the tree and
+ * the target are range checked for that, and a lookup outside the range sums everything as before.
+ *
  * <p>The patched {@code ParameterList.findValueIndex(TargetPoint)} passes {@link #NODE_DISTANCE};
  * any other metric, a tree whose shape this class does not recognise, and an unpatched
  * {@code SubTree} take the vanilla recursive search.
@@ -39,6 +48,12 @@ public final class GaiusClimateIndex {
     /** Trees indexed at once: overworld and nether of the current and one previous world. */
     private static final int MAX_CACHED_TREES = 4;
     private static final Object UNSUPPORTED = new Object();
+    /**
+     * Largest magnitude of a target coordinate or tree bound for which every squared distance and
+     * their sum stay below 2^61, far from 64-bit wrap-around: (2^28 + 2^28)^2 * 7 = 7 * 2^58. The
+     * quantised climate values of a vanilla world are within a few ten thousand.
+     */
+    private static final long SAFE_RANGE = 1L << 28;
 
     /** Pairs of (root node, index or {@link #UNSUPPORTED}), most recently built first. */
     private static volatile Object[] cache = new Object[0];
@@ -48,13 +63,17 @@ public final class GaiusClimateIndex {
     private final int[] childEnd;
     /** The leaf node of each index, null for subtrees. */
     private final Climate.RTree.Node<?>[] leaves;
+    /** Whether every bound is within {@link #SAFE_RANGE}, so partial distance sums only grow. */
+    private final boolean boundsInRange;
 
     private GaiusClimateIndex(
-            long[] bounds, int[] childStart, int[] childEnd, Climate.RTree.Node<?>[] leaves) {
+            long[] bounds, int[] childStart, int[] childEnd, Climate.RTree.Node<?>[] leaves,
+            boolean boundsInRange) {
         this.bounds = bounds;
         this.childStart = childStart;
         this.childEnd = childEnd;
         this.leaves = leaves;
+        this.boundsInRange = boundsInRange;
     }
 
     /**
@@ -80,7 +99,8 @@ public final class GaiusClimateIndex {
             return leaves[0];
         }
         Cursor cursor = new Cursor(
-                candidate == null ? Long.MAX_VALUE : candidate.distance(values));
+                candidate == null ? Long.MAX_VALUE : candidate.distance(values),
+                boundsInRange && inRange(values));
         visit(0, values, cursor);
         return cursor.best == LEAF ? candidate : leaves[cursor.best];
     }
@@ -93,7 +113,7 @@ public final class GaiusClimateIndex {
     private void visit(int node, long[] values, Cursor cursor) {
         int end = childEnd[node];
         for (int child = childStart[node]; child < end; child++) {
-            long distance = distance(child, values);
+            long distance = cursor.partial ? distanceBelow(child, values, cursor.min) : distance(child, values);
             if (cursor.min <= distance) {
                 continue;
             }
@@ -117,6 +137,46 @@ public final class GaiusClimateIndex {
                 + square(values[4], b[o + 8], b[o + 9])
                 + square(values[5], b[o + 10], b[o + 11])
                 + square(values[6], b[o + 12], b[o + 13]);
+    }
+
+    /**
+     * {@link #distance} when it is below {@code limit}, otherwise some partial sum that is not
+     * below {@code limit} either; the caller only compares with {@code limit}. Squares are not
+     * negative and, within {@link #SAFE_RANGE}, their sum cannot wrap, so a partial sum already
+     * at the limit proves the full one is. Depth goes first: it is the dimension in which a target
+     * is almost never inside a box, so most pruned children stop after one square.
+     */
+    private long distanceBelow(int node, long[] values, long limit) {
+        long[] b = bounds;
+        int o = node * STRIDE;
+        long sum = square(values[4], b[o + 8], b[o + 9]);
+        if (sum >= limit) {
+            return sum;
+        }
+        sum += square(values[0], b[o], b[o + 1]) + square(values[1], b[o + 2], b[o + 3]);
+        if (sum >= limit) {
+            return sum;
+        }
+        sum += square(values[2], b[o + 4], b[o + 5]) + square(values[3], b[o + 6], b[o + 7]);
+        if (sum >= limit) {
+            return sum;
+        }
+        return sum + square(values[5], b[o + 10], b[o + 11]) + square(values[6], b[o + 12], b[o + 13]);
+    }
+
+    /** {@code |value| <= SAFE_RANGE}, also right for {@code Long.MIN_VALUE}. */
+    private static boolean withinSafeRange(long value) {
+        return value >= -SAFE_RANGE && value <= SAFE_RANGE;
+    }
+
+    /** True when all seven target coordinates are within {@link #SAFE_RANGE} of zero. */
+    private static boolean inRange(long[] values) {
+        long outside = 0L;
+        for (int dimension = 0; dimension < DIMENSIONS; dimension++) {
+            // Within [-SAFE_RANGE, SAFE_RANGE) exactly when the sum is in [0, 2 * SAFE_RANGE).
+            outside |= (values[dimension] + SAFE_RANGE) >>> 29;
+        }
+        return outside == 0L;
     }
 
     /** {@code Mth.square(Parameter.distance(value))}. */
@@ -178,6 +238,7 @@ public final class GaiusClimateIndex {
             }
         }
         int count = nodes.size();
+        boolean boundsInRange = true;
         long[] bounds = new long[count * STRIDE];
         Climate.RTree.Node<?>[] leaves = new Climate.RTree.Node<?>[count];
         for (int i = 0; i < count; i++) {
@@ -193,6 +254,7 @@ public final class GaiusClimateIndex {
                 }
                 bounds[i * STRIDE + dimension * 2] = parameter.min();
                 bounds[i * STRIDE + dimension * 2 + 1] = parameter.max();
+                boundsInRange &= withinSafeRange(parameter.min()) && withinSafeRange(parameter.max());
             }
             if (childStart[i] == LEAF) {
                 leaves[i] = node;
@@ -202,15 +264,19 @@ public final class GaiusClimateIndex {
                 bounds,
                 Arrays.copyOf(childStart, count),
                 Arrays.copyOf(childEnd, count),
-                leaves);
+                leaves,
+                boundsInRange);
     }
 
     private static final class Cursor {
         long min;
         int best = LEAF;
+        /** Whether {@link #distanceBelow} may stop early (no 64-bit wrap-around is possible). */
+        final boolean partial;
 
-        Cursor(long min) {
+        Cursor(long min, boolean partial) {
             this.min = min;
+            this.partial = partial;
         }
     }
 }

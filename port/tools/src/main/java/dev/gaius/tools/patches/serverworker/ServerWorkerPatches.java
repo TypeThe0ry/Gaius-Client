@@ -1733,93 +1733,8 @@ public final class ServerWorkerPatches {
                 method.maxStack = Math.max(method.maxStack, 1);
                 patchedStructurePreload = true;
             } else if (method.name.equals("prepareLevels") && method.desc.equals("()V")) {
-                InsnList code = new InsnList();
-                code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-                code.add(new FieldInsnNode(
-                        Opcodes.GETFIELD,
-                        owner,
-                        "levelLoadListener",
-                        "Lnet/minecraft/server/level/progress/LevelLoadListener;"));
-                code.add(new FieldInsnNode(
-                        Opcodes.GETSTATIC,
-                        "net/minecraft/server/level/progress/LevelLoadListener$Stage",
-                        "LOAD_INITIAL_CHUNKS",
-                        "Lnet/minecraft/server/level/progress/LevelLoadListener$Stage;"));
-                code.add(new InsnNode(Opcodes.ICONST_0));
-                code.add(new MethodInsnNode(
-                        Opcodes.INVOKEINTERFACE,
-                        "net/minecraft/server/level/progress/LevelLoadListener",
-                        "start",
-                        "(Lnet/minecraft/server/level/progress/LevelLoadListener$Stage;I)V",
-                        true));
-                code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-                code.add(new FieldInsnNode(
-                        Opcodes.GETFIELD,
-                        owner,
-                        "levelLoadListener",
-                        "Lnet/minecraft/server/level/progress/LevelLoadListener;"));
-                code.add(new FieldInsnNode(
-                        Opcodes.GETSTATIC,
-                        "net/minecraft/server/level/progress/LevelLoadListener$Stage",
-                        "LOAD_INITIAL_CHUNKS",
-                        "Lnet/minecraft/server/level/progress/LevelLoadListener$Stage;"));
-                code.add(new MethodInsnNode(
-                        Opcodes.INVOKEINTERFACE,
-                        "net/minecraft/server/level/progress/LevelLoadListener",
-                        "finish",
-                        "(Lnet/minecraft/server/level/progress/LevelLoadListener$Stage;)V",
-                        true));
-                code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-                code.add(new FieldInsnNode(
-                        Opcodes.GETFIELD,
-                        owner,
-                        "levelLoadListener",
-                        "Lnet/minecraft/server/level/progress/LevelLoadListener;"));
-                code.add(new FieldInsnNode(
-                        Opcodes.GETSTATIC,
-                        "net/minecraft/server/level/progress/LevelLoadListener$Stage",
-                        "LOAD_PLAYER_CHUNKS",
-                        "Lnet/minecraft/server/level/progress/LevelLoadListener$Stage;"));
-                code.add(new InsnNode(Opcodes.ICONST_0));
-                code.add(new MethodInsnNode(
-                        Opcodes.INVOKEINTERFACE,
-                        "net/minecraft/server/level/progress/LevelLoadListener",
-                        "start",
-                        "(Lnet/minecraft/server/level/progress/LevelLoadListener$Stage;I)V",
-                        true));
-                code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-                code.add(new FieldInsnNode(
-                        Opcodes.GETFIELD,
-                        owner,
-                        "levelLoadListener",
-                        "Lnet/minecraft/server/level/progress/LevelLoadListener;"));
-                code.add(new FieldInsnNode(
-                        Opcodes.GETSTATIC,
-                        "net/minecraft/server/level/progress/LevelLoadListener$Stage",
-                        "LOAD_PLAYER_CHUNKS",
-                        "Lnet/minecraft/server/level/progress/LevelLoadListener$Stage;"));
-                code.add(new MethodInsnNode(
-                        Opcodes.INVOKEINTERFACE,
-                        "net/minecraft/server/level/progress/LevelLoadListener",
-                        "finish",
-                        "(Lnet/minecraft/server/level/progress/LevelLoadListener$Stage;)V",
-                        true));
-                code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-                code.add(new MethodInsnNode(
-                        Opcodes.INVOKEVIRTUAL,
-                        owner,
-                        "updateMobSpawningFlags",
-                        "()V",
-                        false));
-                code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-                code.add(new MethodInsnNode(
-                        Opcodes.INVOKEVIRTUAL,
-                        owner,
-                        "updateEffectiveRespawnData",
-                        "()V",
-                        false));
-                code.add(new InsnNode(Opcodes.RETURN));
-                replace(method, code, 3, 1);
+                // Keep vanilla's ChunkLoadCounter wait: spawn entities must not tick
+                // until every forced initial chunk has completed loading.
                 patchedPrepareLevels = true;
             } else if (method.name.equals("setInitialSpawn")
                     && method.desc.equals("(Lnet/minecraft/server/level/ServerLevel;"
@@ -2105,14 +2020,83 @@ public final class ServerWorkerPatches {
                         + ", Mob.aiStep boundaries=2, LivingEntity.tick Mob fallback=1");
     }
 
+    /**
+     * Name of the static flag on PlayerSpawnFinder that PrepareSpawnTask.start sets around its
+     * findSpawn call (see {@link #markSpawnSearchDeferred}).
+     */
+    static final String DEFER_SPAWN_SEARCH_FIELD = "gaius$deferSpawnSearch";
+
+    /**
+     * Vanilla {@code PlayerSpawnFinder.findSpawn} schedules one spawn candidate per chunk load
+     * ({@code addTicketAndLoadWithRadius(..).whenCompleteAsync(.., server)}) and its callers wait
+     * for the future. The browser build splits the two callers:
+     *
+     * <ul>
+     *   <li>PrepareSpawnTask.start (a joining player without a saved position) sets
+     *       {@link #DEFER_SPAWN_SEARCH_FIELD}; findSpawn then returns the world spawn as is and
+     *       Preparing.tick settles it on the loaded spawn chunk with
+     *       {@code gaius$fixupLoadedSpawn}, so joining does not wait for a search first.</li>
+     *   <li>Every other caller, which is {@code ServerPlayer.adjustSpawnLocation} (a respawn
+     *       without a bed or anchor, and leaving the End through its exit portal), gets
+     *       vanilla's search run to the end at once: {@code gaius$findSpawnNow} is the vanilla
+     *       findSpawn with {@code scheduleNext()} replaced by {@code gaius$searchNow()}, which
+     *       tries the same candidates in the same order through vanilla's own candidate
+     *       lambdas. Their chunk lookups are ordinary server-thread {@code getChunk} calls,
+     *       whose managedBlock wait yields cooperatively in the browser.</li>
+     * </ul>
+     *
+     * <p>Without the second case a respawn took the browser world spawn verbatim. The browser
+     * setInitialSpawn stores that spawn at the top of the level (y = maxY, see
+     * {@link #appendBrowserInitialSpawnFromChunk}), so a player respawned in the air, fell to
+     * death and respawned there again.</p>
+     */
     public static void patchPlayerSpawnFinderBrowser(String jar, Path output)
             throws IOException {
         String owner = "net/minecraft/server/level/PlayerSpawnFinder";
-        ClassNode node = read(jar, owner + ".class");
-        MethodNode findSpawn = find(node, "findSpawn",
+        String findSpawnDescriptor =
                 "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/core/BlockPos;)"
-                        + "Ljava/util/concurrent/CompletableFuture;");
+                        + "Ljava/util/concurrent/CompletableFuture;";
+        ClassNode node = read(jar, owner + ".class");
+        MethodNode findSpawn = find(node, "findSpawn", findSpawnDescriptor);
+        // The candidate lambdas gaius$searchNow drives (vanilla scheduleNext's two suppliers).
+        find(node, "lambda$scheduleNext$0", "(II)Ljava/util/Optional;");
+        find(node, "lambda$scheduleNext$1", "()Ljava/util/Optional;");
+        find(node, "scheduleNext", "()V");
+
+        MethodNode findSpawnNow = new MethodNode(
+                Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
+                "gaius$findSpawnNow",
+                findSpawnDescriptor,
+                findSpawn.signature,
+                null);
+        findSpawn.accept(findSpawnNow);
+        int scheduleCalls = 0;
+        for (AbstractInsnNode instruction : findSpawnNow.instructions.toArray()) {
+            if (instruction instanceof MethodInsnNode call
+                    && call.owner.equals(owner)
+                    && call.name.equals("scheduleNext")
+                    && call.desc.equals("()V")) {
+                findSpawnNow.instructions.set(call, new MethodInsnNode(
+                        call.getOpcode(), owner, "gaius$searchNow", "()V", false));
+                scheduleCalls++;
+            }
+        }
+        if (scheduleCalls != 1) {
+            throw new IllegalStateException(
+                    "PlayerSpawnFinder.findSpawn scheduleNext shape changed: " + scheduleCalls);
+        }
+        node.methods.add(findSpawnNow);
+        node.methods.add(spawnSearchNow(owner));
+        node.fields.add(new FieldNode(
+                Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
+                DEFER_SPAWN_SEARCH_FIELD, "Z", null, null));
+
+        LabelNode search = new LabelNode();
         InsnList code = new InsnList();
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, owner, DEFER_SPAWN_SEARCH_FIELD, "Z"));
+        code.add(new JumpInsnNode(Opcodes.IFEQ, search));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new FieldInsnNode(Opcodes.PUTSTATIC, owner, DEFER_SPAWN_SEARCH_FIELD, "Z"));
         code.add(new VarInsnNode(Opcodes.ALOAD, 1));
         code.add(new MethodInsnNode(
                 Opcodes.INVOKESTATIC,
@@ -2126,6 +2110,20 @@ public final class ServerWorkerPatches {
                 "completedFuture",
                 "(Ljava/lang/Object;)Ljava/util/concurrent/CompletableFuture;",
                 false));
+        code.add(new InsnNode(Opcodes.ARETURN));
+        code.add(search);
+        code.add(new FrameNode(
+                Opcodes.F_FULL,
+                2,
+                new Object[] {
+                    "net/minecraft/server/level/ServerLevel", "net/minecraft/core/BlockPos"
+                },
+                0,
+                new Object[0]));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new MethodInsnNode(
+                Opcodes.INVOKESTATIC, owner, "gaius$findSpawnNow", findSpawnDescriptor, false));
         code.add(new InsnNode(Opcodes.ARETURN));
         replace(findSpawn, code, 2, 2);
 
@@ -2238,6 +2236,141 @@ public final class ServerWorkerPatches {
         fixupLoadedSpawn.maxLocals = 3;
         node.methods.add(fixupLoadedSpawn);
         write(node, output);
+    }
+
+    /**
+     * {@code PlayerSpawnFinder.gaius$searchNow()}: vanilla scheduleNext/scheduleCandidate run
+     * as one loop instead of one chunk-load callback per candidate.
+     *
+     * <pre>{@code
+     * while (!finishedFuture.isDone()) {
+     *     int i = nextCandidateIndex++;
+     *     Optional<Vec3> result;
+     *     if (i < candidateCount) {
+     *         int index = (offset + coprime * i) % candidateCount;
+     *         int width = radius * 2 + 1;
+     *         result = lambda$scheduleNext$0(
+     *                 spawnSuggestion.getX() + index % width - radius,
+     *                 spawnSuggestion.getZ() + index / width - radius);
+     *     } else {
+     *         result = lambda$scheduleNext$1();   // vanilla fixupSpawnHeight fallback
+     *     }
+     *     if (result.isPresent()) finishedFuture.complete(result.get());
+     * }
+     * }</pre>
+     */
+    private static MethodNode spawnSearchNow(String owner) {
+        String future = "java/util/concurrent/CompletableFuture";
+        String futureDescriptor = "L" + future + ";";
+        String blockPos = "net/minecraft/core/BlockPos";
+        MethodNode method = new MethodNode(
+                Opcodes.ACC_PRIVATE | Opcodes.ACC_SYNTHETIC, "gaius$searchNow", "()V", null, null);
+        InsnList code = method.instructions;
+        LabelNode loop = new LabelNode();
+        LabelNode fallback = new LabelNode();
+        LabelNode result = new LabelNode();
+        LabelNode end = new LabelNode();
+
+        code.add(loop);
+        code.add(new FrameNode(Opcodes.F_FULL, 1, new Object[] {owner}, 0, new Object[0]));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "finishedFuture", futureDescriptor));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, future, "isDone", "()Z", false));
+        code.add(new JumpInsnNode(Opcodes.IFNE, end));
+        // int i = nextCandidateIndex++;
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "nextCandidateIndex", "I"));
+        code.add(new InsnNode(Opcodes.DUP_X1));
+        code.add(new InsnNode(Opcodes.ICONST_1));
+        code.add(new InsnNode(Opcodes.IADD));
+        code.add(new FieldInsnNode(Opcodes.PUTFIELD, owner, "nextCandidateIndex", "I"));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 1));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "candidateCount", "I"));
+        code.add(new JumpInsnNode(Opcodes.IF_ICMPGE, fallback));
+        // int index = (offset + coprime * i) % candidateCount;
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "offset", "I"));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "coprime", "I"));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        code.add(new InsnNode(Opcodes.IMUL));
+        code.add(new InsnNode(Opcodes.IADD));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "candidateCount", "I"));
+        code.add(new InsnNode(Opcodes.IREM));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 2));
+        // int width = radius * 2 + 1;
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "radius", "I"));
+        code.add(new InsnNode(Opcodes.ICONST_2));
+        code.add(new InsnNode(Opcodes.IMUL));
+        code.add(new InsnNode(Opcodes.ICONST_1));
+        code.add(new InsnNode(Opcodes.IADD));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 3));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        // x = spawnSuggestion.getX() + index % width - radius
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "spawnSuggestion", "L" + blockPos + ";"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, blockPos, "getX", "()I", false));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 2));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        code.add(new InsnNode(Opcodes.IREM));
+        code.add(new InsnNode(Opcodes.IADD));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "radius", "I"));
+        code.add(new InsnNode(Opcodes.ISUB));
+        // z = spawnSuggestion.getZ() + index / width - radius
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "spawnSuggestion", "L" + blockPos + ";"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, blockPos, "getZ", "()I", false));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 2));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        code.add(new InsnNode(Opcodes.IDIV));
+        code.add(new InsnNode(Opcodes.IADD));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "radius", "I"));
+        code.add(new InsnNode(Opcodes.ISUB));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, owner, "lambda$scheduleNext$0",
+                "(II)Ljava/util/Optional;", false));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 4));
+        code.add(new JumpInsnNode(Opcodes.GOTO, result));
+
+        code.add(fallback);
+        code.add(new FrameNode(Opcodes.F_FULL, 2, new Object[] {owner, Opcodes.INTEGER},
+                0, new Object[0]));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, owner, "lambda$scheduleNext$1",
+                "()Ljava/util/Optional;", false));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 4));
+
+        code.add(result);
+        code.add(new FrameNode(Opcodes.F_FULL, 5,
+                new Object[] {owner, Opcodes.INTEGER, Opcodes.TOP, Opcodes.TOP, "java/util/Optional"},
+                0, new Object[0]));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 4));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/util/Optional", "isPresent",
+                "()Z", false));
+        code.add(new JumpInsnNode(Opcodes.IFEQ, loop));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "finishedFuture", futureDescriptor));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 4));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/util/Optional", "get",
+                "()Ljava/lang/Object;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, future, "complete",
+                "(Ljava/lang/Object;)Z", false));
+        code.add(new InsnNode(Opcodes.POP));
+        code.add(new JumpInsnNode(Opcodes.GOTO, loop));
+
+        code.add(end);
+        code.add(new FrameNode(Opcodes.F_FULL, 1, new Object[] {owner}, 0, new Object[0]));
+        code.add(new InsnNode(Opcodes.RETURN));
+        // this, x and z's getZ, index, width operands: five at most; the index increment four.
+        method.maxStack = 5;
+        method.maxLocals = 5;
+        return method;
     }
 
     public static void patchPrepareSpawnTaskBrowser(String jar, Path root)
@@ -2508,9 +2641,53 @@ public final class ServerWorkerPatches {
         mark.add(new InsnNode(Opcodes.IXOR));
         mark.add(new FieldInsnNode(Opcodes.PUTFIELD, preparingOwner, field, "Z"));
         start.instructions.insert(enterPreparing, mark);
+        markSpawnSearchDeferred(start);
         start.maxStack = Math.max(start.maxStack, 3);
         // No new branch: the existing stack map frames stay valid.
         write(task, root.resolve(taskOwner + ".class"));
+    }
+
+    /**
+     * Sets {@code PlayerSpawnFinder.gaius$deferSpawnSearch} for the one findSpawn call of
+     * {@code PrepareSpawnTask.start}: the {@code orElseGet} whose result is cast to
+     * CompletableFuture runs vanilla's {@code () -> PlayerSpawnFinder.findSpawn(level, pos)}
+     * supplier when the player has no saved position. findSpawn consumes the flag and returns
+     * the world spawn as is, which Preparing.tick settles later; the flag is cleared again right
+     * after orElseGet, so a saved position (supplier not run) leaves it unset for the next
+     * caller, the respawn path, which runs the full search.
+     */
+    private static void markSpawnSearchDeferred(MethodNode start) {
+        String finder = "net/minecraft/server/level/PlayerSpawnFinder";
+        MethodInsnNode spawnSupplierCall = null;
+        int spawnSupplierCalls = 0;
+        for (AbstractInsnNode instruction : start.instructions.toArray()) {
+            if (instruction instanceof MethodInsnNode call
+                    && call.getOpcode() == Opcodes.INVOKEVIRTUAL
+                    && call.owner.equals("java/util/Optional")
+                    && call.name.equals("orElseGet")
+                    && call.desc.equals("(Ljava/util/function/Supplier;)Ljava/lang/Object;")
+                    && nextOpcode(call) instanceof TypeInsnNode cast
+                    && cast.getOpcode() == Opcodes.CHECKCAST
+                    && cast.desc.equals("java/util/concurrent/CompletableFuture")) {
+                spawnSupplierCall = call;
+                spawnSupplierCalls++;
+            }
+        }
+        if (spawnSupplierCalls != 1) {
+            throw new IllegalStateException(
+                    "PrepareSpawnTask.start spawn position orElseGet shape changed: "
+                            + spawnSupplierCalls);
+        }
+        InsnList defer = new InsnList();
+        defer.add(new InsnNode(Opcodes.ICONST_1));
+        defer.add(new FieldInsnNode(Opcodes.PUTSTATIC, finder, DEFER_SPAWN_SEARCH_FIELD, "Z"));
+        start.instructions.insertBefore(spawnSupplierCall, defer);
+        InsnList clear = new InsnList();
+        clear.add(new InsnNode(Opcodes.ICONST_0));
+        clear.add(new FieldInsnNode(Opcodes.PUTSTATIC, finder, DEFER_SPAWN_SEARCH_FIELD, "Z"));
+        start.instructions.insert(spawnSupplierCall, clear);
+        // Each store sits on top of orElseGet's two operands or its result: one more slot.
+        start.maxStack = Math.max(start.maxStack, 4);
     }
 
     /**
@@ -3005,43 +3182,8 @@ public final class ServerWorkerPatches {
                 node,
                 "handleMovePlayer",
                 "(Lnet/minecraft/network/protocol/game/ServerboundMovePlayerPacket;)V");
-        LabelNode vanillaMovement = new LabelNode();
-        InsnList browserMovement = new InsnList();
-        browserMovement.add(new MethodInsnNode(
-                Opcodes.INVOKESTATIC,
-                "dev/gaius/browser/BrowserIntegratedServerMain",
-                "isWorkerServer",
-                "()Z",
-                false));
-        browserMovement.add(new JumpInsnNode(Opcodes.IFEQ, vanillaMovement));
-        browserMovement.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        browserMovement.add(new FieldInsnNode(
-                Opcodes.GETFIELD,
-                owner,
-                "player",
-                "Lnet/minecraft/server/level/ServerPlayer;"));
-        browserMovement.add(new VarInsnNode(Opcodes.ALOAD, 1));
-        browserMovement.add(new MethodInsnNode(
-                Opcodes.INVOKESTATIC,
-                "dev/gaius/browser/BrowserIntegratedServerMain",
-                "applyWorkerMovement",
-                "(Lnet/minecraft/server/level/ServerPlayer;"
-                        + "Lnet/minecraft/network/protocol/game/ServerboundMovePlayerPacket;)V",
-                false));
-        browserMovement.add(new InsnNode(Opcodes.RETURN));
-        browserMovement.add(vanillaMovement);
-        movePlayer.instructions.insert(browserMovement);
-        // The Worker branch above consumes the packet through applyWorkerMovement and returns.
-        // Do not put a worldgen-pressure return at the method head: InsnList.insert prepends the
-        // gate before that branch, which silently drops movement packets while the client is
-        // flying.  The resulting client/server position desync strands ChunkMap tracking at the
-        // last accepted section and renders only sky.  Vanilla/non-Worker movement remains
-        // untouched below the Worker fast path.
-        //
-        // Minecraft 26.3 moved the movement body, including both ServerChunkCache.move calls,
-        // into handlePlayerPositionChange(DDDFFZZ)V; handleMovePlayer only validates the packet
-        // and calls it (so does handleAcceptTeleportPacket). The Worker fast path above stays at
-        // the head of handleMovePlayer; the chunk-tracking redirect follows the calls.
+        // Keep validation, teleport acknowledgement, collision and bookkeeping in vanilla.
+        // Some inputs split the position body into a helper; redirect only its tracking calls.
         MethodNode positionChange = findNullable(
                 node, "handlePlayerPositionChange", "(DDDFFZZ)V");
         MethodNode moveTracking = positionChange != null ? positionChange : movePlayer;
@@ -3129,7 +3271,15 @@ public final class ServerWorkerPatches {
                 throw new IllegalStateException(
                         "PlayerChunkSender max-unacknowledged batch constant changed");
             }
-            constructor.instructions.set(constant, new InsnNode(Opcodes.ICONST_4));
+            InsnList batchLimit = new InsnList();
+            batchLimit.add(new MethodInsnNode(
+                    Opcodes.INVOKESTATIC,
+                    "dev/gaius/browser/BrowserIntegratedServerMain",
+                    "browserChunkBatchLimit",
+                    "()I",
+                    false));
+            constructor.instructions.insert(constant, batchLimit);
+            constructor.instructions.remove(constant);
             maxUnacknowledgedAssignments++;
         }
         if (maxUnacknowledgedAssignments != 1) {

@@ -1517,14 +1517,6 @@ try {
   });
   const rawGraphicsApply = graphicsPresetApply(rawGraphics);
   const patchedGraphicsApply = graphicsPresetApply(patchedGraphics);
-  // Applying a preset (Video Settings, or Minecraft.<init> with ?gaiusPresetReplay=1) writes its
-  // distances over the player's options, so FANCY and FABULOUS carry the 8/6 contract too.
-  assert.deepEqual(graphicsPresetDistanceConstants(patchedGraphicsApply, "renderDistance"),
-    ["bipush 8", "bipush 8", "bipush 8"],
-    "" + CANONICAL_PROFILE.id + " FAST/FANCY/FABULOUS render distance is not the browser 8 contract");
-  assert.deepEqual(graphicsPresetDistanceConstants(patchedGraphicsApply, "simulationDistance"),
-    ["bipush 6", "bipush 6", "bipush 6"],
-    "" + CANONICAL_PROFILE.id + " FAST/FANCY/FABULOUS simulation distance is not the browser 6 contract");
   assert.deepEqual(graphicsPresetDistanceConstants(rawGraphicsApply, "renderDistance"),
     ["bipush 8", "bipush 16", "bipush 32"],
     "" + CANONICAL_PROFILE.id + " raw FAST/FANCY render distance shape changed");
@@ -1535,29 +1527,32 @@ try {
     .map(getter => graphicsPresetArmValue(applyBytecode, arm, getter).replace(/^bipush /, ""))
     .join("/");
   assert.equal(presetDistances(patchedGraphicsApply, "FAST"), "8/6",
-    "" + CANONICAL_PROFILE.id + " FAST graphics preset distances changed from vanilla 8/6");
-  assert.equal(presetDistances(patchedGraphicsApply, "FANCY"), "8/6",
-    "" + CANONICAL_PROFILE.id + " FANCY graphics preset still overwrites the browser 8/6 distances");
-  assert.equal(presetDistances(rawGraphicsApply, "FANCY"), "16/12",
-    "" + CANONICAL_PROFILE.id + " raw FANCY graphics preset distance shape changed");
-  assert.equal(presetDistances(patchedGraphicsApply, "FABULOUS"), "8/6",
-    "" + CANONICAL_PROFILE.id + " FABULOUS graphics preset still overwrites the browser 8/6 distances");
-  assert.equal(presetDistances(rawGraphicsApply, "FABULOUS"), "32/12",
-    "" + CANONICAL_PROFILE.id + " raw FABULOUS graphics preset distance shape changed");
+    "" + CANONICAL_PROFILE.id + " FAST graphics preset distance shape changed");
+  assert.equal(presetDistances(patchedGraphicsApply, "FANCY"), "16/12",
+    "" + CANONICAL_PROFILE.id + " FANCY graphics preset distance shape changed");
+  assert.equal(presetDistances(patchedGraphicsApply, "FABULOUS"), "32/12",
+    "" + CANONICAL_PROFILE.id + " FABULOUS graphics preset distance shape changed");
   assert.equal(graphicsPresetArmValue(patchedGraphicsApply, "FANCY", "mipmapLevels"), "iconst_4",
     "" + CANONICAL_PROFILE.id + " FANCY graphics preset lost vanilla mipmapLevels 4");
-  assert.deepEqual(graphicsPresetPatchedValues(rawGraphicsApply, patchedGraphicsApply), [
-    "FANCY renderDistance bipush 16 -> bipush 8",
-    "FANCY simulationDistance bipush 12 -> bipush 6",
-    "FABULOUS renderDistance bipush 32 -> bipush 8",
-    "FABULOUS simulationDistance bipush 12 -> bipush 6",
-  ], "" + CANONICAL_PROFILE.id + " graphics preset patch must change only the FANCY/FABULOUS render/simulation distances");
+  assert.deepEqual(graphicsPresetPatchedValues(rawGraphicsApply, patchedGraphicsApply), [],
+    "" + CANONICAL_PROFILE.id + " graphics preset bytecode must remain vanilla");
   assert.equal(graphicsPresetCustomReturn(patchedGraphicsApply),
     graphicsPresetCustomReturn(rawGraphicsApply),
     "" + CANONICAL_PROFILE.id + " CUSTOM graphics preset arm changed");
 
-  // The generic 1.21.11 path never invokes Minecraft262BrowserPatcher.  Run it on
-  // a disposable 1.21 jar and verify its FAST values remain vanilla 8/6.
+  const patchedMinecraft = execFileSync(javap, ["-classpath", clientJar, "-p", "-c",
+    "net.minecraft.client.Minecraft"], {
+      encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 60_000,
+    });
+  const minecraftInit = method(patchedMinecraft,
+    "public net.minecraft.client.Minecraft(net.minecraft.client.main.GameConfig);");
+  assert.equal(occurrences(minecraftInit, "Options.applyGraphicsPreset"), 1,
+    "" + CANONICAL_PROFILE.id + " Minecraft.<init> must retain vanilla preset application");
+  assert.equal(occurrences(minecraftInit, "Options.gaius$applyStartupGraphicsPreset"), 0,
+    "" + CANONICAL_PROFILE.id + " Minecraft.<init> must not use the removed startup replay patch");
+
+  // The generic 1.21.11 path never invokes Minecraft262BrowserPatcher. Run it on
+  // a disposable 1.21 jar and verify its preset bytecode remains vanilla.
   execFileSync(java, ["-classpath", [classes, classpath].join(delimiter),
     "dev.gaius.tools.MinecraftClientPatcher", generic121Jar, generic121Patches,
     LEGACY_PROFILE.id], {encoding: "utf8", timeout: 60_000});

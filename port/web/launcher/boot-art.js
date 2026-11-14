@@ -100,6 +100,124 @@
     return cx - x - scale;
   }
 
+  // Small deterministic PRNG so the texture is stable between frames and reloads.
+  function rng(seed) {
+    let s = seed >>> 0 || 1;
+    return function next() {
+      s ^= s << 13; s >>>= 0;
+      s ^= s >>> 17;
+      s ^= s << 5; s >>>= 0;
+      return s / 4294967296;
+    };
+  }
+
+  // A darkened 16x16 dirt tile, the classic Minecraft menu background, generated per pixel.
+  function dirtTile() {
+    const tile = doc.createElement("canvas");
+    tile.width = 16;
+    tile.height = 16;
+    const ctx = tile.getContext("2d");
+    const random = rng(20261002);
+    const palette = ["#4b3523", "#563d29", "#5f4430", "#3f2c1d", "#6b4e37", "#47331f", "#7a5b41"];
+    for (let y = 0; y < 16; y++) {
+      for (let x = 0; x < 16; x++) {
+        const r = random();
+        ctx.fillStyle = palette[Math.min(palette.length - 1, Math.floor(r * r * palette.length * 1.15))];
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+    // Scatter a few small pebbles like the vanilla dirt texture.
+    for (let i = 0; i < 9; i++) {
+      const x = Math.floor(random() * 15);
+      const y = Math.floor(random() * 15);
+      ctx.fillStyle = random() < 0.5 ? "#8a8a84" : "#6e6e68";
+      ctx.fillRect(x, y, 1, 1);
+      if (random() < 0.5) ctx.fillRect(x + 1, y, 1, 1);
+    }
+    ctx.fillStyle = "rgba(0, 0, 0, 0.62)";
+    ctx.fillRect(0, 0, 16, 16);
+    return tile.toDataURL("image/png");
+  }
+
+  // Paint a fixed vanilla cubemap view while the Wasm client is compiling. The real title screen
+  // still owns the animated panorama once it is ready; this canvas only removes the blank shell
+  // interval and is deliberately inert when a build has no cached vanilla faces.
+  function drawBootPanorama(canvas, faces) {
+    if (!Array.isArray(faces) || faces.length !== 6 || !canvas) return;
+    const width = 640;
+    const height = 360;
+    const faceSize = 128;
+    const images = faces.map(source => {
+      const image = new Image();
+      image.decoding = "async";
+      image.src = source;
+      return image;
+    });
+    let loaded = 0;
+    const paint = () => {
+      if (loaded !== images.length) return;
+      const facePixels = [];
+      for (const image of images) {
+        const face = doc.createElement("canvas");
+        face.width = faceSize;
+        face.height = faceSize;
+        const faceContext = face.getContext("2d", {willReadFrequently: true});
+        faceContext.drawImage(image, 0, 0, faceSize, faceSize);
+        facePixels.push(faceContext.getImageData(0, 0, faceSize, faceSize).data);
+      }
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      const output = context.createImageData(width, height);
+      const field = Math.tan(Math.PI / 8);
+      const aspect = width / height;
+      for (let y = 0; y < height; y++) {
+        const v = (1 - 2 * (y + 0.5) / height) * field;
+        for (let x = 0; x < width; x++) {
+          const u = (2 * (x + 0.5) / width - 1) * aspect * field;
+          const length = Math.hypot(u, v, 1);
+          const dx = u / length;
+          const dy = v / length;
+          const dz = -1 / length;
+          const ax = Math.abs(dx), ay = Math.abs(dy), az = Math.abs(dz);
+          let face = 0, sc = 0, tc = 0, major = ax;
+          if (ay > major) major = ay;
+          if (az > major) major = az;
+          if (major === ax) {
+            face = dx > 0 ? 0 : 1;
+            sc = dx > 0 ? -dz : dz;
+            tc = -dy;
+          } else if (major === ay) {
+            face = dy > 0 ? 2 : 3;
+            sc = dx;
+            tc = dy > 0 ? dz : -dz;
+          } else {
+            face = dz > 0 ? 4 : 5;
+            sc = dz > 0 ? dx : -dx;
+            tc = -dy;
+          }
+          const sx = Math.max(0, Math.min(faceSize - 1, Math.floor((sc * 0.5 + 0.5) * faceSize)));
+          const sy = Math.max(0, Math.min(faceSize - 1, Math.floor((tc * 0.5 + 0.5) * faceSize)));
+          const source = (sy * faceSize + sx) * 4;
+          const target = (y * width + x) * 4;
+          output.data[target] = facePixels[face][source];
+          output.data[target + 1] = facePixels[face][source + 1];
+          output.data[target + 2] = facePixels[face][source + 2];
+          output.data[target + 3] = 255;
+        }
+      }
+      context.putImageData(output, 0, 0);
+      canvas.hidden = false;
+      canvas.dataset.ready = "1";
+    };
+    for (const image of images) {
+      const ready = () => { loaded++; paint(); };
+      image.addEventListener("load", ready, {once: true});
+      image.addEventListener("error", () => {}, {once: true});
+      if (image.complete && image.naturalWidth > 0) ready();
+    }
+  }
+
   // The flat blocky wordmark, 4 canvas pixels per cell (CSS scales it, pixelated).
   const LOGO = {
     "G": [".#####", "##....", "##....", "##.###", "##...#", "##...#", ".#####"],
@@ -183,6 +301,15 @@
   paintLine(canvas("gaius-boot-error-heading", errorTitle), translate("couldNotStart", "GAIUS COULD NOT START"), "#ffffff",
     window.innerWidth < 600 ? 2 : 3);
   (bootStack || lines).insertAdjacentElement("beforebegin", errorTitle);
+  const root = doc.documentElement;
+  root.style.setProperty("--gaius-boot-dirt", "url(" + dirtTile() + ")");
+  root.dataset.gaiusBootArt = "1";
+  const panorama = doc.createElement("canvas");
+  panorama.id = "gaius-boot-panorama";
+  panorama.hidden = true;
+  panorama.setAttribute("aria-hidden", "true");
+  bootScreen.appendChild(panorama);
+  drawBootPanorama(panorama, window.__gaiusBootPanoramaFaces);
 
   doc.documentElement.dataset.gaiusBootArt = "1";
 

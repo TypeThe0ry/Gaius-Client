@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import tempfile
@@ -96,7 +97,7 @@ class StageTrainTest(unittest.TestCase):
             (train / "dist/wasm-fixture-client").mkdir(parents=True)
             output = root / "staged"
             with mock.patch("sys.stdout"):
-                status = MODULE.main([str(train), "--profile", "fixture", "--output", str(output),
+                status = MODULE.main([str(train), "--profile", "fixture", "--js-role", "missing", "--output", str(output),
                                       "--scratch", str(root / "scratch")])
             receipt = json.loads((output / "STAGED.txt").read_text(encoding="utf-8"))
             self.assertEqual(status, 2)
@@ -145,6 +146,75 @@ class StageTrainTest(unittest.TestCase):
             self.assertNotIn("--frozen-js", portable_command)
             self.assertIn("--site-shell", portable_command)
             self.assertTrue((staged / "portable-fixture").is_dir())
+
+    def test_frozen_input_keeps_current_wasm_pack_and_frozen_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frozen, client, output = root / "frozen", root / "client", root / "input"
+            frozen.mkdir(); client.mkdir()
+            (frozen / "classes.js").write_bytes(b"frozen-client")
+            (frozen / "vanilla-assets.pack.gz").write_bytes(b"old-pack")
+            (client / "classes.wasm").write_bytes(b"wasm-client")
+            (client / "vanilla-assets.pack.gz").write_bytes(b"current-pack")
+            with mock.patch.object(MODULE, "run"):
+                MODULE.prepare_input("fixture", client, output, frozen)
+            self.assertEqual((output / "classes.js").read_bytes(), b"frozen-client")
+            self.assertEqual((output / "vanilla-assets.pack.gz").read_bytes(), b"current-pack")
+            self.assertEqual((frozen / "vanilla-assets.pack.gz").read_bytes(), b"old-pack")
+
+    def test_frozen_identity_rejects_tampering_and_protocol_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frozen, client = root / "frozen", root / "client"
+            frozen.mkdir(); client.mkdir()
+            common = {"kind": "gaius-build-identity", "schemaVersion": 2,
+                      "profile": {"id": "fixture"}, "source": {"sha256": "source"},
+                      "protocol": {"sha256": "protocol"}, "storage": {"schema": 2}, "worldVersion": 1}
+            (client / "classes.wasm.build.json").write_text(json.dumps(common))
+            roles = ["client", "singleplayer-worker", "worker-bootstrap", "wasm-hotpath", "vanilla-assets", "relay-registry"]
+            for name, role in zip(MODULE.FROZEN_COMPONENTS, roles):
+                payload = name.encode()
+                (frozen / name).write_bytes(payload)
+                identity = {**common, "role": role, "artifact": {"name": name, "bytes": len(payload),
+                              "sha256": hashlib.sha256(payload).hexdigest()}}
+                identity["identitySha256"] = hashlib.sha256(json.dumps(identity, ensure_ascii=True, sort_keys=True,
+                    separators=(",", ":")).encode("ascii")).hexdigest()
+                (frozen / (name + ".build.json")).write_text(json.dumps(identity))
+            self.assertEqual(len(MODULE.frozen_receipt(frozen, client)["artifacts"]), 6)
+            (frozen / "classes.js").write_bytes(b"tampered")
+            with self.assertRaisesRegex(RuntimeError, "differs from payload"):
+                MODULE.frozen_receipt(frozen, client)
+            (frozen / "classes.js").write_bytes(b"classes.js")
+            (client / "classes.wasm.build.json").write_text(json.dumps({**common, "protocol": {"sha256": "other"}}))
+            with self.assertRaisesRegex(RuntimeError, "protocol.*incompatible"):
+                MODULE.frozen_receipt(frozen, client)
+
+    def test_frozen_stage_includes_js_in_site_and_portable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(MODULE, "wasm_paths", return_value=(root / "client", root / "server")), \
+                    mock.patch.object(MODULE, "prepare_input", return_value=root / "input"), \
+                    mock.patch.object(MODULE, "frozen_receipt", return_value={"artifacts": []}), \
+                    mock.patch.object(MODULE, "run") as run:
+                receipt = MODULE.stage_profile(root, "fixture", root / "staged", root / "scratch", frozen=root / "frozen")
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertTrue(all("--no-js-fallback" not in command for command in commands))
+            self.assertIn("--frozen-js", commands[-1])
+            self.assertTrue(receipt["jsFallbackIncluded"])
+
+    def test_relay_gate_requires_the_canonical_node_in_both_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            site = root / "site.html"
+            portable = root / "portable.html"
+            site.write_text('window.__gaiusBridgeUrls=[{"id":"gaius-hk-1","name":"Gaius HK Relay",'
+                            '"url":"wss://ellan.site/tunnel","priority":100}];', encoding="utf-8")
+            portable.write_text(site.read_text(encoding="utf-8"), encoding="utf-8")
+            MODULE.assert_artifact(site, MODULE.ROOT)
+            MODULE.assert_artifact(portable, MODULE.ROOT)
+            site.write_text("window.__gaiusBridgeUrls=[];", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "missing built-in relay"):
+                MODULE.assert_artifact(site, MODULE.ROOT)
 
 
 if __name__ == "__main__":

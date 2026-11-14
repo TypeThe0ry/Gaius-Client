@@ -45,6 +45,14 @@ Per backend, split-router rows execute 108 noise and 108 surface jobs per seed; 
 
 The diagnostic shim admits only an intentional default-off override; actual bytecode/approval mismatches still reject. Reports always retain `promotionAllowed: false`, including after the defaults are restored. This protects the distinction between a diagnostic comparison and a release/browser certificate.
 
+## Release default
+
+`port/versions/<profile>.json` `"worldgenKernelDefault"` decides whether a site starts with the kernel (the launcher injects it as `__gaiusWorldgenKernelDefault`; `?worldgenKernel=0|1` overrides it either way). 26.2 and 26.3 ship with the kernel on; 1.21.11 has no kernel seam and stays on vanilla.
+
+26.2 was held back on 2026-10-19 by a browser kernel on/off block-count comparison that ran before the 26.2 frontier fixes, and was never repeated. Browser FULL chunks cannot carry that comparison: they are ticked (fluids flow, leaves decay) and their features depend on the order neighbouring chunks are decorated, so two runs of the same build already differ and a faster build differs more. The evidence that does hold is: the deterministic JVM matrix above (OFF/OFF and native ON/OFF at FULL, 0 block and 0 biome differences), the per-chunk vanilla references of `native/crates/gaius-worldgen/tests/vanilla_reference.rs` (biomes, raw fill, surface, heightmaps, post-processing marks), and browser captures whose non-FULL chunks (structure starts, biomes, carvers, initialize_light) hash the same with the kernel on and off.
+
+The post-processing comparison groups the kernel's marks by section before comparing: vanilla keeps one `ShortList` per section, so only the order inside a section is observable (it fixes the order of the scheduled fluid ticks). The coverage rule of the split-router seam needs terrain and surface jobs; a BIOMES job is allowed but not required, because multi-noise BIOMES never reach the kernel.
+
 ## Regression goldens and mirror locks
 
 `port/native/golden/worldgen/regressions.json` pins six profile/seed generator IRs and 18 vanilla references for ordered chunks `3,-10`, `0,0`, `-10,-5`, including the failing chunk. Pins include source/jar identity, seed, query order, byte count and SHA-256. `port/native/worldgen-regression-check.mjs` checks the complete matrix and exact provenance; corrupt or incomplete catalogs fail closed. Fresh data is written to an output directory outside the shared `port/work` junction.
@@ -52,6 +60,19 @@ The diagnostic shim admits only an intentional default-off override; actual byte
 Six explicit `GAIUS_WORLDGEN_REFERENCE` runs strictly compare biomes, raw fill, surface and heightmaps; sampler references additionally compare f32 density bits. All 18 chunks match. Router density placeholders are not independent density evidence. Without the environment variable, the Cargo reference test skips its external oracle and must not be cited as fresh vanilla parity.
 
 The existing worldgen mirror watch set already includes `LevelChunkSection.fillBiomesFromNoise`, `ChunkAccess.fillBiomesFromNoise`, the RTree methods and helpers. No new vanilla method is mirrored, so lock bytes and lock SHA approvals remain unchanged. Fresh mirror generation/gate checks and fixture tests pass. Profile table generation and local metadata checks pass for both restored profiles. The legacy profile's shared `version.json` asset-index SHA-1 differs from its manifest; that unrelated metadata check remains open, with no shared-file edit or download.
+
+## Hot-path caches of the chunk-generation thread (exact)
+
+`WorldgenHotPathPatches` (WasmGC target; the JavaScript build stays the frozen fallback) removes repeated work that cannot change a result. Each patch checks the bytecode shape it relies on before it rewrites and is disabled (vanilla code) if the shape differs:
+
+| Patch id | What is kept | Why the result is the vanilla one | Stops being valid when |
+|---|---|---|---|
+| `patchTagKeyBrowserHashCodeCache` | `TagKey.hashCode` | a record of an interned `ResourceKey` (identity hash) and an `Identifier` (two final strings): a constant of the instance | a component gains a mutable hash |
+| `patchWorldGenRegionBrowserCachedHeight` | `WorldGenRegion.getMinY/getHeight` read the region's own `DimensionType` | the region copies `level.dimensionType()` in its constructor and returns it from its own `dimensionType()`; `ServerLevel.getMinY()` is the `LevelReader` default `dimensionType().minY()` (proved on the jar: no other implementation); `DimensionType` is a record of final ints | a level rebinds its dimension type holder while a region is generating |
+| `patchWorldGenRegionBrowserLastChunk` | the last `getChunk(x, z)` answer (x, z, chunk) | the region's `StaticCache2D<ChunkAccess>` is filled by the constructor and never written again (proved: the only `cache` write is in `<init>`), so a returning call is a function of (x, z); a throwing call stores nothing | the table holds `GenerationChunkHolder`s read per call (26.2, 1.21.11: declared `patchkitNotApplicable`); a region used by two threads at once |
+| `patchMultiNoiseBiomeSourceBrowserCachedParameters` | `MultiNoiseBiomeSource.parameters()` | `Either.map(identity, holder -> holder.value().parameters())` of a final `Either`, the preset's `parameters` is a final field; a call that throws (unbound holder) stores nothing | a bound preset holder is rebound while the source is in use |
+
+Checks: `node port/scripts/mc1-hotpath-parity.mjs [--patched <patched client jar>]` (vanilla and patched variants of the three classes fed the same objects, plus a tag-membership digest in a vanilla and a patched class-loader universe) and `node port/scripts/worldgen-seed-parity.mjs --patched <patched client jar>`, which now takes the three patched classes into its patched run. Measured estimates are in `codex/out/chunkload/MC1-REPORT.md`.
 
 ## Offline reproduction and remaining limits
 

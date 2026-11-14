@@ -1,0 +1,26 @@
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+import vm from "node:vm";
+
+const context = vm.createContext({console, Uint8Array, Float32Array, String, Number, Math});
+context.globalThis = context;
+vm.runInContext(readFileSync(new URL("./shader-pack-compat.js", import.meta.url), "utf8"), context);
+const c = context.GaiusShaderPackCompat;
+assert.equal(c.route("terrain_solid"), "gbuffers_terrain");
+assert.equal(c.route("terrain_cutout_mipped"), "gbuffers_terrain_cutout");
+assert.equal(c.route("terrain_translucent"), "gbuffers_water");
+assert.equal(c.route("block_entity_chest"), "gbuffers_block");
+assert.equal(c.route("sky_textured"), "gbuffers_skytextured");
+assert.equal(c.route("weather_rain"), "gbuffers_weather");
+const d = c.parseDirectives("/* DRAWBUFFERS:027 */\n// mipmap.enabled.colortex2 = true\n// clear.colortex7 = true\n");
+assert.deepEqual(Array.from(d.targets), [0, 2, 7]);
+assert.deepEqual(Array.from(d.mipmapped), [2]);
+assert.deepEqual(Array.from(d.clear), [7]);
+const u = c.uniformLayout({worldTime: 123, viewWidth: 800, viewHeight: 600});
+assert.ok(u.byteLength >= 16 * 16);
+assert.equal(u.slots.find(x => x.name === "gbufferProjection").type, "mat4");
+const files = {"shaders/world0/gbuffers_terrain.vsh": "v", "shaders/world0/gbuffers_terrain.fsh": "f"};
+const program = c.program(files, "gbuffers_terrain");
+assert.equal(program.vertex, "shaders/world0/gbuffers_terrain.vsh");
+assert.equal(program.fragment, "shaders/world0/gbuffers_terrain.fsh");
+console.log("shader-pack-compat-smoke PASS (routing/directives/uniform layout)");

@@ -164,8 +164,7 @@ public final class UiPatches {
         boolean foundNormalPreset = false;
         boolean foundDefaultOptions = false;
         boolean foundNormalDimensions = false;
-        boolean patchedAllowCommands = false;
-        boolean patchedInitialAllowCommands = false;
+        boolean foundAllowCommands = false;
         for (MethodNode method : node.methods) {
             if (method.name.equals("openFresh")
                     && method.desc.equals("(Lnet/minecraft/client/Minecraft;Ljava/lang/Runnable;"
@@ -208,45 +207,9 @@ public final class UiPatches {
                             && call.owner.equals("net/minecraft/client/gui/screens/worldselection/WorldCreationUiState")
                             && call.name.equals("isAllowCommands")
                             && call.desc.equals("()Z")) {
-                        InsnList replacement = new InsnList();
-                        replacement.add(new InsnNode(Opcodes.POP));
-                        replacement.add(new InsnNode(Opcodes.ICONST_1));
-                        method.instructions.insertBefore(call, replacement);
-                        method.instructions.remove(call);
-                        patchedAllowCommands = true;
-                        break;
-                    }
-                }
-            } else if (method.name.equals("<init>")
-                    && method.desc.equals("(Lnet/minecraft/client/Minecraft;Ljava/lang/Runnable;"
-                            + "Lnet/minecraft/client/gui/screens/worldselection/WorldCreationContext;"
-                            + "Ljava/util/Optional;Ljava/util/OptionalLong;"
-                            + "Lnet/minecraft/client/gui/screens/worldselection/CreateWorldCallback;)V")) {
-                for (var instruction = method.instructions.getFirst();
-                        instruction != null;
-                        instruction = instruction.getNext()) {
-                    if (instruction instanceof FieldInsnNode field
-                            && field.getOpcode() == Opcodes.PUTFIELD
-                            && field.owner.equals("net/minecraft/client/gui/screens/worldselection/CreateWorldScreen")
-                            && field.name.equals("uiState")
-                            && field.desc.equals("Lnet/minecraft/client/gui/screens/worldselection/WorldCreationUiState;")) {
-                        InsnList enableCommands = new InsnList();
-                        enableCommands.add(new VarInsnNode(Opcodes.ALOAD, 0));
-                        enableCommands.add(new FieldInsnNode(
-                                Opcodes.GETFIELD,
-                                "net/minecraft/client/gui/screens/worldselection/CreateWorldScreen",
-                                "uiState",
-                                "Lnet/minecraft/client/gui/screens/worldselection/WorldCreationUiState;"));
-                        enableCommands.add(new InsnNode(Opcodes.ICONST_1));
-                        enableCommands.add(new MethodInsnNode(
-                                Opcodes.INVOKEVIRTUAL,
-                                "net/minecraft/client/gui/screens/worldselection/WorldCreationUiState",
-                                "setAllowCommands",
-                                "(Z)V",
-                                false));
-                        method.instructions.insert(field, enableCommands);
-                        method.maxStack = Math.max(method.maxStack, 3);
-                        patchedInitialAllowCommands = true;
+                        // Preserve vanilla's WorldCreationUiState value. It defaults to false in
+                        // Survival and is changed only by the UI's Allow Commands control.
+                        foundAllowCommands = true;
                         break;
                     }
                 }
@@ -255,15 +218,13 @@ public final class UiPatches {
         if (!foundNormalPreset
                 || !foundDefaultOptions
                 || !foundNormalDimensions
-                || !patchedAllowCommands
-                || !patchedInitialAllowCommands) {
+                || !foundAllowCommands) {
             throw new IllegalStateException(
                     "CreateWorldScreen browser default world patch points were not found: normalPreset="
                             + foundNormalPreset
                             + ", defaultOptions=" + foundDefaultOptions
                             + ", normalDimensions=" + foundNormalDimensions
-                            + ", allowCommands=" + patchedAllowCommands
-                            + ", initialAllowCommands=" + patchedInitialAllowCommands);
+                            + ", allowCommands=" + foundAllowCommands);
         }
         write(node, output);
     }
@@ -382,14 +343,51 @@ public final class UiPatches {
         fitTitleScreenCopyrightButton(node);
         disableTitleScreenRealmsButton(node);
         enableTitleScreenMultiplayerButton(node);
-        removeTitleScreenIconButtons(node);
         hookTitleScreenBrowserQuit(node);
         boolean current = node.methods.stream()
                 .anyMatch(method -> method.name.equals("extractRenderState"));
-        if (current) {
-            addTitleScreenProfileHooks(node);
-        }
+        // 1.21.11 has no vanilla icon row: its legacy init() owns the Options and Quit
+        // registrations directly.  The legacy fallback in removeTitleScreenIconButtons()
+        // cannot distinguish that menu block from the icon setup and used to delete both.
+        if (current) removeTitleScreenIconButtons(node);
+        // The legacy source set excludes the modern profile editor.
+        if (current) addTitleScreenProfileHooks(node);
+        verifyTitleScreenMenuWidgets(node, current);
         write(node, output);
+    }
+
+    private static void verifyTitleScreenMenuWidgets(ClassNode node, boolean hasIconRow) {
+        MethodNode init = find(node, "init", "()V");
+        boolean options = false;
+        boolean quit = false;
+        boolean profile = false;
+        boolean iconFactory = false;
+        for (MethodNode method : node.methods) {
+            for (AbstractInsnNode instruction : method.instructions) {
+                if (instruction instanceof LdcInsnNode literal) {
+                    options |= "menu.options".equals(literal.cst);
+                    quit |= "menu.quit".equals(literal.cst);
+                }
+            }
+        }
+        for (AbstractInsnNode instruction : init.instructions) {
+            if (instruction instanceof MethodInsnNode call) {
+                profile |= call.getOpcode() == Opcodes.INVOKESTATIC
+                        && call.owner.equals("dev/gaius/browser/BrowserProfileScreen")
+                        && call.name.equals("titleButton")
+                        && call.desc.equals("(Lnet/minecraft/client/gui/screens/Screen;)"
+                                + "Lnet/minecraft/client/gui/components/Button;");
+                iconFactory |= call.getOpcode() == Opcodes.INVOKESTATIC
+                        && call.owner.equals("net/minecraft/client/gui/components/CommonButtons")
+                        && (call.name.equals("friends") || call.name.equals("language")
+                                || call.name.equals("accessibility"));
+            }
+        }
+        if (!options || !quit || profile != hasIconRow || (hasIconRow && iconFactory)) {
+            throw new IllegalStateException("TitleScreen browser menu is incomplete: options=" + options
+                    + " quit=" + quit + " profile=" + profile + " iconFactory=" + iconFactory
+                    + " hasIconRow=" + hasIconRow);
+        }
     }
 
     /** Calls the launcher quit barrier only for the title screen's Quit Game button. */

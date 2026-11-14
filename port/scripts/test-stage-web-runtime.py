@@ -66,6 +66,37 @@ class WebRuntimeDistributionTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 STAGE.stage(js_dist, None, False, png=module)
 
+    def test_atlas_prebake_is_wasmgc_only_optional_and_profile_bound(self) -> None:
+        import gzip
+        import struct
+        with tempfile.TemporaryDirectory(prefix="gaius-stage-atlas-") as temporary:
+            directory = Path(temporary)
+
+            def payload(profile: str, magic: bytes = b"GAIUSAP1") -> Path:
+                meta = b"{}"
+                name = profile.encode("ascii")
+                body = bytes(64)
+                header_length = 52 + 2 + len(name) + 2 + len(meta)
+                header = (magic + struct.pack("<III", 1, header_length, len(body)) + bytes(32)
+                          + struct.pack("<H", len(name)) + name + struct.pack("<H", len(meta)) + meta)
+                path = directory / f"{profile}-{magic.decode()}.bin.gz"
+                path.write_bytes(gzip.compress(header + body))
+                return path
+
+            wasm_dist = directory / "wasm"
+            staged = STAGE.stage(wasm_dist, None, True, profile=None, atlas_prebake=payload("profile-a"))
+            self.assertIn("gaius-atlas-prebake.bin.gz", staged)
+            self.assertEqual((wasm_dist / "gaius-atlas-prebake.bin.gz").read_bytes(), payload("profile-a").read_bytes())
+            with patch.dict("os.environ", {"GAIUS_MINECRAFT_VERSION": "profile-a"}):
+                with self.assertRaises(ValueError):
+                    STAGE.stage(directory / "other", None, True, atlas_prebake=payload("profile-b"))
+                with self.assertRaises(ValueError):
+                    STAGE.stage(directory / "magic", None, True, atlas_prebake=payload("profile-a", b"GAIUSAP0"))
+            js_dist = directory / "js"
+            self.assertNotIn("gaius-atlas-prebake.bin.gz", STAGE.stage(js_dist, None, False))
+            with self.assertRaises(ValueError):
+                STAGE.stage(js_dist, None, False, atlas_prebake=payload("profile-a"))
+
     def test_boot_lists_name_real_files(self) -> None:
         for name in ("KERNEL_RUNTIME_SCRIPTS", "QUALITY_SCRIPTS", "SERVER_KERNEL_SCRIPTS"):
             for script in boot_list(name):

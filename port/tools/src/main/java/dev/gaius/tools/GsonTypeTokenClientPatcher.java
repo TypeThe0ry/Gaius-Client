@@ -62,6 +62,9 @@ public final class GsonTypeTokenClientPatcher {
         GuavaTypeTokenBrowserPatcher.main(new String[] {
                 guavaJar.toString(), dataFixerJar.toString(), root.toString()
         });
+        DataFixerCacheBrowserPatcher.main(new String[] {
+                dataFixerJar.toString(), root.toString()
+        });
 
         System.out.println("Patched browser Gson TypeToken initializers");
     }

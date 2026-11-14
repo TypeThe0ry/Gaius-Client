@@ -417,7 +417,9 @@ gaius_select_java_home() {
     if [[ ! -x "$candidate/bin/javac" || ! -x "$candidate/bin/java" ]]; then
       continue
     fi
-    detected_version="$("$candidate/bin/javac" -version 2>&1 | awk '{print $2}' | cut -d. -f1)"
+    # JAVA_TOOL_OPTIONS can prepend a diagnostic line; parse only javac's own version line.
+    detected_version="$("$candidate/bin/javac" -version 2>&1 |
+      awk '/^javac / {print $2; exit}' | cut -d. -f1)"
     if [[ "$detected_version" =~ ^[0-9]+$ ]] &&
         [[ "$detected_version" -ge "$requested_version" ]]; then
       GAIUS_JAVA_HOME="$candidate"

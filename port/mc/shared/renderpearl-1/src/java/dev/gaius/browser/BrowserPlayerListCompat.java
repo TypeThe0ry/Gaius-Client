@@ -8,20 +8,20 @@ import net.minecraft.server.players.PlayerList;
  * <p>26.3 removed PlayerList.setAllowCommandsForAllPlayers(boolean) and the field behind it;
  * PlayerList.isOp(NameAndId) now ends in {@code iconst_0; ireturn}. ServerPatches263 (P7a)
  * replaces that constant with {@link #commandsAllowedForAllPlayers()}, so setting the flag here
- * restores the 26.2 behaviour: every player of the browser Worker server counts as an operator
- * and receives the dedicated server's operator permissions, without writing ops.json.
+ * restores the 26.2 behaviour: the single local player counts as an operator when the world
+ * allows commands, without writing ops.json.
  */
 public final class BrowserPlayerListCompat {
     private static volatile boolean commandsAllowedForAllPlayers;
 
     private BrowserPlayerListCompat() {}
 
-    /** Lets the single local Worker player use commands without writing ops.json. */
-    public static void allowCommandsForAllPlayers(PlayerList playerList) {
+    /** Applies the world's command setting to the single local Worker player. */
+    public static void setAllowCommandsForAllPlayers(PlayerList playerList, boolean allowed) {
         if (playerList == null) {
             throw new IllegalArgumentException("playerList");
         }
-        commandsAllowedForAllPlayers = true;
+        commandsAllowedForAllPlayers = allowed;
     }
 
     /** Read by the patched PlayerList.isOp in place of its final {@code false}. */

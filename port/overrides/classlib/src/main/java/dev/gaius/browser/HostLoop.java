@@ -101,6 +101,11 @@ public final class HostLoop {
         return System.nanoTime();
     }
 
+    /** Optional work-saving wake-up of a thread that waits idle in a managed block; only the WebAssembly GC build has one. */
+    public static boolean unparkIfIdle(Thread thread) {
+        return false;
+    }
+
     /**
      * Runs {@code task} from a host macrotask as soon as the browser is ready; like
      * {@link #schedule} the task has no cooperative thread. Platform.postpone uses

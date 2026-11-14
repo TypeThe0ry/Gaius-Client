@@ -49,6 +49,8 @@ public final class BrowserLazyDataFixer implements DataFixer {
                     "datafixer-fallback",
                     "older world data requires the official migration graph");
             fallback = DataFixers.getDataFixer();
+            // The registration schema checks wait for the real fixer (BrowserChoiceTypeChecks).
+            BrowserChoiceTypeChecks.replay();
         }
         return fallback;
     }

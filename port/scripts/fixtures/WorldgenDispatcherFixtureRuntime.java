@@ -3,6 +3,8 @@ package dev.gaius.browser;
 /** Test-only clock and telemetry sink swapped into BrowserWorldgenDispatcherScheduler. */
 public final class WorldgenDispatcherFixtureRuntime {
     public static long nanoTime;
+    /** Clock reads of the scheduler (every call of its nowNanos). */
+    public static int reads;
     public static final int[] stopsByReason = new int[6];
     public static int turns;
     public static int runnables;
@@ -15,6 +17,7 @@ public final class WorldgenDispatcherFixtureRuntime {
 
     public static void reset() {
         nanoTime = 0L;
+        reads = 0;
         java.util.Arrays.fill(stopsByReason, 0);
         turns = 0;
         runnables = 0;

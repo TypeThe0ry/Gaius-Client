@@ -8,6 +8,12 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 assert.ok(process.env.OUT, "OUT must name the measurement output directory");
 const out = resolve(process.env.OUT);
 await mkdir(out, {recursive: true});
+const steadySeconds = Number(process.env.MEMORY_STEADY_S || 12);
+const sampleIntervalMs = Number(process.env.MEMORY_SAMPLE_INTERVAL_MS || 2000);
+assert.ok(Number.isFinite(steadySeconds) && steadySeconds >= 0 && steadySeconds <= 1800,
+  "MEMORY_STEADY_S must be from 0 to 1800");
+assert.ok(Number.isInteger(sampleIntervalMs) && sampleIntervalMs >= 250 && sampleIntervalMs <= 30000,
+  "MEMORY_SAMPLE_INTERVAL_MS must be from 250 to 30000");
 let source = await readFile(new URL("minecraft-263-singleplayer-cdp.mjs", import.meta.url), "utf8");
 const seam = "  // Phase 4: terrain settle:";
 assert.ok(source.includes(seam));
@@ -24,6 +30,8 @@ replaceOnce('from "./bench/harness-common.mjs"', `from ${JSON.stringify(pathToFi
 replaceOnce('from "./worldcycle.mjs"', `from ${JSON.stringify(pathToFileURL(join(root, "port/scripts/worldcycle.mjs")).href)}`);
 for (const [sourcePath, targetPath] of [
   ["./reload-memory-gate.mjs", "port/scripts/reload-memory-gate.mjs"],
+  ["./inventory-streaming-gate.mjs", "port/scripts/inventory-streaming-gate.mjs"],
+  ["./terrain-baseline-gate.mjs", "port/scripts/terrain-baseline-gate.mjs"],
   ["../../tools/release-performance.mjs", "tools/release-performance.mjs"],
   ["../../tools/gl-frame-guard.mjs", "tools/gl-frame-guard.mjs"],
   ["../../tools/configure-browser-world-seed.mjs", "tools/configure-browser-world-seed.mjs"],
@@ -52,6 +60,14 @@ const samplingProfile=[];
 const memorySamples=[];
 const workerSessions=new Map();
 const workerMemory=[];
+async function processMemorySample(){
+  if(!browserCdp)return null;
+  const info=await browserCdp.send("SystemInfo.getProcessInfo").catch(()=>null);
+  const processes=(info?.processInfo||[]).filter(p=>Number.isInteger(Number(p.id)) && /^(renderer|GPU)$/i.test(String(p.type||"")));
+  const values=await Promise.all(processes.map(async p=>({pid:Number(p.id),type:String(p.type||""),privateBytes:await processPrivateBytes(Number(p.id))})));
+  const sum=type=>{const rows=values.filter(v=>v.type.toLowerCase()===type.toLowerCase()&&Number.isFinite(v.privateBytes));return rows.length?rows.reduce((n,v)=>n+v.privateBytes,0):null;};
+  return {processes:values,rendererPrivateBytes:sum("renderer"),gpuPrivateBytes:sum("GPU")};
+}
 async function sampleWorkers(){
   for(const [session,url]of workerSessions){
     try{
@@ -73,6 +89,7 @@ async function memorySample(label){
     }
     return {linearBytes:globalThis.__gaiusWasmMemory?.buffer.byteLength||0,
       browserMemory:globalThis.__gaiusMemoryTelemetry?.browserMemory||null,
+      uaMemory:globalThis.__gaiusMemoryTelemetry?.uaMemory||null,
       gl:globalThis.__gaiusGLStats||null,shadowBytesByTarget:byTarget,
       quality:globalThis.__gaiusQualitySettings||null,
       memoryTier:globalThis.__gaiusMemoryTier||null,
@@ -81,10 +98,14 @@ async function memorySample(label){
       kernels:globalThis.__gaiusKernels?.telemetry?.()||null,
       sectionBuffers:(()=>{const s=globalThis.__gaiusMemoryTelemetry?.sectionBuffers;if(!s)return null;return {...s,maxMemory:Number(s.maxMemory),perPackBytes:Number(s.perPackBytes),totalBytes:Number(s.totalBytes)}})(),
       linearTelemetry:globalThis.__gaiusMemoryTelemetry?.linearMemory||null,
+      webgpu:globalThis.__gaiusWebGpuMemoryTelemetry?.snapshot?.()||null,
       level:!!globalThis.__gaiusMinecraftState?.level};
   })()\`);
-  const sample={label,seconds:Number(stamp()),heap,...owners};
-  sample.totalBytes=heap.usedSize+sample.linearBytes;
+  const sample={label,seconds:Number(stamp()),heap,...owners,
+    v8:{usedBytes:heap.usedSize,backingStorageBytes:heap.backingStorageSize||0,
+      embedderHeapBytes:heap.embedderHeapUsedSize||0}};
+  sample.processMemory=await processMemorySample();
+  sample.accountedBytes=sample.v8.usedBytes+sample.v8.backingStorageBytes+sample.linearBytes;
   memorySamples.push(sample);
   await writeFile(join(out,"memory.json"),JSON.stringify(memorySamples,null,2));
 }
@@ -95,7 +116,9 @@ const injectionFile = process.env.MEMORY_INJECT ? await readFile(resolve(process
 const deviceMemory = process.env.MEMORY_DEVICE_GIB ? Number(process.env.MEMORY_DEVICE_GIB) : null;
 assert.ok(deviceMemory === null || (Number.isFinite(deviceMemory) && deviceMemory > 0), "MEMORY_DEVICE_GIB must be positive");
 const deviceInjection = deviceMemory === null ? "" : `(() => { const value = ${JSON.stringify(deviceMemory)}; try { Object.defineProperty(Navigator.prototype, "deviceMemory", {configurable: true, get: () => value}); } catch {} try { Object.defineProperty(navigator, "deviceMemory", {configurable: true, get: () => value}); } catch {} })();`;
-const injection = deviceInjection + injectionFile;
+const gpuTrace = process.env.GPU_MEMORY_TRACE === "1"
+  ? await readFile(new URL("memory-gpu-trace.js", import.meta.url), "utf8") : "";
+const injection = deviceInjection + injectionFile + gpuTrace;
 replaceOnce('    await log("target",',
   '    if(p.targetInfo.type==="worker")workerSessions.set(p.sessionId,p.targetInfo.url);\n    await log("target",');
 replaceOnce('await log("navigate", pageUrl);', `await cdp.send("Page.addScriptToEvaluateOnNewDocument",{source:${JSON.stringify(injection)}});
@@ -104,7 +127,8 @@ replaceOnce('  // Phase 2: Singleplayer', '  await memorySample("title");\n  // 
 replaceOnce('    await sleep(500);\n  }\n  await screenshot(cdp, "20-world-entry.png");', '    await memorySample("entry");\n    await sleep(2000);\n  }\n  await screenshot(cdp, "20-world-entry.png");');
 source += `
   await memorySample("world-entry");
-  for(let tick=0;tick<6;tick++){await sleep(2000);await memorySample("steady");}
+  const steadyEnd=Date.now()+${Math.round(steadySeconds * 1000)};
+  while(Date.now()<steadyEnd){await sleep(Math.min(${sampleIntervalMs},steadyEnd-Date.now()));await memorySample("steady");}
   await screenshot(cdp,"30-steady.png");
   await sampleWorkers();
   await cdp.send("HeapProfiler.enable");
@@ -135,7 +159,8 @@ finally{
   await rm(profileDir,{recursive:true,force:true}).catch(()=>{});
   console.log(JSON.stringify({verdict:report.verdict,seconds:report.totalSeconds,
     memory:memorySamples.map(sample=>({label:sample.label,seconds:sample.seconds,
-      heapMiB:sample.heap.usedSize/1048576,linearMiB:sample.linearBytes/1048576,totalMiB:sample.totalBytes/1048576})),
+      heapMiB:sample.heap.usedSize/1048576,backingMiB:(sample.heap.backingStorageSize||0)/1048576,
+      linearMiB:sample.linearBytes/1048576,accountedMiB:sample.accountedBytes/1048576})),
     error:report.error?.split("\\n")[0]}));
   process.exit(report.verdict==="PASS"?0:1);
 }

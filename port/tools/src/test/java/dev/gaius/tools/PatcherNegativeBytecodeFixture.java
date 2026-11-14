@@ -5,6 +5,7 @@ import java.lang.reflect.Method;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
@@ -13,6 +14,9 @@ import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
+import org.objectweb.asm.tree.analysis.Analyzer;
+import org.objectweb.asm.tree.analysis.BasicValue;
+import org.objectweb.asm.tree.analysis.BasicVerifier;
 
 /** Negative bytecode fixtures for patcher idempotence guards. */
 public final class PatcherNegativeBytecodeFixture {
@@ -33,10 +37,24 @@ public final class PatcherNegativeBytecodeFixture {
         Method patchDraw = Class.forName(TELEMETRY).getDeclaredMethod(
                 "patchGlCommandEncoder", byte[].class, shape.getClass());
         patchDraw.setAccessible(true);
+        Method patchLevel = Class.forName(TELEMETRY).getDeclaredMethod(
+                "patchLevelRenderer", byte[].class, shape.getClass());
+        patchLevel.setAccessible(true);
+
+        ClassNode patchedLevel = read((byte[]) patchLevel.invoke(null, bytes(levelRendererFixture()), shape));
+        MethodNode prepare = patchedLevel.methods.stream()
+                .filter(method -> method.name.equals("extractSectionDrawGroups"))
+                .findFirst().orElseThrow();
+        check(count(prepare, DRAW_TELEMETRY, "registerSection", "(IIII)V") == 1,
+                "section registration must carry x/y/z and uniform index");
+        check(count(prepare, "net/minecraft/core/BlockPos", "getY", "()I") == 1,
+                "section y coordinate was not read for causal mapping");
+        verify(patchedLevel);
 
         byte[] drawPatched = (byte[]) patchDraw.invoke(null, bytes(drawFixture(true)), shape);
         ClassNode drawClass = read(drawPatched);
         MethodNode drawMethod = drawMethod(drawClass);
+        verify(drawClass);
         int commits = count(drawMethod, DRAW_TELEMETRY, "commitSuccessfulDraw");
         check(commits == 2, "a commit for another draw local suppressed the target injection");
         check(hasTargetCommit(drawMethod), "target draw path has no commit producer");
@@ -70,7 +88,36 @@ public final class PatcherNegativeBytecodeFixture {
         expectIllegalState(patchWorker, decoyDispatcher(),
                 "decoy worldgen/dispatcher strings were accepted as an existing patch");
         patchWorker.invoke(null, existingDispatcher());
-        System.out.println("PATCHER_NEGATIVE_BYTECODE_PASS draw-decoy-local draw-idempotent-rerun worker-decoy-strings");
+        System.out.println("PATCHER_NEGATIVE_BYTECODE_PASS section-y-registration draw-decoy-local draw-idempotent-rerun worker-decoy-strings");
+    }
+
+    private static ClassNode levelRendererFixture() {
+        ClassNode node = new ClassNode();
+        node.version = Opcodes.V21;
+        node.access = Opcodes.ACC_PUBLIC;
+        node.name = "net/minecraft/client/renderer/LevelRenderer";
+        node.superName = "java/lang/Object";
+        node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE, "levelRenderState",
+                "Lnet/minecraft/client/renderer/state/level/LevelRenderState;", null, null));
+        MethodNode prepare = new MethodNode(Opcodes.ACC_PUBLIC, "extractSectionDrawGroups",
+                "(ZLjava/util/List;Ljava/util/Map;)I", null, null);
+        prepare.instructions.add(new InsnNode(Opcodes.ACONST_NULL));
+        prepare.instructions.add(new VarInsnNode(Opcodes.ASTORE, 14));
+        // The descriptor's first parameter is the boolean flag; List is local 2.
+        prepare.instructions.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        prepare.instructions.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE,
+                "java/util/List", "size", "()I", true));
+        prepare.instructions.add(new VarInsnNode(Opcodes.ISTORE, 15));
+        prepare.instructions.add(new VarInsnNode(Opcodes.ILOAD, 15));
+        prepare.instructions.add(new InsnNode(Opcodes.IRETURN));
+        node.methods.add(prepare);
+        MethodNode lambda = new MethodNode(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC,
+                "lambda$prepareChunkRenders$2",
+                "(I[Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;"
+                        + "Lcom/mojang/renderpearl/api/commands/RenderPass$UniformUploader;)V", null, null);
+        lambda.instructions.add(new InsnNode(Opcodes.RETURN));
+        node.methods.add(lambda);
+        return node;
     }
 
     private static MethodNode drawMethod(ClassNode node) {
@@ -91,6 +138,12 @@ public final class PatcherNegativeBytecodeFixture {
                 null, null);
         InsnList code = method.instructions;
         if (decoyCommit) {
+            code.add(new InsnNode(Opcodes.ACONST_NULL));
+            code.add(new VarInsnNode(Opcodes.ASTORE, 7));
+        }
+        code.add(new InsnNode(Opcodes.ACONST_NULL));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 9));
+        if (decoyCommit) {
             code.add(new VarInsnNode(Opcodes.ALOAD, 7));
             code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, DRAW_OWNER, "indexCount", "()I", false));
             code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, DRAW_TELEMETRY,
@@ -106,6 +159,11 @@ public final class PatcherNegativeBytecodeFixture {
         code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/function/BiConsumer", "accept",
                 "(Ljava/lang/Object;Ljava/lang/Object;)V", true));
         code.add(new VarInsnNode(Opcodes.ALOAD, 9));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new InsnNode(Opcodes.ICONST_0));
         code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, DRAW_BACKEND, "drawIndexed",
                 DRAW_DESCRIPTOR, true));
         code.add(new InsnNode(Opcodes.RETURN));
@@ -188,6 +246,15 @@ public final class PatcherNegativeBytecodeFixture {
         return count;
     }
 
+    private static int count(MethodNode method, String owner, String name, String descriptor) {
+        int count = 0;
+        for (var instruction : method.instructions.toArray()) {
+            if (instruction instanceof MethodInsnNode call && call.owner.equals(owner)
+                    && call.name.equals(name) && call.desc.equals(descriptor)) count++;
+        }
+        return count;
+    }
+
     private static boolean hasTargetCommit(MethodNode method) {
         for (var instruction : method.instructions.toArray()) {
             if (!(instruction instanceof MethodInsnNode call)
@@ -213,6 +280,12 @@ public final class PatcherNegativeBytecodeFixture {
         ClassNode node = new ClassNode();
         new org.objectweb.asm.ClassReader(bytes).accept(node, 0);
         return node;
+    }
+
+    private static void verify(ClassNode node) throws Exception {
+        for (MethodNode method : node.methods) {
+            new Analyzer<BasicValue>(new BasicVerifier()).analyze(node.name, method);
+        }
     }
 
     private static byte[] bytes(ClassNode node) {

@@ -108,6 +108,81 @@ public final class LightKernelPatches {
         return true;
     }
 
+    static final String WAKE_OWNER = "dev/gaius/browser/BrowserIntegratedServerMain";
+    static final String WAKE_METHOD = "wakeServerForPoll";
+    static final String LIGHT_TASK_LIST = "it/unimi/dsi/fastutil/objects/ObjectList";
+
+    /**
+     * Wakes the parked server thread when a light task is queued. {@code ThreadedLevelLightEngine.addTask}
+     * hands a lambda to the chunk task dispatcher that appends the task to {@code lightTasks} (and runs
+     * {@code runUpdate} itself from 1000 queued tasks); the update proper is only scheduled by
+     * {@code ServerChunkCache$MainThreadExecutor.pollTask} on the server thread, which sleeps until its next
+     * tick when nothing else wakes it. The patch adds one call to
+     * {@code BrowserIntegratedServerMain.wakeServerForPoll()} right after the append (straight-line code, empty
+     * operand stack: no frame changes). The call does nothing unless the page asked for it
+     * ({@code ?gaiusServerWake=1}) and only wakes a parked thread, so the vanilla poll, the queue, the update
+     * and its batching are unchanged; only when the poll runs changes.
+     *
+     * <p>The lambda is found by shape (an instance synthetic taking the task type and the runnable, which adds
+     * a pair to the {@code ObjectList} field and calls {@code runUpdate}), not by its number. A changed shape
+     * fails the patch.
+     */
+    public static boolean patchServerWake(Path jar, Path outputRoot) throws IOException {
+        ClassNode node = read(jar, outputRoot, ENGINE);
+        String lambdaDescriptor = "(L" + TASK_TYPE + ";Ljava/lang/Runnable;)V";
+        MethodNode queueLambda = null;
+        for (MethodNode method : node.methods) {
+            if ((method.access & Opcodes.ACC_SYNTHETIC) == 0 || (method.access & Opcodes.ACC_STATIC) != 0
+                    || !method.name.startsWith("lambda$addTask$") || !method.desc.equals(lambdaDescriptor)) {
+                continue;
+            }
+            boolean runsUpdate = false;
+            boolean appends = false;
+            for (AbstractInsnNode instruction : method.instructions) {
+                if (instruction instanceof MethodInsnNode call) {
+                    if (call.owner.equals(ENGINE) && call.name.equals("runUpdate") && call.desc.equals("()V")) {
+                        runsUpdate = true;
+                    }
+                    if (call.owner.equals(LIGHT_TASK_LIST) && call.name.equals("add")
+                            && call.desc.equals("(Ljava/lang/Object;)Z")) {
+                        appends = true;
+                    }
+                    if (call.owner.equals(WAKE_OWNER) && call.name.equals(WAKE_METHOD)) {
+                        throw new IllegalStateException(ENGINE + "." + method.name + " is already patched for the wake");
+                    }
+                }
+            }
+            if (runsUpdate && appends) {
+                if (queueLambda != null) {
+                    throw new IllegalStateException(ENGINE + " has more than one light task queue lambda");
+                }
+                queueLambda = method;
+            }
+        }
+        if (queueLambda == null) {
+            throw new IllegalStateException(ENGINE + ".addTask no longer queues through a lambda that appends to"
+                    + " lightTasks and calls runUpdate");
+        }
+        AbstractInsnNode append = null;
+        for (AbstractInsnNode instruction : queueLambda.instructions) {
+            if (instruction instanceof MethodInsnNode call && call.owner.equals(LIGHT_TASK_LIST)
+                    && call.name.equals("add") && call.desc.equals("(Ljava/lang/Object;)Z")) {
+                append = instruction;
+                break;
+            }
+        }
+        AbstractInsnNode discard = append.getNext();
+        if (discard == null || discard.getOpcode() != Opcodes.POP) {
+            throw new IllegalStateException(ENGINE + "." + queueLambda.name + " no longer discards the append result");
+        }
+        InsnList hook = new InsnList();
+        hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC, WAKE_OWNER, WAKE_METHOD, "()V", false));
+        queueLambda.instructions.insert(discard, hook);
+        write(node, outputRoot);
+        System.out.println("Hooked " + ENGINE + "." + queueLambda.name + " to wake the parked server thread");
+        return true;
+    }
+
     /** {@code lightChunk}: vanilla sets the chunk light-incorrect and queues propagateLightSources. */
     private static void requireVanillaLightChunk(MethodNode method) {
         boolean propagates = false;

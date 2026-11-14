@@ -147,10 +147,15 @@
       "passColor", "passDepth", "passBegin", "passEnd", "passSuspend", "passResume",
       "setPipeline", "setVertexBuffer", "setIndexBuffer", "setBindGroup", "stageOffset",
       "setBindGroupStaged", "setScissor", "draw", "drawIndexed", "drawIndexedWithOffsets",
-      "drawIndexedIndirect", "drawIndexedIndirectWithOffsets", "drawWithOffsets", "submit",
+      "drawIndexedIndirect", "gpuIndirectDrawIndexed", "gpuIndirectDrawIndexedSource",
+      "drawIndexedIndirectWithOffsets", "drawWithOffsets", "submit",
       "closeFence", "blitToSurface", "present"
     ].forEach(function (name) { forward(name, undefined); });
-    ["writeOrdered", "createBindGroup", "createFence", "fenceStatus", "configureSurface", "acquireSurface"]
+    ["regionArenaEnabled", "gpuIndirectRequested", "gpuIndirectHiZRequested", "gpuIndirectEncodeFrustum", "gpuIndirectEncodeHiZ", "gpuIndirectEncodeHiZLive",
+      "gpuIndirectDrawIndexedRanges", "gpuIndirectParityReadbackLive"]
+      .forEach(function (name) { forward(name, false); });
+    ["writeOrdered", "createBindGroup", "createFence", "fenceStatus", "configureSurface", "acquireSurface",
+      "regionArenaNextRetireEpoch", "regionArenaCompletedEpoch", "regionArenaGeneration"]
       .forEach(function (name) { forward(name, 0); });
     imports.gaiusGpu = gpu;
   }
@@ -167,9 +172,128 @@
     if (!g.GaiusJspi) fallback.push(loadClassicScript(g.__gaiusJspiUrl || "gaius-jspi.js"));
     return Promise.all(fallback);
   }
+  // Compilation needs only the source and native Wasm APIs. Start it independently of the
+  // support scripts; TeaVM's loader accepts the resulting Module without compiling it again.
+  function compileOnce(source) {
+    var wasm = g.WebAssembly;
+    if (typeof wasm.Module === "function" && source instanceof wasm.Module) return source;
+    // URL sources retain TeaVM's own fetch and error handling. Capability-limited hosts and
+    // test shims that do not expose a compiler retain the original loader path as well.
+    if (typeof source === "string" || typeof wasm.compile !== "function") return source;
+    var streaming = typeof g.Response === "function" && source instanceof g.Response;
+    if (streaming && typeof wasm.compileStreaming !== "function") return source;
+    var times = g.__gaiusWasmCompileTimings = {started: performance.now(), source: streaming ? "response" : "bytes"};
+    phase("compileStart");
+    var options = {builtins: ["js-string"]};
+    return (streaming ? wasm.compileStreaming(source, options) : wasm.compile(source, options))
+      .then(function (module) {
+        times.finished = performance.now();
+        phase("moduleCompiled");
+        return module;
+      }, function (error) {
+        times.failed = performance.now();
+        throw error;
+      });
+  }
+  function compileSource(source) {
+    var fallback = g.__gaiusWasmSourceFallback;
+    // Only compilation can retry a delivery source. Import linking, instantiation and main
+    // are downstream, so their failures never start another instance or re-enter main.
+    return Promise.resolve().then(function () { return compileOnce(source); })
+      .then(function (module) {
+        if (g.__gaiusWasmSourceFallback === fallback) g.__gaiusWasmSourceFallback = null;
+        return module;
+      }, function (error) {
+        if (g.__gaiusWasmSourceFallback === fallback) g.__gaiusWasmSourceFallback = null;
+        if (typeof fallback !== "function") throw error;
+        phase("sourceFallback");
+        return Promise.resolve().then(function () { return fallback(error); }).then(compileOnce);
+      });
+  }
+  // Portable pages have no cacheable HTTP Response. Persist the compiled Module only on
+  // platforms that permit IndexedDB structured serialization of modules; Chrome currently
+  // rejects it with DataCloneError. Never replace the source bytes with an unverified blob.
+  // A browser that rejected the storage of a compiled module (the DataCloneError below) is
+  // remembered, with its user agent so an updated browser tries again: the next visits skip
+  // the IndexedDB open and lookup, which on a warm profile only delay the compile (the lookup
+  // is awaited, up to 250 ms, before the module source is even prepared).
+  var UNSUPPORTED_MARK = "gaius.wasmModuleCache.unsupported";
+  function userAgent() {
+    return g.navigator && typeof g.navigator.userAgent === "string" ? g.navigator.userAgent : "";
+  }
+  function storageKnownUnsupported() {
+    try { return !!g.localStorage && g.localStorage.getItem(UNSUPPORTED_MARK) === userAgent(); }
+    catch (_) { return false; }
+  }
+  function rememberStorageUnsupported() {
+    try { if (g.localStorage) g.localStorage.setItem(UNSUPPORTED_MARK, userAgent()); }
+    catch (_) { /* storage is an optimisation */ }
+  }
+  function cachedModuleSource() {
+    var key = g.__gaiusWasmModuleCacheKey;
+    if (!key || !g.indexedDB) return moduleSource().then(compileSource);
+    if (storageKnownUnsupported()) {
+      g.__gaiusWasmModuleCache = {status: "unsupported", skipped: true};
+      return moduleSource().then(compileSource);
+    }
+    var state = g.__gaiusWasmModuleCache = {status: "opening"};
+    var db = null;
+    var expired = false;
+    var timer;
+    var lookup = new Promise(function (resolve) {
+      timer = g.setTimeout(function () { expired = true; state.status = "timeout"; resolve(null); }, 250);
+      try {
+        var request = g.indexedDB.open("gaius-compiled-wasm-v1", 1);
+        request.onupgradeneeded = function () { request.result.createObjectStore("modules"); };
+        request.onerror = request.onblocked = function () { state.status = "unavailable"; resolve(null); };
+        request.onsuccess = function () {
+          db = request.result;
+          if (expired) { db.close(); db = null; return; }
+          var read;
+          try { read = db.transaction("modules").objectStore("modules").get(key); }
+          catch (_) { state.status = "unavailable"; db.close(); db = null; resolve(null); return; }
+          read.onerror = function () { resolve(null); };
+          read.onsuccess = function () {
+            var module = read.result;
+            var hit = module instanceof g.WebAssembly.Module;
+            state.status = hit ? "hit" : "miss";
+            resolve(hit ? module : null);
+          };
+        };
+      } catch (_) { state.status = "unavailable"; resolve(null); }
+    });
+    return lookup.then(function (module) {
+      g.clearTimeout(timer);
+      if (module) { db.close(); phase("moduleCacheHit"); return module; }
+      return moduleSource().then(compileSource).then(function (compiled) {
+        if (!db || expired) { if (db) db.close(); return compiled; }
+        try {
+          var tx = db.transaction("modules", "readwrite");
+          tx.objectStore("modules").put(compiled, key);
+          tx.oncomplete = function () { state.status = "stored"; db.close(); };
+          tx.onabort = tx.onerror = function () { state.status = "unavailable"; db.close(); };
+        } catch (error) {
+          state.status = error && error.name === "DataCloneError" ? "unsupported" : "unavailable";
+          if (state.status === "unsupported") rememberStorageUnsupported();
+          db.close();
+        }
+        return compiled;
+      }, function (error) {
+        if (db) db.close();
+        throw error;
+      });
+    });
+  }
   // Sites that ship gaius-png.wasm switch it on (build-pages-site.py); ?gaiusPng=0 keeps the Java
   // decoder for an A/B run, ?gaiusPng=1 asks for the module elsewhere.
   var pngSwitch = new URLSearchParams(g.location ? g.location.search : "").get("gaiusPng");
+  // Start-function riders of the patched TeaVM runtime (patch-wasm-gc-runtime.mjs 7 and 8): lazy
+  // @JSBody functions and string registrations deferred to idle time. Both are on; ?gaiusLazyJsBody=0
+  // and ?gaiusDeferStrings=0 restore the eager forms (A/B controls).
+  var startQuery = new URLSearchParams(g.location ? g.location.search : "");
+  var lazyJsBodies = startQuery.get("gaiusLazyJsBody") !== "0";
+  var deferStartStrings = startQuery.get("gaiusDeferStrings") !== "0";
+  g.__gaiusStartRiders = {lazyJsBodies: lazyJsBodies, deferStartStrings: deferStartStrings};
   var pngEnabled = pngSwitch !== "0" && (g.__gaiusPngKernelEnabled === true || pngSwitch === "1");
   if (pngEnabled) {
     g.__gaiusPngReady = (g.GaiusPngKernel ? Promise.resolve()
@@ -194,11 +318,13 @@
     ? Promise.reject(new Error("This browser has no JSPI (WebAssembly.Suspending/promising)"))
     : Promise.all([supportReady.then(function () {
       return fallbackSupportScripts();
-    }), moduleSource()]))
+    }), cachedModuleSource()]))
     .then(function (loaded) {
       phase("runtimeLoaded");
       var source = loaded[1];
       return g.TeaVM.wasmGC.load(source, {
+        lazyJsBodies: lazyJsBodies,
+        deferStartStringRegistrations: deferStartStrings,
         // memory.grow detaches the cached linear-memory views of dev.gaius.browser.JsArrays
         // (window.__gaiusLinear); refresh them at once instead of at their next use.
         memory: {
@@ -212,6 +338,10 @@
         installImports: function (imports) {
           // Called after compilation and import linking, right before instantiation.
           if (terminated) return;
+          // A portable page's compile Worker may still be warming the start function's code
+          // (build-portable-html.py, ?gaiusStartWarm): stop it before this thread compiles the
+          // same functions. The code it already compiled stays in the shared Module.
+          if (typeof g.__gaiusStartWarmStop === "function") g.__gaiusStartWarmStop();
           phase("compiled");
           g.__gaiusWasmMemory = imports.env ? imports.env.memory : null;
           noteMemory();
@@ -288,6 +418,13 @@
     // JavaScript build.
     var mainSettled = jspi.startMain(args || []);
     phase("mainReturned");
+    // Java main has entered and reached its first suspension. Runtime recovery
+    // is now prohibited; unused portable JavaScript payloads can be released.
+    try {
+      if (g.__gaiusBoot && typeof g.__gaiusBoot.commitClientRuntime === "function") {
+        g.__gaiusBoot.commitClientRuntime();
+      }
+    } catch (ignored) {}
     mainSettled.then(function () {
       phase("mainFinished");
     }, function (error) {

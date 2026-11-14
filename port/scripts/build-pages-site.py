@@ -18,7 +18,8 @@ Verified release-asset assembly, shared with the Pages workflow:
                         [--limit-bytes <lower limit>] [--json <report>]
 
 Enabled profiles come from port/versions/*.json. Sites use WasmGC with
-feature-detected WebGPU/WebGL2. Gzip-only client/server modules use virtual immutable wasm URLs;
+feature-detected WebGPU/WebGL2. The client retains a real immutable HTTP Wasm URL for
+native code caching; gzip fallbacks and server modules use virtual immutable wasm URLs;
 the Service Worker decompresses and caches application/wasm responses for
 compileStreaming, returning cached immutable responses unchanged. Without SW
 control, the page and Worker use their inflation path. The JavaScript build may
@@ -41,9 +42,15 @@ import os
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
+
+# Other build scripts may load this file with spec_from_file_location, which does not put the
+# script directory on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from relay_artifact_gate import load_nodes  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS_DIR = ROOT / "port" / "versions"
@@ -84,7 +91,7 @@ QUALITY_MODULES = (
     "quality-runtime.js",
 )
 # gaius-boot.js WEBGPU_SCRIPTS and WEBGPU_TRANSLATOR, under runtime/webgpu/ of the dist.
-WEBGPU_MODULES = ("gpu-glue.js", "shaderxlat-job.js", "quality-post.js")
+WEBGPU_MODULES = ("gpu-glue.js", "shaderxlat-job.js", "quality-post.js", "shader-pack-store.js", "shader-pack-compat.js", "shader-pack.js")
 WEBGPU_TRANSLATOR = "gaius-shaderxlat.wasm"
 # Small interface sounds stay in the core pack: the title screen clicks before the sound pack
 # has arrived on a slow line.
@@ -99,6 +106,8 @@ BOOT_INFLATE_MARKER = "gaius-site-inflate-v1"
 # The size gate of --check-total: GitHub Pages allows 1 GB; the rest is headroom.
 DEFAULT_LIMIT_BYTES = 900_000_000
 MAX_RAW_WASM_BYTES = 4 * 1024 * 1024
+# The HTTP-cacheable client must remain below the hosting per-file ceiling.
+MAX_CLIENT_WASM_BYTES = 90 * 1024 * 1024
 # pages.yml keeps the content-hashed files of the release deployed before, except the client
 # scripts and modules and the asset packs (vanilla-assets.pack.<hash>.gz, vanilla-sounds.<hash>.pack).
 KEPT_NAME = re.compile(r"\.[0-9a-f]{16}\.[A-Za-z0-9]+$")
@@ -120,6 +129,20 @@ def hashed_name(logical: str, data: bytes) -> str:
 
 def deterministic_gzip(data: bytes) -> bytes:
     return gzip.compress(data, compresslevel=9, mtime=0)
+
+
+def deterministic_brotli(data: bytes) -> bytes:
+    """Use Node's bundled compressor so staging needs no extra Python package."""
+    script = (
+        'import {createBrotliCompress, constants} from "node:zlib"; '
+        'import {pipeline} from "node:stream"; '
+        'pipeline(process.stdin, createBrotliCompress({params: '
+        '{[constants.BROTLI_PARAM_QUALITY]: 5}}), process.stdout, '
+        'error => { if (error) { console.error(error); process.exitCode = 1; } });'
+    )
+    result = subprocess.run(['node', '--input-type=module', '-e', script], input=data,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    return result.stdout
 
 
 def read_pack(data: bytes) -> tuple[dict[str, list[int]], bytes]:
@@ -373,6 +396,25 @@ def add_png_kernel(site: Site, wasm_dist: Path) -> dict[str, object]:
     }
 
 
+def add_atlas_prebake(site: Site, wasm_dist: Path, profile: str) -> bool:
+    """The atlas prebake payload of a wasm dist (stage-web-runtime.py --atlas-prebake), if any.
+
+    gaius-boot.js fetches it by its logical name, checks the envelope and the body SHA-256;
+    BrowserAtlasPrebake replays an entry only for inputs identical to the recorded ones."""
+    path = wasm_dist / "gaius-atlas-prebake.bin.gz"
+    if not path.is_file():
+        return False
+    data = path.read_bytes()
+    raw = gzip.decompress(data)
+    if raw[:8] != b"GAIUSAP1" or len(raw) < 56:
+        raise RuntimeError(f"{path} is not a GAIUSAP1 payload")
+    (profile_length,) = struct.unpack_from("<H", raw, 52)
+    if raw[54:54 + profile_length].decode("ascii") != profile:
+        raise RuntimeError(f"{path} is not for profile {profile}")
+    site.add("gaius-atlas-prebake.bin.gz", data)
+    return True
+
+
 def boot_inflates(boot: bytes) -> bool:
     return BOOT_INFLATE_MARKER.encode("ascii") in boot
 
@@ -383,6 +425,52 @@ def inflate_url(gzip_url: str) -> str:
     if not match:
         raise RuntimeError(f"not a hashed module .gz: {gzip_url}")
     return f"{match.group(1)}.{match.group(2)}.wasm"
+
+
+def wasm_client_preload(module: str, needs_inflation: bool, assets: dict[str, str] | None = None) -> str:
+    """Use the boot's actual GC/EH probes before any large module request."""
+    boot_source = (WEB / "boot/gaius-boot.js").read_text(encoding="utf-8")
+    probes = []
+    for name in ("WASM_GC_PROBE", "WASM_TRY_TABLE_PROBE"):
+        match = re.search(r"const\s+" + name + r"\s*=\s*(\[.*?\]);", boot_source, re.DOTALL)
+        if match is None:
+            raise RuntimeError(f"Boot capability probe is missing: {name}")
+        probes.append(json.dumps(json.loads(match.group(1)), separators=(",", ":")))
+    # The inline gate precedes the site descriptor, so its inflation policy is
+    # bound at build time; the controlling Service Worker is observed at runtime.
+    assets = assets or {}
+    raw_js = all(isinstance(assets.get(name), str) for name in ("classes.js", "singleplayer-server.js"))
+    gzip_js = all(isinstance(assets.get(name), str) or isinstance(assets.get(name + ".gz"), str)
+                  for name in ("classes.js", "singleplayer-server.js"))
+    js_available = "true" if raw_js else 'typeof window.DecompressionStream==="function"' if gzip_js else "false"
+    source = ("(()=>{try{let runtime='';try{runtime=String(new URLSearchParams((window.location||{}).search||'').get('runtime')||'').toLowerCase()}catch(_){};"
+              + 'if(runtime==="js"&&(' + js_available + '))return;'
+              + "const w=window.WebAssembly,n=window.navigator||{};"
+              'if(!w||typeof w.validate!=="function"||typeof w.Suspending!=="function"'
+              '||typeof w.promising!=="function")return;'
+              'if(w.validate(new Uint8Array(' + probes[0] + '))!==true'
+              '||w.validate(new Uint8Array(' + probes[1] + '))!==true)return;'
+              + ('if(!(n.serviceWorker&&n.serviceWorker.controller)&&typeof window.DecompressionStream!=="function")return;'
+                 if needs_inflation else '')
+              + 'const url=new URL(' + json.dumps(module) + ',location.href).href;'
+              'window.__gaiusWasmHttpPreload={url,response:fetch(url,{cache:"force-cache"})'
+              '.catch(()=>null)};}catch(_){}})();')
+    return '  <script data-gaius-preload="wasm">' + source + '</script>\n'
+
+
+def pages_headers(assets: dict[str, str]) -> bytes:
+    """Native streaming compilation on hosts that honor the deployed header policy."""
+    headers = PAGES_HEADERS.decode("ascii")
+    for name in WASM_MODULES:
+        for logical, encoding in ((name, None), (name + ".gz", "gzip"), (name + ".br", "br")):
+            url = assets.get(logical)
+            if url is None:
+                continue
+            headers += f"\n/{url}\n  Content-Type: application/wasm\n"
+            if encoding:
+                headers += f"  Content-Encoding: {encoding}\n"
+            headers += "  Cache-Control: public, max-age=31536000, immutable\n"
+    return headers.encode("ascii")
 
 
 def add_wasm_runtime(site: Site, wasm_dist: Path, gzip_only: bool,
@@ -401,11 +489,19 @@ def add_wasm_runtime(site: Site, wasm_dist: Path, gzip_only: bool,
             raise RuntimeError(f"{path} is not a WebAssembly module")
         if gzip_only:
             inflate[name] = inflate_url(site.add(f"{name}.gz", deterministic_gzip(module)))
+            if name == "classes.wasm":
+                # V8 cannot cache compiled code for synthetic page/SW inflation Responses.
+                # Keep a real URL even on static hosts that cannot set gzip HTTP headers.
+                if len(module) > MAX_CLIENT_WASM_BYTES:
+                    raise RuntimeError("HTTP-cacheable client exceeds the hosting file limit")
+                site.add(name, module)
         else:
             site.add(name, module)
             if name == "classes.wasm":
                 # Inflated on the page when the host does not compress on the wire (gaius-boot.js).
                 site.add("classes.wasm.gz", deterministic_gzip(module))
+        if name == "classes.wasm":
+            site.add("classes.wasm.br", deterministic_brotli(module))
         added.append(name)
     site.add("gaius-wasm-gc-runtime.js", require(wasm_dist / "gaius-wasm-gc-runtime.js"))
     for name in WASM_RUNTIME_SCRIPTS:
@@ -417,13 +513,14 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
           wasm_dist: Path | None = None, wasm_gzip_only: bool | None = None,
           js_gzip_copies: bool = True, dry_run: bool = False,
           wasm_inputs: dict[str, Path] | None = None,
-          no_js_fallback: bool = False, versions_dir: Path | None = None) -> dict[str, object]:
+          no_js_fallback: bool = False, versions_dir: Path | None = None,
+          frozen_js: bool = False) -> dict[str, object]:
     """wasm_gzip_only: None follows the boot script (BOOT_INFLATE_MARKER), True/False force it.
 
     js_gzip_copies=False leaves out development JavaScript gzip copies. Release pages always
     use the WasmGC-only path."""
     dist = dist.resolve()
-    if no_js_fallback and wasm_dist is None:
+    if (no_js_fallback or frozen_js) and wasm_dist is None:
         raise RuntimeError("WasmGC-only site builds require --wasm-dist")
     if wasm_dist is not None:
         check_runtime_provenance(dist, wasm_dist.resolve())
@@ -444,7 +541,7 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
         raise RuntimeError("could not load postprocess-index-html.py")
     postprocess_module = importlib.util.module_from_spec(postprocess_spec)
     postprocess_spec.loader.exec_module(postprocess_module)
-    if lazy_toolchain_config is None and no_js_fallback and wasm_dist is not None:
+    if lazy_toolchain_config is None and (no_js_fallback or frozen_js) and wasm_dist is not None:
         toolchain_files = tuple(postprocess_module.SHADER_TOOLCHAIN_FILES)
         if all((wasm_dist / name).is_file() for name in toolchain_files):
             token = postprocess_module.content_token(*(wasm_dist / name for name in toolchain_files))
@@ -452,6 +549,12 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
                 "loader": f"gaius-shader-toolchain.js?v={token}",
                 "version": token,
             }
+    snapshot_path = ROOT / "port" / "scripts" / "build-boot-snapshot.py"
+    snapshot_spec = importlib.util.spec_from_file_location("gaius_build_boot_snapshot", snapshot_path)
+    if snapshot_spec is None or snapshot_spec.loader is None:
+        raise RuntimeError("could not load build-boot-snapshot.py")
+    snapshot_module = importlib.util.module_from_spec(snapshot_spec)
+    snapshot_spec.loader.exec_module(snapshot_module)
     index_html = postprocess_module.patch_early_profile_id(index_html, profile_config)
     # A wasm dist's page names its own runtime default and disk payloads (make-wasm-page.py);
     # the site keeps the product default and lists its runtimes in window.__gaiusSite.
@@ -466,9 +569,6 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
     # Keep license terms at stable paths so offline copies and archived sites retain them.
     site.add("NOTICE", require(ROOT / "NOTICE"), hashed=False)
     site.add("LICENSE", require(ROOT / "LICENSE"), hashed=False)
-    # Keep the Pages deployment policy alongside the generated site. The launcher
-    # also carries the meta equivalent for hosts that do not apply _headers.
-    site.add("_headers", PAGES_HEADERS, hashed=False)
     for license_path in sorted((ROOT / "LICENSES").glob("*.txt")):
         site.add(f"LICENSES/{license_path.name}", license_path.read_bytes(), hashed=False)
     # The same terms as one plain-text file, which the in-game About Gaius screen reads
@@ -477,7 +577,16 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
 
     if not no_js_fallback:
         for name in ("classes.js", "singleplayer-server.js", "gaius-hotpath.wasm"):
-            site.add(name, resolve_asset(dist, name, index_html).read_bytes())
+            raw = resolve_asset(dist, name, index_html).read_bytes()
+            if frozen_js and name.endswith(".js"):
+                compressed = resolve_asset(dist, name + ".gz", index_html).read_bytes()
+                with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
+                    decoded_sha = hashlib.file_digest(stream, "sha256").hexdigest()
+                if decoded_sha != sha256_bytes(raw):
+                    raise RuntimeError(f"frozen JavaScript gzip differs from raw input: {name}")
+                site.add(name + ".gz", compressed)
+            else:
+                site.add(name, raw)
     elif wasm_dist is not None:
         # The Wasm-only site still uses the native hotpath loader.  It is a
         # runtime asset, so keep it when the internal resource build
@@ -485,7 +594,7 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
         hotpath = wasm_dist.resolve() / "gaius-hotpath.wasm"
         if hotpath.is_file():
             site.add("gaius-hotpath.wasm", hotpath.read_bytes())
-    if js_gzip_copies and not no_js_fallback:
+    if js_gzip_copies and not no_js_fallback and not frozen_js:
         for name in ("classes.js.gz", "singleplayer-server.js.gz"):
             site.add(name, resolve_asset(dist, name, index_html).read_bytes())
     # One Worker bootstrap serves the WasmGC server. A gzip-only site comes with a Wasm
@@ -495,12 +604,19 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
         and (wasm_dist / "singleplayer-server-worker.js").is_file() else dist
     site.add("singleplayer-server-worker.js", require(worker_dist / "singleplayer-server-worker.js"))
     # The relay registry keeps its name: pages and tools fetch it by that name.
-    if (dist / "relay-nodes.json").is_file():
-        site.add("relay-nodes.json", (dist / "relay-nodes.json").read_bytes(), hashed=False)
+    relay_registry_path = dist / "relay-nodes.json"
+    relay_nodes = None
+    if relay_registry_path.is_file():
+        relay_nodes = load_nodes(relay_registry_path, ROOT)
+        site.add("relay-nodes.json", relay_registry_path.read_bytes(), hashed=False)
+    else:
+        raise RuntimeError("site build has no relay-nodes.json")
 
-    pack_dist = wasm_dist.resolve() if no_js_fallback and wasm_dist is not None else dist
+    # The active Wasm client owns its resource lists and sound definitions.
+    # A frozen JavaScript fallback must not replace the corresponding pack.
+    pack_dist = wasm_dist.resolve() if wasm_dist is not None else dist
     vanilla_path = pack_dist / "vanilla-assets.pack.gz"
-    if no_js_fallback and wasm_dist is not None:
+    if wasm_dist is not None:
         check_profile_asset(vanilla_path, profile, "vanilla-assets.pack.gz")
     vanilla = require(vanilla_path)
     sound_count = 0
@@ -511,6 +627,18 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
             site.add("vanilla-sounds.pack", sounds)
     else:
         site.add("vanilla-assets.pack.gz", vanilla)
+    # Build the envelope from the exact pack that is published.  Splitting sounds rewrites the
+    # core pack index and payload offsets, so reusing a snapshot made before the split would
+    # validate the wrong byte ranges.
+    snapshot_pack = core if split_sounds else vanilla
+    init_snapshot, _snapshot_meta = snapshot_module.build_compressed(snapshot_pack, profile)
+    site.add("gaius-init-snapshot.bin", init_snapshot)
+    # The unihex glyph table build-wasmgc.sh made from this pack (UnihexGlyphTable). The page
+    # hashes each listed zip in the archive it serves, so the sound split above does not matter;
+    # without the file the client parses the font zips.
+    unihex_table = pack_dist / "gaius-unihex.bin.gz"
+    if unihex_table.is_file() and unihex_table.stat().st_size > 0:
+        site.add("gaius-unihex.bin.gz", unihex_table.read_bytes())
 
     # Runtime modules: boot script, kernel runtime and job codecs, kernel worker, quality layer.
     site.add("gaius-boot.js", boot)
@@ -528,10 +656,10 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
                  else path.read_bytes())
         if path.name.endswith("-job.js"):
             modules.append(f"kernels/{path.name}")
-    semantics_dist = wasm_dist.resolve() if no_js_fallback and wasm_dist is not None else dist
+    semantics_dist = wasm_dist.resolve() if (no_js_fallback or frozen_js) and wasm_dist is not None else dist
     if (semantics_dist / "kernels/kernel-semantics.json").is_file():
         semantics = require(semantics_dist / "kernels/kernel-semantics.json")
-        if no_js_fallback:
+        if no_js_fallback or frozen_js:
             document = json.loads(semantics.decode("utf-8"))
             if document.get("profile") != profile:
                 raise RuntimeError("kernel semantics profile mismatch")
@@ -553,8 +681,11 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
                            require(RELOAD_RELAY_SCRIPT).decode("utf-8") + "  </script>\n")
 
     site_globals: dict[str, object] = {}
+    if relay_nodes is not None:
+        site_globals["__gaiusBridgeUrls"] = relay_nodes
     if wasm_dist is not None:
         site_globals.update(add_png_kernel(site, wasm_dist.resolve()))
+        add_atlas_prebake(site, wasm_dist.resolve(), profile)
     toolchain = SHADER_TOOLCHAIN_TAG.search(index_html)
     lazy_toolchain = lazy_toolchain_config
     token = None
@@ -569,13 +700,13 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
             raise RuntimeError("WebGPU shader toolchain has an unrecognised loader")
     if token is not None:
         # The toolchain payload is owned by the matching Wasm client dist.
-        toolchain_dist = wasm_dist.resolve() if no_js_fallback and wasm_dist is not None else dist
+        toolchain_dist = wasm_dist.resolve() if (no_js_fallback or frozen_js) and wasm_dist is not None else dist
         if not all((toolchain_dist / name).is_file() for _, name in SHADER_TOOLCHAIN_MODULES) \
                 or not (toolchain_dist / "gaius-shader-toolchain.js").is_file():
             if wasm_dist is None:
                 raise FileNotFoundError("shader toolchain payload is missing from JS and Wasm dists")
             toolchain_dist = wasm_dist.resolve()
-        if no_js_fallback:
+        if no_js_fallback or frozen_js:
             check_shader_manifest(toolchain_dist)
         loader_url = site.add("gaius-shader-toolchain.js", require(toolchain_dist / "gaius-shader-toolchain.js"))
         urls: dict[str, str] = {"version": token}
@@ -583,7 +714,7 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
             urls[key] = site.add(name, require(toolchain_dist / name))
         site_globals["__gaiusShaderToolchainUrls"] = urls
         if toolchain is not None or lazy_toolchain is not None:
-            if no_js_fallback:
+            if no_js_fallback or frozen_js:
                 # WasmGC release pages let gaius-boot.js run the capability gate before
                 # loading the shader compiler. Keep its config and assets, but do not put a
                 # heavyweight loader in the document head.
@@ -591,6 +722,7 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
                     index_html = index_html.replace(toolchain.group(0), "", 1)
                 site_globals["__gaiusWebGpuShaderToolchain"] = {
                     "loader": f"gaius-shader-toolchain.js?v={token}", "version": token,
+                    "requiredForJs": frozen_js and toolchain is not None,
                 }
             elif toolchain is not None:
                 index_html = index_html.replace(
@@ -628,7 +760,7 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
             "kernels": kernels,
             "serviceWorker": "gaius-sw.js",
         }
-        if no_js_fallback and wasm_dist is not None:
+        if (no_js_fallback or frozen_js) and wasm_dist is not None:
             descriptor["profileAssets"] = {
                 "vanillaAssetsPackSha256": sha256_bytes(vanilla),
             }
@@ -638,6 +770,8 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
             descriptor["runtimePolicy"] = "auto"
         if no_js_fallback:
             descriptor["runtimePolicy"] = "wasm-only"
+        elif wasm_dist is not None:
+            descriptor["runtimePolicy"] = "auto"
         return descriptor
 
     def render_index(descriptor: dict[str, object]) -> str:
@@ -649,10 +783,29 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
             BOOT_TAG, reload_relay_script + site_script + relay_protocol_script +
             f'  <script data-gaius-boot="v1" src="{boot_url}"></script>\n', 1
         )
+        # Discover the critical classic scripts before parsing the rest of the shell. Their
+        # eventual script tags use the same URLs and request mode, so the preload is reused.
+        critical = ["gaius-boot.js"]
+        if wasm_dist is not None:
+            critical.extend(("gaius-wasm-boot.js", "gaius-wasm-gc-runtime.js", "gaius-jspi.js"))
+        preloads = "".join(f'  <link data-gaius-preload="boot" rel="preload" as="script" href="{site.assets[name]}">\n'
+                           for name in critical)
+        if wasm_dist is not None:
+            module = ((site.assets["classes.wasm.br"] + "?gaiusWasmHttp=1" if "classes.wasm.br" in site.assets else None)
+                      or (site.assets["classes.wasm"] + "?gaiusWasmHttp=1" if "classes.wasm" in site.assets
+                          else site.assets.get("classes.wasm.gz")))
+            if module:
+                # A link as=fetch preload can populate RawResource without the fetch
+                # loader's Wasm metadata handler. Share one real fetch Response instead.
+                preloads += wasm_client_preload(module, "classes.wasm" in inflate, descriptor["assets"])
+        rendered = rendered.replace("<head>", "<head>\n" + preloads, 1)
         # License terms ship as sibling files (NOTICE, LICENSE, LICENSES/); the game page itself
         # carries no overlay or link so nothing covers the play area.
         return rendered
 
+    # Exact module paths avoid changing the encoding of other gzip assets whose loaders
+    # own decompression. Hosts that ignore _headers retain the page/SW inflation fallback.
+    site.add("_headers", pages_headers(site.assets), hashed=False)
     # Hash every published file, including the stable Service Worker and the generated shell.
     # The empty id is a canonical placeholder that avoids making the generation self-referential.
     placeholder = make_descriptor("")
@@ -724,7 +877,9 @@ def site_size(site: Path) -> dict[str, object]:
         "largest": [{"file": name, "bytes": size} for name, size in largest],
         "rawWasm": [{"file": name, "bytes": size} for name, size in raw_wasm],
         "rawWasmOverLimit": [{"file": name, "bytes": size} for name, size in raw_wasm
-                              if size > MAX_RAW_WASM_BYTES],
+                              if size > (MAX_CLIENT_WASM_BYTES if logical_names.get(name) == "classes.wasm"
+                                         and name == hashed_name("classes.wasm", (site / name).read_bytes())
+                                         else MAX_RAW_WASM_BYTES)],
     }
 
 
@@ -958,21 +1113,25 @@ def main(argv: list[str]) -> int:
     form.add_argument("--wasm-raw", dest="wasm_gzip_only", action="store_false")
     parser.add_argument("--no-js-gzip", action="store_true",
                         help="leave out legacy JavaScript gzip copies (development helper only)")
+    parser.add_argument("--frozen-js", action="store_true",
+                        help="ship the frozen JavaScript pair as lazy gzip payloads")
     parser.add_argument("--no-js-fallback", action="store_true",
                         help="WasmGC-only site; omit the legacy JavaScript client and server")
     parser.add_argument("--release", action="store_true",
-                        help="release staging mode; requires WasmGC inputs and omits JavaScript assets")
+                        help="release staging mode; requires WasmGC inputs and a frozen JavaScript pair")
     args = parser.parse_args(argv)
     wasm_inputs = None
     if args.wasm_server_dist is not None:
         wasm_inputs = {"singleplayer-server.wasm": args.wasm_server_dist / "singleplayer-server.wasm"}
-    no_js_fallback = args.no_js_fallback or args.release
+    if args.no_js_fallback and (args.frozen_js or args.release):
+        raise RuntimeError("release fallback cannot be combined with --no-js-fallback")
+    no_js_fallback = args.no_js_fallback
     report = build(args.dist, args.output, args.archive, not args.no_split_sounds, args.wasm_dist,
                    args.wasm_gzip_only, not args.no_js_gzip, args.dry_run, wasm_inputs,
-                   no_js_fallback)
+                   no_js_fallback, frozen_js=args.frozen_js or args.release)
     print(f"Gaius site {report['profile']} ({report['id']}): {report['files']} files, "
           f"{report['bytes']} bytes, {report['sounds']} streamed sounds, kernels {report['kernels']}"
-          + (f", WebAssembly GC {report['wasm']}" + (" (gzip only)" if report["wasmGzipOnly"] else "")
+          + (f", WebAssembly GC {report['wasm']}" + (" (gzip fallback, HTTP client)" if report["wasmGzipOnly"] else "")
              if report["wasm"] else ""))
     if args.archive is not None and not args.dry_run:
         print(f"Gaius site archive: {args.archive} ({args.archive.stat().st_size} bytes)")

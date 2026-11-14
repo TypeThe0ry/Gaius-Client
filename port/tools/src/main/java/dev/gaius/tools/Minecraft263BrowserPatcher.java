@@ -10,6 +10,7 @@ import dev.gaius.tools.patches.platform.JdkCompatPatches;
 import dev.gaius.tools.patches.platform.RenderpearlPlatformPatches;
 import dev.gaius.tools.patches.render.QualityTierPatches;
 import dev.gaius.tools.patches.render.RenderpearlRenderPatches;
+import dev.gaius.tools.patches.render.RenderpearlShaderPatches;
 import dev.gaius.tools.patches.render.RenderpearlTerrainPatches;
 import dev.gaius.tools.patches.resources.RenderpearlResourcePatches;
 import dev.gaius.tools.patches.serverworker.RenderpearlServerWorkerPatches;
@@ -115,6 +116,8 @@ public final class Minecraft263BrowserPatcher {
                 () -> RenderpearlRenderPatches.patchSetupDrawUseProgramBeforeVertexArrayBind(jar, root, symbols));
         PatchRegistry.run("RenderPatches263.patchMacosUtil", "REQUIRED js wasmgc >=26.3",
                 () -> RenderpearlPlatformPatches.patchMacosUtil(jar, root));
+        PatchRegistry.run("RenderPatches263.patchShaderPipelineWarmup", "PERF js wasmgc >=26.3",
+                () -> RenderpearlShaderPatches.patchShaderPipelineWarmup(jar, root));
         // Rewrites the inventory throttle MinecraftClientPatcher injected into
         // GameRenderer.render, so it runs after the GameRenderer patches above.
         PatchRegistry.run("RenderPatches263.patchInventoryWorldRenderThrottle", "FEATURE js wasmgc >=26.3",
@@ -188,13 +191,13 @@ public final class Minecraft263BrowserPatcher {
                 () -> RenderpearlServerWorkerPatches.patchMobSpawnOverlayCache(jar, root));
     }
 
-    /** The ui group (work package P8): the mining hit sound volume and the vanilla pack layers. */
+    /** The ui group (work package P8): the mining hit sound shape and the vanilla pack layers. */
     public static void uiPatches(String jar, Path root) throws IOException {
         PatchRegistry.run("UiPatches263.patchClientLevelBreakingSoundVolume", "FEATURE js wasmgc >=26.3",
                 () -> RenderpearlAudioPatches.patchClientLevelBreakingSoundVolume(jar, root));
         PatchRegistry.run("UiPatches263.patchVanillaPackResourcesSingleLayer", "PERF js wasmgc >=26.3",
                 () -> RenderpearlResourcePatches.patchVanillaPackResourcesSingleLayer(jar, root));
-        System.out.println("UiPatches263: ClientLevel.playBreakingSound hit volume /8 -> /4;"
+        System.out.println("UiPatches263: ClientLevel.playBreakingSound retains vanilla hit volume /8;"
                 + " VanillaPackResourcesBuilder.build uses the full resources as the only layer");
     }
 

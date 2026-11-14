@@ -58,6 +58,29 @@ function indexOfInstruction(list, needle, from = 0) {
 
 const RENDERPEARL_BUFFER = "com/mojang/renderpearl/api/buffers/GpuBuffer";
 
+/** Asserts the 26.3 lazy section storages start at the selectable browser slab. */
+export function assertDynamicGpuDataCapacities263(rawJavapClass, wasmGc = true) {
+  const dynamic = rawJavapClass("net.minecraft.client.renderer.DynamicGpuData").replaceAll("\r\n", "\n");
+  for (const [label, owner] of [
+    ["Chunk Sections Instanced", "DynamicGpuDataStorageNonMapped"],
+    ["Chunk Sections Command Buffer", "DynamicGpuDataStorageMapped"],
+  ]) {
+    const at = dynamic.indexOf(`// String ${label}`);
+    assert.ok(at >= 0, `DynamicGpuData lost the ${label} storage`);
+    const window = dynamic.slice(at, at + 1800);
+    assert.ok(window.includes(owner),
+      `${label} storage owner changed`);
+    if (wasmGc) {
+      assert.match(window, /iconst_2[\s\S]*?sipush\s+32767[\s\S]*?BrowserGpuDataCapacity[./]capacity/,
+        `${label} initial capacity is not the selectable browser slab`);
+    } else {
+      assert.match(window, /sipush\s+32767[\s\S]*?invokespecial/,
+        `${label} initial capacity is not the fixed JavaScript slab`);
+    }
+  }
+  return {instancedSections: 32767, commandBuffer: 32767};
+}
+
 /** Asserts every P5 terrain / frame-loop hook on a patched 26.3 client. */
 export function assertTerrain263(rawJavapClass) {
   const javapClass = (name) => rawJavapClass(name).replaceAll("\r\n", "\n");
@@ -75,6 +98,9 @@ export function assertTerrain263(rawJavapClass) {
   const terrainUbo = dynamic.slice(dynamic.indexOf("// String Terrain UBO"));
   assert.match(terrainUbo, /sipush\s+128\s*\n\s*\d+: iconst_1/,
     "the once-per-frame Terrain UBO must keep its vanilla capacity");
+
+  assertDynamicGpuDataCapacities263(javapClass,
+    process.env.GAIUS_TEAVM_TARGET === "wasmgc");
 
   // MappableRingBuffer: fence telemetry around the -1L (NO_TIMEOUT) wait.
   const ring = method(javapClass("net.minecraft.client.renderer.MappableRingBuffer"),
@@ -507,7 +533,7 @@ async function main() {
     } else {
       ({clientJar, asm, log} = await buildChain(tools, workDirectory));
       for (const line of [
-        "Raised 26.3 DynamicGpuData transforms and chunk-section UBO capacity",
+        "Raised 26.3 DynamicGpuData terrain storage capacities",
         "Instrumented renderpearl MappableRingBuffer.currentBuffer fence-result telemetry",
         "Instrumented renderpearl StagedVertexBuffer GPU pool cache: count=4 bytes=1048576 idle=3",
         "Patched 26.3 section draw-group extraction and prepare statistics",
@@ -528,6 +554,12 @@ async function main() {
     }
     const javapClass = (name) => execFileSync(tools.javap, ["-classpath", clientJar, "-p", "-c", name],
       {encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 120_000});
+    if (process.argv.includes("--capacity-only")) {
+      const capacities = assertDynamicGpuDataCapacities263(javapClass,
+        process.env.GAIUS_TEAVM_TARGET === "wasmgc");
+      console.log("Minecraft 26.3 dynamic GPU capacity smoke passed", JSON.stringify(capacities));
+      return;
+    }
     const results = assertTerrain263(javapClass);
 
     const verifierDirectory = path.join(workDirectory, "verifier");

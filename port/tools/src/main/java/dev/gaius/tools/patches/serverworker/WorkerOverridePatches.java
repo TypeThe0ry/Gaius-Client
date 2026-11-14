@@ -611,7 +611,7 @@ public final class WorkerOverridePatches {
         }
         ClassNode node = new ClassNode();
         new ClassReader(bytes).accept(node, 0);
-        return node;
+        return dev.gaius.tools.HierarchyClassWriter.source(node, jarPath.toString());
     }
 
     private static boolean hasEntry(Path jarPath, String entryName) throws IOException {
@@ -631,9 +631,10 @@ public final class WorkerOverridePatches {
     }
 
     private static void write(ClassNode node, Path output) throws IOException {
-        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
-        node.accept(writer);
-        Files.createDirectories(output.getParent());
-        Files.write(output, writer.toByteArray());
+        try (var writer = dev.gaius.tools.HierarchyClassWriter.create(node, output)) {
+            node.accept(writer);
+            Files.createDirectories(output.getParent());
+            Files.write(output, writer.toByteArray());
+        }
     }
 }

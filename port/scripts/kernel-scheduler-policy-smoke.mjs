@@ -41,6 +41,29 @@ check("priority classes order visible mesh, visible light, near gen, far gen, ba
   assert.ok(farMesh < nearLight, "every P0 job sorts before every P1 job that has not starved");
 });
 
+check("worldgen visibility hint keeps visible chunks ahead of off-screen chunks", () => {
+  const predictor = new P.MotionPredictor();
+  predictor.update({x: 8, z: 8, yaw: 0, t: 0});
+  const visibleFar = {kernel: "worldgen", kind: "terrain", cx: 0, cz: 8, visible: true, submittedAt: 0};
+  const visibleNear = {kernel: "worldgen", kind: "terrain", cx: 0, cz: 1, visible: true, submittedAt: 0};
+  const offscreenNear = {kernel: "worldgen", kind: "terrain", cx: 1, cz: 0, visible: false, submittedAt: 0};
+  const visibleClass = P.classify(visibleFar, predictor);
+  assert.equal(visibleClass, P.PRIORITY.NEAR_GEN);
+  assert.equal(P.classify(offscreenNear, predictor), P.PRIORITY.FAR_GEN);
+  visibleFar.cls = visibleClass;
+  visibleNear.cls = visibleClass;
+  offscreenNear.cls = P.PRIORITY.FAR_GEN;
+  assert.ok(P.score(visibleFar, predictor, 0) < P.score(offscreenNear, predictor, 0));
+  assert.ok(P.score(visibleNear, predictor, 0) < P.score(visibleFar, predictor, 0));
+  assert.equal(P.visibilityPriorityEligible({kernel: "worldgen", kind: "biomes"}), true);
+  assert.equal(P.visibilityPriorityEligible({kernel: "worldgen", kind: "surface"}), true);
+  assert.equal(P.visibilityPriorityEligible({kernel: "worldgen", kind: "features"}), false);
+  assert.equal(P.classify({kernel: "worldgen", kind: "load_generator", cx: 1, cz: 0, visible: false}, predictor),
+    P.PRIORITY.NEAR_GEN, "generator setup retains its existing class and ignores camera visibility");
+  assert.equal(P.classify({kernel: "worldgen", kind: "features", cx: 1, cz: 0, visible: false}, predictor),
+    P.PRIORITY.NEAR_GEN, "unknown or order-dependent stages ignore camera visibility");
+});
+
 check("starved P1 and P2 jobs compete one class up; far and background work never does", () => {
   const predictor = new P.MotionPredictor();
   predictor.update({x: 0, z: 0, t: 0});

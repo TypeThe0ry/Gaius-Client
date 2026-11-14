@@ -17,7 +17,7 @@ import org.objectweb.asm.tree.MethodNode;
 
 /**
  * Class I/O and shape assertions shared by the graphics-quality patches of the render and ui
- * domains ({@code QualityTierPatches}, {@code GraphicsPresetStartupPatcher}). Not a domain: it
+ * domains ({@code QualityTierPatches}). Not a domain: it
  * holds no patch.
  *
  * <p>Classes are read from {@code root} when an earlier patch of the same chain already wrote

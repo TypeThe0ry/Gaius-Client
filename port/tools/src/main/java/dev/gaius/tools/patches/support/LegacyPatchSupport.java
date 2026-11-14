@@ -78,7 +78,7 @@ public final class LegacyPatchSupport {
         }
         ClassNode node = new ClassNode();
         new ClassReader(bytes).accept(node, 0);
-        return node;
+        return dev.gaius.tools.HierarchyClassWriter.source(node, jarPath);
     }
 
     public static void write(ClassNode node, Path output) throws IOException {

@@ -53,6 +53,8 @@ function page({dpr = 2, search = "", quality = null, canvasWidth = 0, cssWidth =
       }
     },
     GaiusQuality: quality, Number, Math,
+    // The template defines this const at top level; the smoke runs a supported browser, so it is null.
+    unsupportedBrowser: null,
   };
   window.window = window;
   vm.createContext(window);

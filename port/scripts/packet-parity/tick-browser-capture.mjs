@@ -5,6 +5,7 @@ import {createServer} from "node:http";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {validateTickCapture, validateTickScript} from "./tick-compare.mjs";
+import {chromeLaunchArgs, resolveChromeBinary} from "../chrome-binary.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const runtimeFiles = ["singleplayer-server.wasm", "gaius-wasm-gc-runtime.js", "gaius-jspi.js", "gaius-wasm-worker.js"];
@@ -196,7 +197,7 @@ async function capture(options) {
   try {
     await new Promise((done, reject) => { http.once("error", reject); http.listen(0, "127.0.0.1", done); });
     const userData = join(out, "chrome-profile");
-    chrome = spawn(resolve(options.chrome), ["--headless=new", "--no-first-run", "--no-default-browser-check",
+    chrome = spawn(resolveChromeBinary({overrides: [resolve(options.chrome)]}), [...chromeLaunchArgs(), "--headless=new", "--no-first-run", "--no-default-browser-check",
       "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "--user-data-dir=" + userData, "about:blank"],
     {windowsHide: true, stdio: ["ignore", "pipe", "pipe"]});
     let launchError;

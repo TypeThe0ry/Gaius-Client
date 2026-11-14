@@ -4,3 +4,6 @@ port/scripts/shape-memo-parity.mjs | The parity harness defaults to the 26.3 cli
 port/scripts/identifier-hash-parity.mjs | The parity harness defaults to the 26.3 client profile when no --profile is supplied; this is test configuration, not product runtime selection.
 port/tools/src/test/java/dev/gaius/tools/PatcherNegativeBytecodeFixture.java | The negative patcher fixture selects the 26.3 draw shape to exercise its profile-specific bytecode guard; this is test data, not product runtime selection.
 port/scripts/dragon-packet-codec-jvm-smoke.mjs | The JVM smoke defaults to its fixed 26.3 fixture profile; this is test configuration, not product runtime selection.
+port/scripts/feature-lookup-parity.mjs | The parity harness defaults to the 26.3 client profile when no --profile is supplied; this is test configuration, not product runtime selection.
+port/scripts/unihex-table-jvm-gate.mjs | The JVM gate defaults to the 26.3 client profile when no --profile is supplied; this is test configuration, not product runtime selection.
+port/scripts/climate-handoff/wake-kit/assemble-kit.py | The A/B kit assembler pins the 26.3 fixture profile of the kit it builds; this is test tooling, not product runtime selection.

@@ -6,6 +6,7 @@ import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
 import {isAbsolute, join, relative, resolve, sep} from "node:path";
 import {setTimeout as sleep} from "node:timers/promises";
 import {chromeIsolationArgs} from "../port/scripts/bench/harness-common.mjs";
+import {chromeLaunchArgs, resolveChromeBinary} from "../port/scripts/chrome-binary.mjs";
 
 async function samplerFixture() {
   const levels = [0, 0.25, 0.5, 0.75, 0.875, 1];
@@ -104,7 +105,7 @@ const debugSocket = createSocketServer();
 await new Promise(resolve => debugSocket.listen(0, "127.0.0.1", resolve));
 const debugPort = debugSocket.address().port;
 await new Promise(resolve => debugSocket.close(resolve));
-const chrome = spawn(process.env.GAIUS_CHROME_BIN || "C:/Program Files/Google/Chrome/Application/chrome.exe", ["--headless=new", "--remote-debugging-port=" + debugPort, "--remote-allow-origins=*", "--user-data-dir=" + profile, "--ignore-gpu-blocklist", ...chromeIsolationArgs(), "about:blank"], {stdio: "ignore", windowsHide: true});
+const chrome = spawn(resolveChromeBinary(), [...chromeLaunchArgs(), "--headless=new", "--remote-debugging-port=" + debugPort, "--remote-allow-origins=*", "--user-data-dir=" + profile, "--ignore-gpu-blocklist", ...chromeIsolationArgs(), "about:blank"], {stdio: "ignore", windowsHide: true});
 let socket;
 const waiting = new Map();
 try {

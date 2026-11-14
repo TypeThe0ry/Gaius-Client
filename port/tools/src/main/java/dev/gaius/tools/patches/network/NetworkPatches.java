@@ -4,6 +4,7 @@ import static dev.gaius.tools.patches.support.ClientPatchSupport.find;
 import static dev.gaius.tools.patches.support.ClientPatchSupport.findNullable;
 import static dev.gaius.tools.patches.support.ClientPatchSupport.minecraftEvent;
 import static dev.gaius.tools.patches.support.ClientPatchSupport.nextOpcode;
+import static dev.gaius.tools.patches.support.ClientPatchSupport.previousOpcode;
 import static dev.gaius.tools.patches.support.ClientPatchSupport.putField;
 import static dev.gaius.tools.patches.support.ClientPatchSupport.read;
 import static dev.gaius.tools.patches.support.ClientPatchSupport.readEntry;
@@ -319,7 +320,24 @@ public final class NetworkPatches {
                         && call.owner.equals("net/minecraft/client/gui/components/toasts/SystemToast")
                         && call.name.equals("multiline")
                         && call.desc.endsWith(")Lnet/minecraft/client/gui/components/toasts/SystemToast;")) {
-                    toastAllocation = insecureId.getPrevious();
+                    // The factory consumes this.minecraft before the toast id. Remove
+                    // the complete receiver expression, or the branch leaves `this`
+                    // on the stack and no longer merges with the no-warning path.
+                    AbstractInsnNode minecraft = previousOpcode(insecureId);
+                    AbstractInsnNode receiver = minecraft == null ? null : previousOpcode(minecraft);
+                    if (!call.desc.equals("(Lnet/minecraft/client/Minecraft;"
+                            + "Lnet/minecraft/client/gui/components/toasts/SystemToast$SystemToastId;"
+                            + "Lnet/minecraft/network/chat/Component;Lnet/minecraft/network/chat/Component;)"
+                            + "Lnet/minecraft/client/gui/components/toasts/SystemToast;")
+                            || !(minecraft instanceof FieldInsnNode field)
+                            || field.getOpcode() != Opcodes.GETFIELD
+                            || !field.owner.equals(listener.name) || !field.name.equals("minecraft")
+                            || !field.desc.equals("Lnet/minecraft/client/Minecraft;")
+                            || !(receiver instanceof VarInsnNode load)
+                            || load.getOpcode() != Opcodes.ALOAD || load.var != 0) {
+                        throw new IOException("insecure-server toast factory receiver shape changed");
+                    }
+                    toastAllocation = receiver;
                 }
                 if (toastAllocation != null && instruction instanceof MethodInsnNode call
                         && call.getOpcode() == Opcodes.INVOKEVIRTUAL
@@ -772,31 +790,63 @@ public final class NetworkPatches {
         MethodInsnNode execute = null;
         for (AbstractInsnNode instruction : method.instructions) {
             if (instruction instanceof MethodInsnNode call
+                    && call.owner.equals("dev/gaius/browser/BrowserIntegratedServerMain")
+                    && call.name.equals("reportCommandFailure")) {
+                throw new IOException("Commands.performCommand already has diagnostics");
+            }
+            if (instruction instanceof MethodInsnNode call
                     && call.owner.equals("net/minecraft/commands/Commands")
                     && call.name.equals("executeCommandInContext")) {
+                if (execute != null || call.getOpcode() != Opcodes.INVOKESTATIC
+                        || !call.desc.equals("(Lnet/minecraft/commands/CommandSourceStack;"
+                                + "Ljava/util/function/Consumer;)V")) {
+                    throw new IOException("Commands.performCommand execution call shape changed");
+                }
                 execute = call;
-                break;
             }
         }
         if (execute == null) {
             throw new IOException("Commands.performCommand execution call was not found");
         }
-        LabelNode start = new LabelNode();
-        LabelNode end = new LabelNode();
-        LabelNode handler = new LabelNode();
+        int at = method.instructions.indexOf(execute);
+        var enclosing = method.tryCatchBlocks.stream().filter(block ->
+                method.instructions.indexOf(block.start) <= at
+                        && at < method.instructions.indexOf(block.end)).toList();
+        if (enclosing.size() != 2 || !"java/lang/Exception".equals(enclosing.get(0).type)
+                || enclosing.get(1).type != null) {
+            throw new IOException("Commands.performCommand conversion/finally shape changed");
+        }
+        // Catch only the execution call, before vanilla's handlers. Keep the report and
+        // rethrow inline, inside those original ranges, so Exception conversion and finally
+        // still run. Appending the handler outside them would bypass cleanup on rethrow.
+        int failureLocal = method.maxLocals++;
+        LabelNode start = new LabelNode(), end = new LabelNode(), handler = new LabelNode();
+        LabelNode reportStart = new LabelNode(), reportEnd = new LabelNode();
+        LabelNode reportFailure = new LabelNode(), rethrow = new LabelNode(), normal = new LabelNode();
         method.instructions.insertBefore(execute, start);
-        method.instructions.insert(execute, end);
-        InsnList report = new InsnList();
-        report.add(handler);
-        report.add(new VarInsnNode(Opcodes.ASTORE, 10));
-        report.add(new VarInsnNode(Opcodes.ALOAD, 10));
-        report.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+        InsnList code = new InsnList();
+        code.add(end);
+        code.add(new JumpInsnNode(Opcodes.GOTO, normal));
+        code.add(handler);
+        code.add(new VarInsnNode(Opcodes.ASTORE, failureLocal));
+        code.add(reportStart);
+        code.add(new VarInsnNode(Opcodes.ALOAD, failureLocal));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
                 "dev/gaius/browser/BrowserIntegratedServerMain", "reportCommandFailure",
                 "(Ljava/lang/Throwable;)V", false));
-        report.add(new VarInsnNode(Opcodes.ALOAD, 10));
-        report.add(new InsnNode(Opcodes.ATHROW));
-        method.instructions.add(report);
-        method.tryCatchBlocks.add(new TryCatchBlockNode(start, end, handler, "java/lang/Throwable"));
+        code.add(reportEnd);
+        code.add(new JumpInsnNode(Opcodes.GOTO, rethrow));
+        code.add(reportFailure);
+        code.add(new InsnNode(Opcodes.POP)); // Telemetry must not replace the original failure.
+        code.add(rethrow);
+        code.add(new VarInsnNode(Opcodes.ALOAD, failureLocal));
+        code.add(new InsnNode(Opcodes.ATHROW));
+        code.add(normal);
+        method.instructions.insert(execute, code);
+        method.tryCatchBlocks.add(0, new TryCatchBlockNode(start, end, handler, "java/lang/Throwable"));
+        method.tryCatchBlocks.add(1, new TryCatchBlockNode(reportStart, reportEnd,
+                reportFailure, "java/lang/Throwable"));
+        method.maxStack = Math.max(method.maxStack, 2);
         writeComputeFrames(node, output);
     }
 
@@ -2109,62 +2159,170 @@ public final class NetworkPatches {
         ClassNode node = read(jar, "net/minecraft/util/HttpUtil.class");
         boolean patchedDownload = false;
         boolean removedJavaProxy = false;
+        boolean responseValidation = false;
+        InsnList availablePort = new InsnList();
+        availablePort.add(new IntInsnNode(Opcodes.SIPUSH, 25564));
+        availablePort.add(new InsnNode(Opcodes.IRETURN));
+        replace(find(node, "getAvailablePort", "()I"), availablePort, 1, 0);
+        InsnList portAvailable = new InsnList();
+        portAvailable.add(new InsnNode(Opcodes.ICONST_1));
+        portAvailable.add(new InsnNode(Opcodes.IRETURN));
+        replace(find(node, "isPortAvailable", "(I)Z"), portAvailable, 1, 1);
         for (MethodNode method : node.methods) {
-            if (method.name.equals("getAvailablePort") && method.desc.equals("()I")) {
-                InsnList code = new InsnList();
-                code.add(new IntInsnNode(Opcodes.SIPUSH, 25564));
-                code.add(new InsnNode(Opcodes.IRETURN));
-                replace(method, code, 1, 0);
-            } else if (method.name.equals("isPortAvailable") && method.desc.equals("(I)Z")) {
-                InsnList code = new InsnList();
-                code.add(new InsnNode(Opcodes.ICONST_1));
-                code.add(new InsnNode(Opcodes.IRETURN));
-                replace(method, code, 1, 1);
-            } else if (method.name.equals("downloadFile")
+            if (method.name.equals("downloadFile")
                     && method.desc.startsWith("(Ljava/nio/file/Path;Ljava/net/URL;")) {
-                InsnList code = new InsnList();
-                code.add(new VarInsnNode(Opcodes.ALOAD, 1));
-                code.add(new MethodInsnNode(
-                        Opcodes.INVOKESTATIC,
-                        "dev/gaius/browser/BrowserHttpProxy",
-                        "proxyResourcePack",
-                        "(Ljava/net/URL;)Ljava/net/URL;",
-                        false));
-                code.add(new VarInsnNode(Opcodes.ASTORE, 1));
-                code.add(new VarInsnNode(Opcodes.ALOAD, 1));
-                code.add(new VarInsnNode(Opcodes.ALOAD, 2));
-                code.add(new MethodInsnNode(
-                        Opcodes.INVOKESTATIC,
-                        "dev/gaius/browser/BrowserHttpProxy",
-                        "browserSafeResourcePackHeaders",
-                        "(Ljava/net/URL;Ljava/util/Map;)Ljava/util/Map;",
-                        false));
-                code.add(new VarInsnNode(Opcodes.ASTORE, 2));
-                method.instructions.insert(code);
-                method.maxStack = Math.max(method.maxStack, 2);
+                // Keep the vanilla body intact under a private name.  The public entry point
+                // performs one direct CORS attempt and retries through the relay only when that
+                // attempt fails, so a partially consumed body is never continued.
+                String descriptor = method.desc;
+                String vanillaName = "gaiusDownloadFileVanilla";
+                int originalAccess = method.access;
+                method.name = vanillaName;
+                method.access = (method.access & ~(Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED))
+                        | Opcodes.ACC_PRIVATE;
+                method.access |= Opcodes.ACC_STATIC;
                 for (var instruction = method.instructions.getFirst();
                         instruction != null;
                         instruction = instruction.getNext()) {
                     if (!(instruction instanceof MethodInsnNode call)
                             || !call.owner.equals("java/net/URL")
                             || !call.name.equals("openConnection")
-                            || !call.desc.equals(
-                                    "(Ljava/net/Proxy;)Ljava/net/URLConnection;")) {
+                            || !call.desc.equals("(Ljava/net/Proxy;)Ljava/net/URLConnection;")) {
                         continue;
                     }
                     method.instructions.insertBefore(call, new InsnNode(Opcodes.POP));
                     call.desc = "()Ljava/net/URLConnection;";
+                    InsnList timeout = new InsnList();
+                    timeout.add(new InsnNode(Opcodes.DUP));
+                    timeout.add(new IntInsnNode(Opcodes.SIPUSH, 5000));
+                    timeout.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "java/net/URLConnection", "setConnectTimeout", "(I)V", false));
+                    timeout.add(new InsnNode(Opcodes.DUP));
+                    timeout.add(new IntInsnNode(Opcodes.SIPUSH, 5000));
+                    timeout.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                            "java/net/URLConnection", "setReadTimeout", "(I)V", false));
+                    method.instructions.insert(call, timeout);
                     removedJavaProxy = true;
                 }
+                for (var instruction = method.instructions.getFirst();
+                        instruction != null;
+                        instruction = instruction.getNext()) {
+                    if (!(instruction instanceof MethodInsnNode call)
+                            || !call.owner.equals("java/net/HttpURLConnection")
+                            || !call.name.equals("getContentLengthLong")
+                            || !call.desc.equals("()J")) {
+                        continue;
+                    }
+                    AbstractInsnNode lengthStore = call.getNext();
+                    if (!(lengthStore instanceof VarInsnNode store)
+                            || store.getOpcode() != Opcodes.LSTORE) {
+                        throw new IOException("HttpUtil content-length store was not found");
+                    }
+                    InsnList validation = new InsnList();
+                    validation.add(new VarInsnNode(Opcodes.ALOAD, 8));
+                    validation.add(new VarInsnNode(Opcodes.ALOAD, 9));
+                    validation.add(new VarInsnNode(Opcodes.LLOAD, store.var));
+                    validation.add(new MethodInsnNode(
+                            Opcodes.INVOKESTATIC,
+                            "dev/gaius/browser/BrowserHttpProxy",
+                            "validateResourcePackResponse",
+                            "(Ljava/net/HttpURLConnection;Ljava/io/InputStream;J)Ljava/io/InputStream;",
+                            false));
+                    validation.add(new VarInsnNode(Opcodes.ASTORE, 9));
+                    method.instructions.insert(lengthStore, validation);
+                    responseValidation = true;
+                    break;
+                }
+                MethodNode wrapper = new MethodNode(
+                        originalAccess, "downloadFile", descriptor, method.signature,
+                        method.exceptions == null ? null : method.exceptions.toArray(new String[0]));
+                InsnList code = wrapper.instructions;
+                LabelNode start = new LabelNode();
+                LabelNode fallback = new LabelNode();
+                LabelNode done = new LabelNode();
+                int originalUrl = method.maxLocals + 1;
+                int originalHeaders = originalUrl + 1;
+                code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                code.add(new VarInsnNode(Opcodes.ASTORE, originalUrl));
+                code.add(new VarInsnNode(Opcodes.ALOAD, 2));
+                code.add(new VarInsnNode(Opcodes.ASTORE, originalHeaders));
+                // The catch handler uses both saved arguments. Keep their stores outside
+                // the protected range so an exception from either direct proxy lookup
+                // cannot expose an uninitialized local to the fallback path.
+                code.add(start);
+                code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                        "dev/gaius/browser/BrowserHttpProxy", "directResourcePack",
+                        "(Ljava/net/URL;)Ljava/net/URL;", false));
+                code.add(new VarInsnNode(Opcodes.ASTORE, 1));
+                code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                        "dev/gaius/browser/BrowserHttpProxy", "directResourcePackHeaders",
+                        "()Ljava/util/Map;", false));
+                code.add(new VarInsnNode(Opcodes.ASTORE, 2));
+                loadDownloadArgs(code);
+                code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                        "net/minecraft/util/HttpUtil", vanillaName, descriptor, false));
+                code.add(new JumpInsnNode(Opcodes.GOTO, done));
+                LabelNode rethrow = new LabelNode();
+                code.add(fallback);
+                code.add(new InsnNode(Opcodes.DUP));
+                code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                        "dev/gaius/browser/BrowserHttpProxy", "shouldFallbackResourcePack",
+                        "(Ljava/lang/Throwable;)Z", false));
+                code.add(new JumpInsnNode(Opcodes.IFEQ, rethrow));
+                code.add(new InsnNode(Opcodes.POP));
+                code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                        "dev/gaius/browser/BrowserHttpProxy", "resourcePackDirectFallback",
+                        "()V", false));
+                code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                        "dev/gaius/browser/BrowserHttpProxy", "resetResourcePackFile",
+                        "(Ljava/nio/file/Path;)V", false));
+                code.add(new VarInsnNode(Opcodes.ALOAD, originalUrl));
+                code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                        "dev/gaius/browser/BrowserHttpProxy", "proxyResourcePack",
+                        "(Ljava/net/URL;)Ljava/net/URL;", false));
+                code.add(new VarInsnNode(Opcodes.ASTORE, 1));
+                code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                code.add(new VarInsnNode(Opcodes.ALOAD, originalHeaders));
+                code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                        "dev/gaius/browser/BrowserHttpProxy", "browserSafeResourcePackHeaders",
+                        "(Ljava/net/URL;Ljava/util/Map;)Ljava/util/Map;", false));
+                code.add(new VarInsnNode(Opcodes.ASTORE, 2));
+                loadDownloadArgs(code);
+                code.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                        "net/minecraft/util/HttpUtil", vanillaName, descriptor, false));
+                code.add(done);
+                code.add(new InsnNode(Opcodes.ARETURN));
+                code.add(rethrow);
+                code.add(new InsnNode(Opcodes.ATHROW));
+                wrapper.tryCatchBlocks.add(new TryCatchBlockNode(
+                        start, fallback, fallback, "java/lang/Throwable"));
+                wrapper.maxLocals = originalHeaders + 1;
+                wrapper.maxStack = 10;
+                node.methods.add(wrapper);
                 patchedDownload = true;
+                break;
             }
         }
-        if (!patchedDownload || !removedJavaProxy) {
+                if (!patchedDownload || !removedJavaProxy || !responseValidation) {
             throw new IllegalStateException(
                     "HttpUtil browser download patch points were not found: method="
-                            + patchedDownload + " proxy=" + removedJavaProxy);
+                                    + patchedDownload + " proxy=" + removedJavaProxy
+                                    + " response=" + responseValidation);
         }
         write(node, output);
+    }
+
+    private static void loadDownloadArgs(InsnList code) {
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 3));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 4));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 5));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 6));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7));
     }
 
     public static void patchLanServerDetector(String jar, Path output) throws IOException {

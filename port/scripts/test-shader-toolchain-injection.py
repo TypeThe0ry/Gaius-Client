@@ -58,6 +58,24 @@ def node_check(html: str, directory: Path) -> None:
             raise AssertionError(f"inline script {number} failed the Node syntax check:\n{result.stderr}")
 
 
+def ready_gate_fragment() -> str:
+    module = load_module()
+    with tempfile.TemporaryDirectory(prefix="gaius-shader-gate-") as temporary:
+        directory = Path(temporary)
+        classes = directory / "classes.js"
+        classes.write_text("window.__gaiusShaderToolchain.shadercBegin();\n")
+        for name in FILES:
+            (directory / name).write_bytes(name.encode("ascii"))
+        page = module.patch_shader_toolchain_loader(
+            TEMPLATE.read_text(), classes, directory / "index.html", RENDERPEARL_ID)
+        start = page.index("if (window.__gaiusBoot) await window.__gaiusBoot.beforeMain();")
+        end_marker = "bootTimings.shaderToolchainReady = performance.now();"
+        end = page.index(end_marker, start) + len(end_marker)
+        main_call = "main(window.__gaiusDefaultArgs);"
+        assert page.index(main_call, end) > end
+        return page[start:end] + "\n" + main_call
+
+
 def main() -> int:
     module = load_module()
     with tempfile.TemporaryDirectory(prefix="gaius-shader-toolchain-injection-") as temporary:
@@ -118,6 +136,8 @@ def main() -> int:
         # Fail closed: a page that needs the toolchain must not start main(args)
         # when the loader script itself did not load.
         gate = body.index("if (!window.__gaiusShaderToolchainReady) {")
+        if body.index("await window.__gaiusBoot.beforeMain();") > gate:
+            raise AssertionError("shader readiness is checked before the boot-owned loader starts")
         if not (gate < body.index("await window.__gaiusShaderToolchainReady;")
                 and "throw new Error(" in body[gate:body.index("await window.__gaiusShaderToolchainReady;")]):
             raise AssertionError("a missing toolchain loader does not stop the boot before main(args)")
@@ -135,4 +155,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--ready-gate"]:
+        print(ready_gate_fragment())
+        raise SystemExit(0)
     raise SystemExit(main())

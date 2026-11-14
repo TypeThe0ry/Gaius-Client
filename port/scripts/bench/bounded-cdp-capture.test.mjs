@@ -33,6 +33,122 @@ test("bounded capture starts tracing before navigation and records page/worker i
   assert.equal(conn.calls.some(x => x.method === "Runtime.evaluate"), false);
 });
 
+test("bounded capture profiles the root page target", async () => {
+  const out = await mkdtemp(join(tmpdir(), "gaius-capture-"));
+  const conn = new FakeConn();
+  const capture = new BoundedCdpCapture({conn, out});
+  await capture.start();
+  await capture.trackTarget({targetId: "root-page", type: "page", url: "http://127.0.0.1/", owner: "main"});
+  const result = await capture.stop("test");
+  assert.deepEqual(conn.calls.filter(x => x.method === "Profiler.start").map(x => x.sessionId), [undefined]);
+  assert.equal(result.targets[0].targetId, "root-page");
+  assert.equal(result.profiles.length, 1);
+});
+
+test("bounded capture sends tracing to a separate browser connection", async () => {
+  const out = await mkdtemp(join(tmpdir(), "gaius-capture-"));
+  const conn = new FakeConn();
+  const traceConn = new FakeConn();
+  traceConn.sendRoot = async (method, params) => {
+    traceConn.calls.push({method, params, root: true});
+    if (method === "Tracing.end") queueMicrotask(() => traceConn.listeners.forEach(fn => fn({method: "Tracing.tracingComplete", params: {stream: traceConn.stream}})));
+    if (method === "IO.read") return {data: '{"traceEvents":[]}', eof: true};
+    return {};
+  };
+  const capture = new BoundedCdpCapture({conn, traceConn, out});
+  await capture.start();
+  await capture.trackTarget({targetId: "page-id", type: "page", url: "about:blank", owner: "main"});
+  const result = await capture.stop("test");
+  assert.deepEqual(conn.calls.map(x => x.method), ["Profiler.enable", "Profiler.start", "Profiler.stop"]);
+  assert.deepEqual(traceConn.calls.map(x => x.method), ["Tracing.start", "Tracing.end", "IO.read", "IO.close"]);
+  assert.ok(traceConn.calls.every(x => x.root), "tracing and stream IO must use the browser-root connection");
+  assert.equal(traceConn.calls[0].params.options, "record-continuously");
+  assert.equal(traceConn.calls[0].params.transferMode, "ReportEvents");
+  assert.equal(traceConn.calls[0].params.categories, "devtools.timeline,v8.execute,v8.cpu_profiler,disabled-by-default-v8.cpu_profiler,disabled-by-default-gpu.service,disabled-by-default-devtools.timeline");
+  assert.equal(result.trace.bytes > 0, true);
+});
+
+test("bounded capture adapts Cdp event callbacks to tracing completion", async () => {
+  const out = await mkdtemp(join(tmpdir(), "gaius-capture-"));
+  const conn = new FakeConn();
+  const traceConn = new FakeConn();
+  traceConn.listeners = new Map();
+  traceConn.on = (method, listener) => traceConn.listeners.set(method, listener);
+  traceConn.off = (method, listener) => {
+    if (traceConn.listeners.get(method) === listener) traceConn.listeners.delete(method);
+  };
+  traceConn.sendRoot = async (method, params) => {
+    traceConn.calls.push({method, params, root: true});
+    if (method === "Tracing.end") queueMicrotask(() => {
+      traceConn.listeners.get("Tracing.dataCollected")?.({value: [{name: "fake"}]}, undefined);
+      traceConn.listeners.get("Tracing.tracingComplete")?.({}, undefined);
+    });
+    if (method === "IO.read") return {data: '{"traceEvents":[]}', eof: true};
+    return {};
+  };
+  const capture = new BoundedCdpCapture({conn, traceConn, out});
+  await capture.start();
+  const result = await capture.stop("test");
+  assert.equal(result.trace.bytes > 0, true);
+  assert.equal(traceConn.listeners.size, 0);
+});
+
+test("bounded capture accepts tracing events delivered on the page connection", async () => {
+  const out = await mkdtemp(join(tmpdir(), "gaius-capture-"));
+  const conn = new FakeConn();
+  delete conn.listeners;
+  const traceConn = new FakeConn();
+  const traceListeners = new Map();
+  conn.on = (method, listener) => traceListeners.set(method, listener);
+  conn.off = (method, listener) => {
+    if (traceListeners.get(method) === listener) traceListeners.delete(method);
+  };
+  traceConn.sendRoot = async method => {
+    traceConn.calls.push({method, root: true});
+    if (method === "Tracing.end") queueMicrotask(() => {
+      traceListeners.get("Tracing.dataCollected")?.({value: [{name: "fallback"}]}, undefined);
+      traceListeners.get("Tracing.tracingComplete")?.({}, undefined);
+    });
+    return {};
+  };
+  const capture = new BoundedCdpCapture({conn, traceConn, out, commandTimeoutMs: 100});
+  await capture.start();
+  const result = await capture.stop("test");
+  assert.equal(result.trace.bytes > 0, true);
+  assert.deepEqual(JSON.parse(await readFile(result.trace.file, "utf8")), {traceEvents: [{name: "fallback"}]});
+});
+
+test("bounded capture does not start a profile twice for a racing target attachment", async () => {
+  const out = await mkdtemp(join(tmpdir(), "gaius-capture-"));
+  const conn = new FakeConn();
+  const send = conn.send.bind(conn);
+  let releaseStart;
+  let started;
+  const startReached = new Promise(resolve => { started = resolve; });
+  const startGate = new Promise(resolve => { releaseStart = resolve; });
+  conn.send = async (method, params, sessionId) => {
+    if (method === "Profiler.start") {
+      started();
+      await startGate;
+    }
+    return send(method, params, sessionId);
+  };
+  const capture = new BoundedCdpCapture({conn, out});
+  await capture.start();
+  const target = {sessionId: "worker-session", targetId: "worker-id", type: "worker", url: "blob:server", owner: "A"};
+  const first = capture.trackTarget(target);
+  await startReached;
+  let duplicateSettled = false;
+  const duplicate = capture.trackTarget(target).then(value => { duplicateSettled = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(duplicateSettled, false, "duplicate attachment waits for the in-flight Profiler.start");
+  releaseStart();
+  assert.deepEqual(await Promise.all([first, duplicate]), [true, true]);
+  const result = await capture.stop("test");
+  assert.equal(conn.calls.filter(x => x.method === "Profiler.start").length, 1);
+  assert.equal(result.targets.length, 1);
+});
+
 test("timer stops capture without a Runtime.evaluate dependency", async () => {
   const out = await mkdtemp(join(tmpdir(), "gaius-capture-"));
   const conn = new FakeConn();

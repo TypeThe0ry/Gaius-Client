@@ -69,7 +69,7 @@ function makeInstance(desc, log) {
       log.order.push(`${desc.name}:${kind}:${tag}`);
       if (kind === "trap") throw new Error("unreachable executed");
       if (kind === "spin") {
-        const until = Date.now() + 30;
+        const until = Date.now() + (tag === 99 ? 150 : 30);
         while (Date.now() < until) { /* a long kernel */ }
       }
       return output(0, bytes);
@@ -108,7 +108,7 @@ function createEnv({cores = 4, deviceMemory = 8, simd = true} = {}) {
     postMessage(message, transfer = []) {
       if (this.terminated) return;
       const data = structuredClone(message, {transfer});
-      log.posts.push({dir: "toWorker", type: message.type, kernel: message.kernel});
+      log.posts.push({dir: "toWorker", type: message.type, kernel: message.kernel, transferCount: transfer.length});
       setTimeout(() => { if (!this.terminated) this.ctx.onmessage({data}); }, 1);
     }
 
@@ -154,9 +154,9 @@ const tagged = (tag, size = 16) => {
 const tagOf = (buffer) => new DataView(buffer).getUint32(0, true);
 const KERNELS = {
   mesh: {kinds: ["mesh_section", "spin"], variants: {simd: {bytes: encodeModule({name: "mesh", kinds: ["mesh_section", "spin"]})}}},
-  worldgen: {kinds: ["gen_chunk"], variants: {
-    simd: {bytes: encodeModule({name: "worldgen-simd", kinds: ["gen_chunk"], failCompile: true})},
-    baseline: {bytes: encodeModule({name: "worldgen-baseline", kinds: ["gen_chunk"]})},
+  worldgen: {kinds: ["gen_chunk", "spin"], variants: {
+    simd: {bytes: encodeModule({name: "worldgen-simd", kinds: ["gen_chunk", "spin"], failCompile: true})},
+    baseline: {bytes: encodeModule({name: "worldgen-baseline", kinds: ["gen_chunk", "spin"]})},
   }},
   light: {kinds: ["light_section", "trap"], variants: {baseline: {bytes: encodeModule({name: "light", kinds: ["light_section", "trap"]})}}},
 };
@@ -175,11 +175,12 @@ const check = (name, fn) => checks.push([name, fn]);
 check("feature switches: URL parameters and stored settings", async () => {
   const {Runtime} = createEnv();
   const storage = {getItem: () => JSON.stringify({off: ["light"], simd: "off", workers: 3})};
-  const switches = Runtime.readSwitches("?gaiusKernelsOff=mesh&gaiusKernelBudgetMB=64", storage);
+  const switches = Runtime.readSwitches("?gaiusKernelsOff=mesh&gaiusKernelBudgetMB=64&gaiusKernelIdleUnloadMs=7500", storage);
   assert.deepEqual([...switches.off].sort(), ["light", "mesh"]);
   assert.equal(switches.simd, "off");
   assert.equal(switches.size, 3);
   assert.equal(switches.budgetBytes, 64 * 1024 * 1024);
+  assert.equal(switches.idleUnloadMs, 7500);
   assert.equal(Runtime.readSwitches("?gaiusKernels=0", null).enabled, false);
   // The real SIMD probe module is valid wasm with SIMD (node supports it).
   assert.equal(WebAssembly.validate(new Uint8Array(Runtime.SIMD_PROBE)), true);
@@ -226,6 +227,37 @@ check("one queue across kernels: visible mesh, then near generation, far, backgr
   assert.equal(telemetry.kernels.mesh.variant, "simd");
   assert.deepEqual([...telemetry.workers[0].loaded].sort(), ["light", "mesh", "worldgen"]);
   assert.equal(telemetry.classes[0].completed, 2, "the blocker and the visible mesh job");
+  runtime.terminate();
+});
+
+check("a visible light job overtakes a queued near-generation job in one worker", async () => {
+  const env = createEnv();
+  const runtime = create(env);
+  await runtime.warm();
+  // Both jobs are dispatched to the same slot before the worker's drain turn.  Without the
+  // worker-side stable priority queue, FIFO delivery runs the P2 spin before the P1 light.
+  const generation = runtime.submit("spin", tagged(1), {kernel: "worldgen", priorityClass: 2});
+  const light = runtime.submit("light_section", tagged(2), {visible: true});
+  await Promise.all([generation, light]);
+  const order = env.log.order.map((entry) => Number(entry.split(":").at(-1)));
+  assert.deepEqual(order.slice(-2), [2, 1], `worker order ${order}`);
+  runtime.terminate();
+});
+
+check("SharedArrayBuffer payloads cross the worker boundary without transfer or copy", async () => {
+  const env = createEnv();
+  const runtime = create(env);
+  await runtime.warm();
+  const payload = new SharedArrayBuffer(16);
+  new DataView(payload).setUint32(0, 73, true);
+  const result = await runtime.submit("gen_chunk", payload, {kernel: "worldgen", cx: 0, cz: 0});
+  assert.equal(tagOf(result), 73);
+  const job = env.log.posts.find((post) => post.type === "job");
+  assert.equal(job.transferCount, 0, "SAB must be shared rather than listed as transferable");
+  const plainResult = await runtime.submit("gen_chunk", tagged(74), {kernel: "worldgen", cx: 1, cz: 0});
+  assert.equal(tagOf(plainResult), 74);
+  const jobs = env.log.posts.filter((post) => post.type === "job");
+  assert.equal(jobs[1].transferCount, 1, "ArrayBuffer fallback stays transferable");
   runtime.terminate();
 });
 
@@ -329,15 +361,25 @@ check("port clients: keys are scoped per port, shared results are copied, detach
   const oldClient = env.Runtime.connect(oldChannel.port2);
   const newClient = env.Runtime.connect(newChannel.port2);
   await Promise.all([oldClient.ready, newClient.ready]);
-  const blocker = runtime.submit("spin", tagged(1), {kernel: "mesh"});
-  await new Promise((resolve) => setTimeout(resolve, 5));
+  const blocker = runtime.submit("spin", tagged(99), {kernel: "mesh"});
+  for (let i = 0; i < 100 && !env.log.posts.some((post) => post.type === "job"); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.ok(env.log.posts.some((post) => post.type === "job"), "the blocker reached the worker");
   // A restarted server Worker reuses keys and versions: the two ports never share a job.
   const fromOld = oldClient.submit("light_section", tagged(31), {kernel: "light", key: "light:0,0", version: 1});
-  const fromNew = newClient.submit("light_section", tagged(32), {kernel: "light", key: "light:0,0", version: 1});
+  const fromNew = newClient.submit("light_section", tagged(32), {
+    kernel: "light", key: "light:0,0", version: 1, visible: false, cx: 0, cz: 0,
+  });
   // One port asking twice for the same job gets the result twice (the first answer is a copy).
   const twiceA = newClient.submit("light_section", tagged(33), {kernel: "light", key: "light:1,0", version: 1});
   const twiceB = newClient.submit("light_section", tagged(33), {kernel: "light", key: "light:1,0", version: 1});
   await new Promise((resolve) => setTimeout(resolve, 5));
+  const forwarded = Array.from(runtime.byKey.values()).find((job) => job.kernel === "light"
+    && job.visible === false && job.cx === 0 && job.cz === 0);
+  assert.ok(forwarded, "port clients preserve visibility and chunk coordinates for shared scheduling");
+  assert.equal(forwarded.cls, env.context.GaiusKernelPolicy.PRIORITY.FAR_GEN,
+    "off-screen work keeps the low-priority class");
   // The old Worker is replaced: its queued job is cancelled, not left holding a worker.
   assert.equal(runtime.detachPort(oldChannel.port1), true);
   const oldOutcome = await fromOld.then(() => "result", (error) => error.code);
