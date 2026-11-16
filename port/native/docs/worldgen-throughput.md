@@ -1,40 +1,40 @@
-# Worldgen 离线吞吐与下一步接管分析
+# Worldgen Offline Throughput and Next Takeover Analysis
 
-日期：2026-10-08。原始基线：`628b7747`；统一基准与旧版 IR 支持：`69130cd5`；优化版本为本文所在提交。所有原始数据、日志、参考输入及构建产物保存在仓库之外的输出目录。
+Date: 2026-10-08. Original baseline: `628b7747`; unified measurement harness and legacy IR support: `69130cd5`; the optimized version is the commit containing this document. All raw data, logs, reference inputs and build artifacts are kept in an output directory outside the repository.
 
-## 结论
+## Conclusions
 
-- 保留一项已验证的 Rust 优化：surface noise 条件缓存从逐方块整表清零改为代次失效，不改变计算、访问顺序或 RNG。
-- 同进程、逐任务交替 wasm A/B 显示：baseline surface 耗时降低 22.1% / 9.3% / 6.0%，SIMD surface 降低 22.5% / 10.1% / 4.0%，分别对应下表三个 profile。
-- `combined` 配对耗时仅降低约 2.9–4.1%，不是完整浏览器 chunk 吞吐，也没有证明 2x 目标。native 独立进程测量和长时复测存在明显共享机负载波动，原始回归数据没有删除。
-- 三套 JVM chunk 参考一致，优化前后 36 份完整结果帧逐字节相同；baseline/SIMD noise wasm 各验证 461 个 job、12,036 个采样点。
-- aquifers 与 ore veins 已在 Rust 中。下一步更值得测量的是 Java carvers、其重复 noise/aquifer 上下文、features/矿石放置、structure starts，以及结果安装和 Worker 调度。
-- JavaScript-target 构建输出未修改；没有运行完整 TeaVM、Chrome、浏览器 Worker 验收或发布。
+- One verified Rust optimization is kept: the surface noise condition cache changes from clearing the whole table per block to generation-based invalidation, with no change to computation, access order or RNG.
+- Same-process, task-by-task alternating wasm A/B shows: baseline surface time is reduced by 22.1% / 9.3% / 6.0%, and SIMD surface by 22.5% / 10.1% / 4.0%, for the three profiles in the tables below respectively.
+- The `combined` paired time drops by only about 2.9–4.1%; this is not full browser chunk throughput and does not prove the 2x target. Native separate-process measurements and long re-runs show clear shared-machine load fluctuation, and the raw regression data was not deleted.
+- The three JVM chunk references agree, and the 36 full result frames are byte-identical before and after optimization; baseline/SIMD noise wasm each verified 461 jobs and 12,036 sample points.
+- Aquifers and ore veins are already in Rust. The next items worth measuring are Java carvers, their duplicated noise/aquifer context, features/ore placement, structure starts, and result installation and Worker scheduling.
+- JavaScript-target build output is unmodified; no full TeaVM, Chrome, browser Worker acceptance or release was run.
 
-## 1. 输入、口径与可复跑入口
+## 1. Inputs, scope and re-runnable entry points
 
-所有 profile 从 `port/versions/*.json` 枚举；`kernelSemantics` 决定计算语义，新增 `worldgenReference` 仅选择 JVM harness、exporter 和兼容适配器，没有在内核中加入 Minecraft 版本判断。
+All profiles are enumerated from `port/versions/*.json`; `kernelSemantics` determines computation semantics, and the new `worldgenReference` only selects the JVM harness, exporter and compatibility adapter, with no Minecraft version checks added in the kernel.
 
-使用官方本地 `client-named.jar` 导出的 overworld IR 和 `.ref`：seed `12345`，chunks `(0,0)`、`(7,-3)`、`(-20,11)`，每 chunk 16×384×16。输入哈希见 `summary.json`，导出 source 哈希见 `reference/<profile>/provenance.json`。参考源码仅复制、适配到输出目录；共享 `port/work` 仅读取。
+The overworld IR and `.ref` exported from the official local `client-named.jar` are used: seed `12345`, chunks `(0,0)`, `(7,-3)`, `(-20,11)`, each chunk 16×384×16. Input hashes are in `summary.json`, and the exported source hashes are in `reference/<profile>/provenance.json`. Reference sources are only copied and adapted into the output directory; the shared `port/work` is read only.
 
-机器：Intel Core i5-14600K，14 cores / 20 logical processors；Windows 11；Rust/Cargo 1.98、Node 24.19.0、Java 25。本机与其他任务共享，没有修改 affinity、优先级或电源设置。所有本任务基准串行执行，没有本任务自己的 cargo/JVM 与吞吐计时重叠。
+Machine: Intel Core i5-14600K, 14 cores / 20 logical processors; Windows 11; Rust/Cargo 1.98, Node 24.19.0, Java 25. The machine is shared with other tasks, and no affinity, priority or power settings were changed. All measurements for this task ran serially, and none of this task's own cargo/JVM runs overlapped with throughput timing.
 
-### 计时范围
+### Timing scope
 
-- `biomes`：1536 个 quart biome 结果。
-- `terrain`：实际 `TERRAIN` noise-fill job，包含密度求值、aquifer、方块填充、heightmaps 等，不是一个纯 noise-point microbenchmark。double-router ore veins 在这里执行。
-- `surface`：同一已填充 chunk 的 surface/material 规则；float-sampler ore veins 在 material/surface 内执行。native core 的输入 chunk clone 在计时外。
-- `combined`：现有 `TERRAIN` 的 `FLAG_SURFACE | FLAG_BIOMES`，用于观察三个步骤合为一个 job 的本地上限；没有改变浏览器状态机或新增批处理 ABI。
-- native `core` 直接调用 `Generator`；native `framed` 包括解码、内核调用、编码、descriptor 释放，以及一次结果 `to_vec` copy。Node `framed` 包括 alloc/copy-in/run/status-read/release/dealloc，但计时内不 copy-out；完整字节比较在计时前后执行。因此两者不能按绝对时间作同口径跨语言结论。
-- IR 编译、冷 LOAD_GENERATOR、文件 I/O、真实 Worker postMessage/transfer、Java 结果安装、carvers、features、structures、lighting 和完整 chunk status 链不在 Rust/Node 计时内。
+- `biomes`: 1536 quart biome results.
+- `terrain`: the actual `TERRAIN` noise-fill job, including density evaluation, aquifers, block filling, heightmaps and so on; it is not a pure noise-point micro-measurement. Double-router ore veins run here.
+- `surface`: the surface/material rules on the same filled chunk; float-sampler ore veins run inside material/surface. The input chunk clone of the native core is outside the timing.
+- `combined`: the existing `TERRAIN` with `FLAG_SURFACE | FLAG_BIOMES`, used to observe the local upper bound of merging the three steps into one job; the browser state machine is unchanged and no new batching ABI was added.
+- native `core` calls `Generator` directly; native `framed` includes decoding, the kernel call, encoding, descriptor release, and one result `to_vec` copy. Node `framed` includes alloc/copy-in/run/status-read/release/dealloc, but no copy-out inside the timing; the full byte comparison runs before and after the timing. The two therefore cannot be compared by absolute time on the same footing across languages.
+- IR compilation, cold LOAD_GENERATOR, file I/O, real Worker postMessage/transfer, Java result installation, carvers, features, structures, lighting and the full chunk status chain are not in the Rust/Node timing.
 
-独立进程基准：三次 pass，前后顺序在第二次反转，baseline/SIMD 顺序也反转；每 pass 7 轮，每轮 6 次重复×3 chunks。表中是 21 轮 ms/chunk 中位数，各阶段、各路径、各产物有 378 个计时 job；不是同时生成 378 个 chunks。另做 float sampler 长时反向复测，记录在 `followup-*.tsv` 和 `followup-summary.json`。
+Separate-process measurement: three passes, with the before/after order reversed in the second pass and the baseline/SIMD order also reversed; each pass has 7 rounds, each round 6 repetitions × 3 chunks. The tables give the median ms/chunk over 21 rounds, with 378 timed jobs per stage, path and artifact; this is not generating 378 chunks at the same time. A separate long reverse-order re-run for the float sampler is recorded in `followup-*.tsv` and `followup-summary.json`.
 
-为降低共享机时间漂移，另做同进程配对 wasm：两个实例各自 LOAD；每个 job 紧邻调用 before/after，交替谁先运行。21 轮×18 jobs；同一输入结果在计时前后均核对。配对降低率先对同轮计算 `1 - after/before`，再取中位数；Q1/Q3 是离散轮次四分位数，不是置信区间。它可能不同于两列独立中位数的直接比值。
+To reduce shared-machine time drift, a same-process paired wasm measurement was also made: two instances each LOAD; each job calls before/after back to back, alternating which runs first. 21 rounds × 18 jobs; results for the same input are checked before and after timing. The paired reduction is computed per round as `1 - after/before` and then the median is taken; Q1/Q3 are quartiles over the discrete rounds, not confidence intervals. It may differ from the direct ratio of the two independent medians.
 
-### 复跑命令（PowerShell）
+### Re-run commands (PowerShell)
 
-从 worktree 根目录导出参考；所有编译和 scratch 输出都定向到 `$output`。
+Export the references from the worktree root; all compilation and scratch output is directed to `$output`.
 
 ```powershell
 $output = '<out>/wgperf'
@@ -53,17 +53,17 @@ foreach ($variant in @('baseline', 'simd')) {
 node worldgen-perf-summary.mjs "$output"
 ```
 
-`$profile` 必须取 manifest 的 `id`；汇总工具读取此次测量协议的 `final-{native,baseline,simd}-{before,after}-<id>-<pass>.tsv` 及 `paired-<variant>-<id>.tsv`。完整顺序脚本保存在输出目录 `measure.ps1`。不运行可能写入共享 work 或触发完整构建的聚合脚本。
+`$profile` must be the manifest `id`; the summary tool reads this measurement protocol's `final-{native,baseline,simd}-{before,after}-<id>-<pass>.tsv` and `paired-<variant>-<id>.tsv`. The complete sequential script is saved in the output directory as `measure.ps1`. No aggregate script that might write to the shared work directory or trigger a full build is run.
 
-构建前版从 `628b7747` 的 `git archive` 提取到输出目录，再复制统一基准、manifest 和 ScaledNoise 支持文件，保留原始 `surface.rs`；选择清单保存在 `baseline-source-files.json`。因此旧版前后比较是在同等 IR 支持下的性能比较，不声称原始浏览器已启用旧版内核。其它两个 profile 的原始算术没有因基准准备而更改。
+The pre-change version is extracted from `git archive` of `628b7747` into the output directory, then the unified harness, manifest and ScaledNoise support files are copied in, keeping the original `surface.rs`; the selection list is saved in `baseline-source-files.json`. The before/after comparison for the old version is therefore a performance comparison under equal IR support, and does not claim that the original browser had the old kernel enabled. The original arithmetic of the other two profiles was not changed by the harness preparation.
 
-## 2. 独立进程 native 与 wasm 吞吐
+## 2. Separate-process native and wasm throughput
 
-正百分比表示耗时降低，负值表示该批测量变慢。`jobs/s` 是单线程热实例的阶段吞吐，不是完整 chunks/s。原始数据按时间批次保留，不能只挑最快一次。
+A positive percentage means time was reduced, and a negative value means that batch of measurements got slower. `jobs/s` is the single-thread hot-instance stage throughput, not full chunks/s. Raw data is kept by time batch, and you may not pick only the fastest run.
 
 ### Native core
 
-| Profile | 阶段 | 前 ms/chunk | 后 ms/chunk | 后 jobs/s | 耗时降低 |
+| Profile | Stage | Before ms/chunk | After ms/chunk | After jobs/s | Time reduction |
 | --- | --- | ---: | ---: | ---: | ---: |
 | 1.21.11 | biomes | 0.690 | 0.694 | 1441.1 | -0.5% |
 | 1.21.11 | terrain | 9.049 | 9.260 | 108.0 | -2.3% |
@@ -80,7 +80,7 @@ node worldgen-perf-summary.mjs "$output"
 
 ### Native framed
 
-| Profile | 阶段 | 前 ms/chunk | 后 ms/chunk | 后 jobs/s | 耗时降低 |
+| Profile | Stage | Before ms/chunk | After ms/chunk | After jobs/s | Time reduction |
 | --- | --- | ---: | ---: | ---: | ---: |
 | 1.21.11 | biomes | 0.699 | 0.691 | 1447.2 | 1.1% |
 | 1.21.11 | terrain | 9.233 | 9.193 | 108.8 | 0.4% |
@@ -97,7 +97,7 @@ node worldgen-perf-summary.mjs "$output"
 
 ### Node wasm baseline
 
-| Profile | 阶段 | 前 ms/chunk | 后 ms/chunk | 后 jobs/s | 耗时降低 |
+| Profile | Stage | Before ms/chunk | After ms/chunk | After jobs/s | Time reduction |
 | --- | --- | ---: | ---: | ---: | ---: |
 | 1.21.11 | biomes | 0.907 | 0.914 | 1094.4 | -0.8% |
 | 1.21.11 | terrain | 11.600 | 11.766 | 85.0 | -1.4% |
@@ -114,7 +114,7 @@ node worldgen-perf-summary.mjs "$output"
 
 ### Node wasm SIMD
 
-| Profile | 阶段 | 前 ms/chunk | 后 ms/chunk | 后 jobs/s | 耗时降低 |
+| Profile | Stage | Before ms/chunk | After ms/chunk | After jobs/s | Time reduction |
 | --- | --- | ---: | ---: | ---: | ---: |
 | 1.21.11 | biomes | 1.012 | 1.020 | 980.3 | -0.8% |
 | 1.21.11 | terrain | 12.533 | 11.478 | 87.1 | 8.4% |
@@ -129,13 +129,13 @@ node worldgen-perf-summary.mjs "$output"
 | 26.3 | surface | 6.791 | 6.672 | 149.9 | 1.8% |
 | 26.3 | combined | 10.735 | 10.912 | 91.6 | -1.7% |
 
-未修改 biomes 或 terrain 求值代码，但独立批次中仍出现 1–11% 浮动；native float `combined` 甚至显示 18.1% 变慢。反向长时复测中 native core `combined` 仍为 3.7% 变慢，SIMD surface 一次显示 30.0% 变慢，而同批未修改 SIMD terrain 也变慢 10.4%。这些结果说明独立进程阶段差分不能可靠归因；它们也不是可以忽略的浏览器验收证据。后续用逐任务配对判断变化方向，不把原始表覆写成好看的数字。
+The biomes and terrain evaluation code was not modified, yet separate batches still show 1–11% fluctuation; native float `combined` even shows an 18.1% slowdown. In the long reverse-order re-run, native core `combined` was still 3.7% slower, and SIMD surface once showed a 30.0% slowdown while the unmodified SIMD terrain in the same batch was also 10.4% slower. These results show that stage differencing across separate processes cannot be reliably attributed; neither are they negligible as browser acceptance evidence. Task-by-task pairing is used afterwards to judge the direction of change, and the raw tables are not overwritten with prettier numbers.
 
-## 3. 配对 wasm A/B：优化的可归因收益
+## 3. Paired wasm A/B: attributable gain of the optimization
 
 ### Surface
 
-| Profile | wasm | 前 ms/chunk | 后 ms/chunk | 配对耗时降低中位数 | 降低率 Q1–Q3 | 更快轮数 |
+| Profile | wasm | Before ms/chunk | After ms/chunk | Median paired time reduction | Reduction Q1–Q3 | Rounds faster |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | 1.21.11 | baseline | 2.795 | 2.173 | 22.1% | 19.9%–24.2% | 21/21 |
 | 26.2 | baseline | 8.020 | 7.359 | 9.3% | 7.5%–10.3% | 21/21 |
@@ -146,7 +146,7 @@ node worldgen-perf-summary.mjs "$output"
 
 ### Combined
 
-| Profile | wasm | 前 ms/chunk | 后 ms/chunk | 配对耗时降低中位数 | 降低率 Q1–Q3 | 更快轮数 |
+| Profile | wasm | Before ms/chunk | After ms/chunk | Median paired time reduction | Reduction Q1–Q3 | Rounds faster |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | 1.21.11 | baseline | 17.577 | 16.420 | 3.6% | 1.4%–5.8% | 19/21 |
 | 26.2 | baseline | 19.009 | 18.343 | 4.1% | 2.8%–5.1% | 19/21 |
@@ -155,87 +155,87 @@ node worldgen-perf-summary.mjs "$output"
 | 26.2 | simd | 19.364 | 18.157 | 3.9% | 3.3%–6.1% | 20/21 |
 | 26.3 | simd | 11.408 | 10.879 | 3.2% | 2.5%–5.4% | 18/21 |
 
-六组 surface 配对方向均为正，两个 router profile 的 21/21 轮都更快；float sampler 的收益更小且有噪声。未修改的 biomes/terrain 配对中位降低率约 -1.1% 到 +1.3%，接近零。六组 `combined` 的配对降低率仅 2.9–4.1%，有部分轮次变慢：继续保留真实浏览器整体回归风险，不能宣称端到端稳定加速。
+All six surface pairs point in the positive direction, and the two router profiles were faster in 21/21 rounds; the float sampler's gain is smaller and noisy. The unmodified biomes/terrain pairs show a median reduction of about -1.1% to +1.3%, close to zero. The paired reduction for the six `combined` groups is only 2.9–4.1%, with some rounds slower: the risk of a real browser-level overall regression remains, and an end-to-end stable speedup cannot be claimed.
 
-SIMD 没有自动带来 2x。现有 `simd.rs` 主要向量化 f32 buffer add/sub/mul 等；noise lookup、递归 IR、随机分支及多数 double 路径仍然标量。此次没有添加 SIMD 运算，没有改变浮点结合顺序、用倒数乘法替代除法、或启用 FMA/fast-math。baseline 与 SIMD 在不同时间段运行，不能直接按两列时间断言 SIMD 的稳定相对收益。
+SIMD does not automatically bring 2x. The existing `simd.rs` mainly vectorizes f32 buffer add/sub/mul and similar operations; noise lookups, recursive IR, random branches and most double paths remain scalar. No SIMD operations were added this time, and no change was made to floating-point associativity, to replacing division with reciprocal multiplication, or to enabling FMA/fast-math. Baseline and SIMD were run in different time windows, so the two time columns cannot be used directly to assert a stable relative gain from SIMD.
 
-## 4. 热点、保留优化与放弃的方案
+## 4. Hotspots, the kept optimization and abandoned approaches
 
-源码热点位于 `crates/gaius-worldgen/src/surface.rs` 的 `Context`、`update_xz`、`update_y`、`Condition::NoiseThreshold`。原缓存按整个 surface condition 数量分配 `Vec<Option<f64>>`；每个石质方块推进 Y 时，即使没有访问绝大多数 noise 条件，也逐项写入 `None`。
+The source hotspots are `Context`, `update_xz`, `update_y` and `Condition::NoiseThreshold` in `crates/gaius-worldgen/src/surface.rs`. The original cache allocated a `Vec<Option<f64>>` sized to the whole surface condition count; each time a stone block advanced Y, it wrote `None` to every entry even though the vast majority of noise conditions were never accessed.
 
-改为 `NoiseCache { values, stamps, generation }`：读取只认当前代次，失效只增加 generation。普通 Y 更新从 O(condition_count) 写入变为 O(1)，X/Z 切换仍分别失效二维和三维缓存；generation 回绕时清 stamps。保留 -0 和 NaN payload 的位模式测试、过期槽位和回绕测试，避免 2^32 次推进后的误命中。
+It is changed to `NoiseCache { values, stamps, generation }`: reads honor only the current generation, and invalidation only increments generation. An ordinary Y update goes from O(condition_count) writes to O(1), and X/Z switches still invalidate the 2D and 3D caches respectively; on generation wraparound the stamps are cleared. Bit-pattern tests for -0 and NaN payloads, a stale-slot test and a wraparound test are kept, to avoid false hits after 2^32 advances.
 
-这是失效路径 allocation-free，不是整个 job allocation-free。每个缓存从一个 Vec 变为两个 Vec，surface 初始化多两个分配；理论槽位 payload 从 Option<f64> 的 16 bytes 变为 f64+u32 的 12 bytes，Vec capacity/alignment 与 allocator 元数据另计。没有新增长期共享缓存、跨 chunk mutable state 或跨 Worker 数据依赖。
+This makes the invalidation path allocation-free, not the whole job. Each cache goes from one Vec to two, so surface initialization has two extra allocations; the theoretical slot payload goes from 16 bytes for Option<f64> to 12 bytes for f64+u32, with Vec capacity/alignment and allocator metadata counted separately. No new long-lived shared cache, cross-chunk mutable state or cross-Worker data dependency was added.
 
-热点定位依据源码循环及 A/B，不是采样 flamegraph；本次没有获得硬件性能计数器、真实 Worker trace 或各函数 CPU share。
+Hotspot identification is based on the source loops and A/B runs, not a sampled flamegraph; this time no hardware performance counters, real Worker trace or per-function CPU share were obtained.
 
-另曾尝试 double-router Y-independent column 复用与插值步长复用，结果仍一致，但 pilot terrain core 从约 8.2 ms 上升到 9–9.7 ms，frame 路径没有稳定收益，已全部撤回。输出目录仅保存 `rejected-interpolation-column-prototype.patch`，未纳入提交。原因是现有 marker/arena 已缓存部分结果，额外通用节点判断和缓存索引可能超过所省求值；不能凭“缓存应该更快”提交。
+Double-router Y-independent column reuse and interpolation step reuse were also tried; results stayed consistent, but the pilot terrain core rose from about 8.2 ms to 9–9.7 ms, with no stable gain on the frame path, so all of it was reverted. The output directory only keeps `rejected-interpolation-column-prototype.patch`, which is not part of the commit. The reason is that the existing marker/arena already caches some results, and the extra generic node checks and cache indexing may cost more than the evaluations saved; committing on the assumption that "a cache should be faster" is not acceptable.
 
-现有 wasm generator cache 与 arena scratch pool 已复用 IR 和部分 buffer；这次没有重新造全局 cache。biomes/terrain 分配清除、noise SIMD lane 扩展、跨 chunk noise columns 和通用 job batching 都没有足够收益证据，不扩大 patch。
+The existing wasm generator cache and arena scratch pool already reuse the IR and some buffers; no global cache was rebuilt this time. Allocation clearing for biomes/terrain, extending noise SIMD lanes, cross-chunk noise columns and generic job batching all lack sufficient evidence of gain, so the patch is not widened.
 
-### Job framing / batching 边界
+### Job framing / batching boundary
 
-首个参考 chunk 的请求大小：BIOMES 48 bytes，TERRAIN 88 bytes，SURFACE 18,760 bytes，combined 88 bytes；结果分别为 6,168 / 18,688 / 26,892 / 33,036 bytes。它们是已有稀疏/palette 编码后的尺寸，不是直接传递完整 int volume。
+Request sizes for the first reference chunk: BIOMES 48 bytes, TERRAIN 88 bytes, SURFACE 18,760 bytes, combined 88 bytes; the results are 6,168 / 18,688 / 26,892 / 33,036 bytes respectively. These are the sizes after the existing sparse/palette encoding, not a direct transfer of the full int volume.
 
-combined 可减少一次 terrain→surface 的本地结果编解码和多个往返，但还包含两个步骤的计算。热缓存、core/framed 计时差异和 shared-load 使简单相减出现负“frame overhead”，不能据此给出精确序列化份额。Node 不包含消息传输开销。
+combined can save one local terrain→surface result encode/decode and several round trips, but it also contains the computation of both steps. Hot caches, the core/framed timing difference and shared load make a simple subtraction produce a negative "frame overhead", so no exact serialization share can be derived from it. Node does not include message transport overhead.
 
-浏览器 double-router 的 NOISE 和 SURFACE 属于不同 status，SURFACE 输入还需要实际邻区 biome ring、structure beard 和失效规则，不能无条件合并；float-sampler terrain 已带 `FLAG_SURFACE`，BIOMES 仍是独立 status。本次只测现有 combined flag，没有改浏览器 job 排序。后续 batching 应先做同 kind、独立 chunk 的小批次，保留逐 job decline/error/cancellation 与尾延迟上限。
+In the browser, double-router NOISE and SURFACE belong to different statuses, and the SURFACE input also needs the actual neighboring biome ring, structure beard and invalidation rules, so they cannot be merged unconditionally; float-sampler terrain already carries `FLAG_SURFACE`, while BIOMES remains a separate status. This round measured only the existing combined flag and did not change browser job ordering. Later batching should start with small batches of independent chunks of the same kind, preserving per-job decline/error/cancellation and a tail latency bound.
 
-## 5. 同 chunk 的 JVM 参考阶段时间
+## 5. JVM reference stage timing on the same chunks
 
-3 次 warm iteration，5 次 measured round×2 repeats×3 chunks，共 30 个样本/阶段/profile。文件序列化在计时外。double-router 调用 vanilla createBiomes/fillFromNoise/buildSurface；float-sampler density/material API 按现有参考 harness 构建同 chunk。邻区 biome resolver 有 warm cache，因此不能外推冷启动或真实 region 状态。
+3 warm iterations, 5 measured rounds × 2 repeats × 3 chunks, for 30 samples per stage per profile. File serialization is outside the timing. Double-router calls vanilla createBiomes/fillFromNoise/buildSurface; the float-sampler density/material API builds the same chunk following the existing reference harness. The neighbor biome resolver has a warm cache, so the numbers cannot be extrapolated to a cold start or real region state.
 
-| Profile | biomes ms | terrain ms | surface ms | 三阶段中位数之和 ms | 三阶段内 B/T/S 比例 |
-| --- | ---: | ---: | ---: | ---: | --- |
+| Profile | biomes ms | terrain ms | surface ms | Sum of three stage medians ms | B/T/S ratio within the three stages |
+| --- | --- | --- | --- | --- | --- |
 | 1.21.11 | 0.8595 | 8.0627 | 3.3256 | 12.2478 | 7.0% / 65.8% / 27.2% |
 | 26.2 | 1.2851 | 10.1123 | 8.7455 | 20.1429 | 6.4% / 50.2% / 43.4% |
 | 26.3 | 0.2751 | 4.7417 | 20.1847 | 25.2015 | 1.1% / 18.8% / 80.1% |
 
-float sampler 另有 `density` 诊断 pass：中位 2.5041 ms，范围 2.3867–3.3405 ms。terrain 自己再次执行相关密度求值；不能把诊断 pass 与 terrain 相加冒充 chunk 总时间。各阶段中位数之和也不是逐 chunk 总时间的中位数。
+The float sampler also has a `density` diagnostic pass: median 2.5041 ms, range 2.3867–3.3405 ms. terrain performs the related density evaluation again itself; the diagnostic pass must not be added to terrain and passed off as total chunk time. The sum of the stage medians is also not the median of per-chunk totals.
 
-这里的 surface 比例 27.2% / 43.4% / 80.1% 仅在三项已测工作内；现代 profile 的这部分已经能由 Rust 接管，不能把它当作“还留在 Java Worker 的成本”。JVM 也不是 TeaVM wasm-GC/JSPI，跨 JVM/Node 数值不构成真实 Worker 的加速比。
+The surface ratios here, 27.2% / 43.4% / 80.1%, are only within the three measured pieces of work; for the modern profiles this part can already be taken over by Rust, so it must not be treated as a cost "still in the Java Worker". The JVM is also not TeaVM wasm-GC/JSPI, so cross JVM/Node numbers are not a real Worker speedup ratio.
 
-现有离线参考没有完整 `ServerLevel/WorldGenRegion/ChunkStatus` 依赖链。carvers、实际邻区 features、structure starts、lighting 和调度没有运行；用空邻区、空 structures 或随意假实现计时会改变任务语义。因此这些阶段的全 chunk 时间份额保持未知，而不是填一个推测百分比。
+The existing offline reference has no full `ServerLevel/WorldGenRegion/ChunkStatus` dependency chain. Carvers, real neighbor features, structure starts, lighting and scheduling were not run; timing them with empty neighbors, empty structures or arbitrary fake implementations would change the task semantics. The whole-chunk time share of these stages therefore remains unknown, rather than filled in with a guessed percentage.
 
-## 6. Hooks 与仍在 Java Worker 的工作
+## 6. Hooks and work still in the Java Worker
 
-| Profile / 路径 | 可走 Rust | 仍在 Java / 未接管 |
+| Profile / path | Can run in Rust | Still in Java / not taken over |
 | --- | --- | --- |
-| 1.21.11 | 本次只证明离线 IR/kernel 能匹配 golden | 浏览器 hook 仍关闭，chunk 生成仍按 vanilla 路径 |
-| 26.2 router | BIOMES、NOISE（density/aquifers/ore veins/heightmaps/postprocess）、独立 SURFACE | CARVERS、region/structure 输入采集、结果安装、features、structures、lighting、status 链 |
-| 26.3 sampler | BIOMES、terrain+surface/material（含 aquifers/ore veins） | kernel 填完后新建 Java NoiseChunk 执行 carvers，其 noise/aquifer/material 按需求值仍是 Java；其它 region/status 工作同上 |
-| decline/fallback | 无 | 不支持的 IR、非 ProtoChunk、非空 Blender、upgrading/retrogen、开关关闭、失效 token 或 Worker 失败时执行 vanilla |
+| 1.21.11 | This round only proves that the offline IR/kernel matches golden | The browser hook is still off, and chunk generation follows the vanilla path |
+| 26.2 router | BIOMES, NOISE (density/aquifers/ore veins/heightmaps/postprocess), standalone SURFACE | CARVERS, region/structure input collection, result installation, features, structures, lighting, status chain |
+| 26.3 sampler | BIOMES, terrain+surface/material (including aquifers/ore veins) | After the kernel fills, a new Java NoiseChunk runs carvers, whose noise/aquifer/material on-demand evaluation is still Java; other region/status work as above |
+| decline/fallback | None | Vanilla runs on unsupported IR, non-ProtoChunk, non-empty Blender, upgrading/retrogen, the switch being off, an invalidated token or a Worker failure |
 
-证据入口（均未修改）：
+Evidence entry points (all unmodified):
 
-- `port/tools/src/main/java/dev/gaius/tools/patches/worldgen/WorldgenKernelPatches.java`：`getLightDampening()I` 探测不通过时打印 kernel stays off，legacy 不被本次新 IR 支持自动启用。
-- `port/mc/shared/canonical/src/java/dev/gaius/browser/kernel/worldgen/WorldgenKernelHooks262.java` 与 `WorldgenKernel262.java`：NOISE 保存已解码 chunk token，SURFACE 读取 region biome ring 和 beard；Java 安装方块/heightmaps/postprocess。
-- `port/mc/shared/renderpearl-1/src/java/dev/gaius/browser/kernel/worldgen/WorldgenKernelHooks263.java`、`ChunkGeneratorKernelHooks263.java` 与 `WorldgenKernel263.java`：terrain 只带 SURFACE flag，单独 BIOMES hook；`carve` 创建新 NoiseChunk 调用 generateCarvers。
-- `port/src/main/java/dev/gaius/browser/kernel/worldgen/BrowserWorldgenKernel.java` 与 `port/web/kernels/worldgen-kernel.js`：异步 facade、实例 load/cache、stored-noise token/byte budget、编解码、异常及 Java fallback 边界。
-- `port/src/main/java/dev/gaius/browser/BrowserWorldgenDispatcherScheduler.java`：priority 0–2 的 bookkeeping 可在一次 turn 内排空，预算 2 ms / 最多 1024 个 runnable；priority 3 的可挂起 generation 结束该 turn，禁止再入。真实定时器、挂起和结果安装占比需浏览器 trace，离线 JVM 不可给出。
+- `port/tools/src/main/java/dev/gaius/tools/patches/worldgen/WorldgenKernelPatches.java`: when the `getLightDampening()I` probe fails it prints that the kernel stays off, so legacy is not automatically enabled by this round's new IR support.
+- `port/mc/shared/canonical/src/java/dev/gaius/browser/kernel/worldgen/WorldgenKernelHooks262.java` and `WorldgenKernel262.java`: NOISE stores the decoded chunk token, SURFACE reads the region biome ring and beard; Java installs blocks/heightmaps/postprocess.
+- `port/mc/shared/renderpearl-1/src/java/dev/gaius/browser/kernel/worldgen/WorldgenKernelHooks263.java`, `ChunkGeneratorKernelHooks263.java` and `WorldgenKernel263.java`: terrain carries only the SURFACE flag, with a separate BIOMES hook; `carve` creates a new NoiseChunk and calls generateCarvers.
+- `port/src/main/java/dev/gaius/browser/kernel/worldgen/BrowserWorldgenKernel.java` and `port/web/kernels/worldgen-kernel.js`: async facade, instance load/cache, stored-noise token/byte budget, encode/decode, and the exception and Java fallback boundary.
+- `port/src/main/java/dev/gaius/browser/BrowserWorldgenDispatcherScheduler.java`: bookkeeping for priority 0–2 can be drained within one turn, with a budget of 2 ms / at most 1024 runnables; a suspendable generation at priority 3 ends that turn and re-entry is forbidden. The share taken by real timers, suspension and result installation needs a browser trace and cannot be given by the offline JVM.
 
-## 7. 下一批 kernel 候选：收益是假设，风险须先封装
+## 7. Next kernel candidates: gains are hypotheses, risks must be encapsulated first
 
-优先顺序是“先观测真实 status 总时与 transferable bytes，再按 immutable snapshot/delta 设计小 job”，不是一次重写 ChunkGenerator。
+The priority order is "first observe the real total status time and transferable bytes, then design small jobs around immutable snapshots/deltas", not rewriting ChunkGenerator in one go.
 
-| 候选 | 可保持 deterministic / bit-comparable 的边界 | 条件收益估算 | 主要风险 |
+| Candidate | Boundary that can stay deterministic / bit-comparable | Conditional gain estimate | Main risks |
 | --- | --- | --- | --- |
-| Carvers | 输入 immutable chunk/state flags、carving mask、seed/RNG 状态、邻区 carver biome/config 和噪声/液体快照；输出按 vanilla 顺序的 block/mask/postprocess delta | 若实测占全 chunk 15–30%，内核快 2–3x，则总体约 1.08–1.25x | 邻区循环顺序、RNG 消耗、重复挖掘 mask、aquifer/液体、结构/blending/retrogen 上下文；不能只移植几何洞形 |
-| Features 中的普通矿石放置 | 限定单一 placed feature，携带准确 placement RNG/邻区高度/可替换方块快照；返回带序号的 delta；Java 按既有顺序提交 | 若该子集占 10–25%，快 2–4x，则整体约 1.05–1.23x | 跨 chunk 写入与 feature 顺序、次序相关条件、Java heightmap 更新；普通矿石 features 不是已接管的 ore veins |
-| Structure starts 的 placement/candidate 核心 | 先接管 seed 派生、候选坐标与纯几何判断；模板/registry/region 查询由 Java 提供快照；单独匹配候选/包围盒 | 若占 2–8%，纯核快 3x，则整体约 1.014–1.056x | terrain height/sample、template pool、piece RNG、structure references 和 region 写入；不能把纯 placement 的收益当整条 starts 的收益 |
-| Aquifer / ore vein 内部继续优化 | 已在 Rust；先量 profile、去掉重复采样/复用仅当前 chunk 的不可变 noise grid，保留精确坐标、算术和随机分支次序 | 未量出子路径 share，暂不给总体收益；通常只能优化已接管阶段的一部分 | 混淆 carver 中残留 Java aquifer 与 terrain 已接管部分；过期 grid、取样顺序和 f32 rounding |
-| Java 结果安装与同类 job 小批次 | 先量 decoding/palette resolve/ChunkSection 写入和消息成本；用现有合法 result 和 status 顺序减少重复编码/往返 | 当前帧已压缩，字节量不是证据；Node 不能确定真实获益 | 主 Worker 长任务、GC、队列优先级、取消/失败隔离、stored-noise token 生存期 |
+| Carvers | Input: immutable chunk/state flags, carving mask, seed/RNG state, neighbor carver biome/config and noise/liquid snapshot; output: block/mask/postprocess deltas in vanilla order | If measured at 15–30% of the full chunk and the kernel is 2–3x faster, about 1.08–1.25x overall | Neighbor loop order, RNG consumption, repeated carve masks, aquifer/liquid, structure/blending/retrogen context; porting only the cave geometry is not enough |
+| Ordinary ore placement within Features | Limited to a single placed feature, carrying the exact placement RNG/neighbor heights/replaceable block snapshot; returns sequenced deltas; Java commits them in the existing order | If this subset is 10–25% and 2–4x faster, about 1.05–1.23x overall | Cross-chunk writes and feature ordering, order-dependent conditions, Java heightmap updates; ordinary ore features are not the ore veins already taken over |
+| Placement/candidate core of Structure starts | First take over seed derivation, candidate coordinates and pure geometric checks; template/registry/region queries are supplied by Java as snapshots; match candidates/bounding boxes separately | If it is 2–8% and the pure core is 3x faster, about 1.014–1.056x overall | Terrain height/sample, template pool, piece RNG, structure references and region writes; the gain from pure placement must not be taken as the gain of the whole starts path |
+| Continued optimization inside Aquifer / ore vein | Already in Rust; first measure the profile, remove duplicate sampling / reuse an immutable noise grid for the current chunk only, keeping exact coordinates, arithmetic and random-branch order | The sub-path share has not been measured, so no overall gain is given for now; usually only part of an already taken-over stage can be optimized | Confusing the residual Java aquifer in carvers with the part of terrain already taken over; stale grids, sampling order and f32 rounding |
+| Java result installation and small batches of same-kind jobs | First measure decoding/palette resolve/ChunkSection writes and message cost; use the existing valid results and status order to reduce repeated encoding/round trips | The frames are already compressed, and byte volume is not evidence; Node cannot determine the real gain | Long tasks on the main Worker, GC, queue priority, cancellation/failure isolation, stored-noise token lifetime |
 
-这些百分比不是本次测得的 share，只是规划情景。Amdahl：`S = 1 / (1 - p + p/r)`，p 为真实全 chunk 占比，r 为该子集加速倍数。即使某个内核无限快，整体 2x 也至少要求可加速成本达到 50%；子集快 3x 时要求 p≥75%。当前 surface 优化远不足以达到该条件。
+These percentages are not measured shares, only planning scenarios. Amdahl: `S = 1 / (1 - p + p/r)`, where p is the real share of the full chunk and r is the speedup factor of that subset. Even if a kernel were infinitely fast, an overall 2x requires the accelerable cost to be at least 50%; with a subset 3x faster it requires p≥75%. The current surface optimization falls far short of this condition.
 
-## 8. 一致性与验收
+## 8. Consistency and acceptance
 
-- 本地官方 jar 的 9 个参考 chunks：13,824 biome ids、noise+surface 两个阶段合计 1,769,472 block state words、4,608 最终 heightmap 值一致；float sampler 额外 294,912 个 density f32 位模式一致。这批 biome 没有 equal-fitness tie 宽容匹配。double-router `.ref` 没有 raw f64 density block，不宣称全图 f64 中间值全部逐位检查。
-- 36 个优化前后完整 ABI 结果帧逐字节一致，Node baseline/SIMD 计时前后均与前版 native frame 比较。noise wasm 两变体各 461 jobs / 12,036 points exact；native noise golden 覆盖仓库全部 profile fixtures。
-- 新增 generic ScaledNoise op 32：仅 double-router，按 `scale * abs(noise(x/scale,y/scale,z/scale))` 原顺序。实际 scale 只接受 finite positive constant 或各分支均如此的 IntervalSelect，不信任虚报 bounds；float sampler 明确 decline。它是旧版参考导出的兼容支撑，不是 surface 优化，不改变浏览器 eligibility。
-- 旧版 adapter 根据本地官方 bytecode 复核 rarity mapper thresholds/scales，关键源码替换、反射和编译有失败检查，并以实际 chunk parity 验证；仅适配 overworld，不能外推 Nether legacy seed 或其它 dimension。
+- For the 9 reference chunks from the local official jar: 13,824 biome ids, 1,769,472 block state words across the noise+surface stages, and 4,608 final heightmap values are consistent; the float sampler additionally has 294,912 density f32 bit patterns consistent. These biomes were matched without any equal-fitness tie tolerance. The double-router `.ref` has no raw f64 density block, so it does not claim that every full-volume f64 intermediate value was checked bit by bit.
+- The 36 full ABI result frames before and after optimization are byte-identical, and Node baseline/SIMD were compared against the previous version's native frames before and after timing. The noise wasm in both variants has 461 jobs / 12,036 points exact; native noise golden covers the fixtures of all profiles in the repository.
+- New generic ScaledNoise op 32: double-router only, following the original order `scale * abs(noise(x/scale,y/scale,z/scale))`. The actual scale accepts only a finite positive constant, or an IntervalSelect whose branches are all such, and does not trust misreported bounds; the float sampler explicitly declines. It is compatibility support for the legacy reference export, not a surface optimization, and does not change browser eligibility.
+- The legacy adapter rechecks the rarity mapper thresholds/scales against the local official bytecode; key source replacements, reflection and compilation have failure checks, and are verified by actual chunk parity; it only adapts the overworld and cannot be extrapolated to the Nether legacy seed or other dimensions.
 
-验证命令（在 `port/native`，所有 cargo 都 `--offline --locked -j 2`；target 仍为输出目录）：
+Verification commands (in `port/native`, all cargo runs use `--offline --locked -j 2`; the target is still the output directory):
 
 ```powershell
 cargo test --offline --locked -j 2 -p gaius-worldgen -p gaius-worldgen-wasm -p gaius-noise
@@ -252,18 +252,18 @@ node wasm-fixture-check.mjs "$output/after-$variant/wasm32-unknown-unknown/relea
 node worldgen-perf-summary.mjs "$output"
 ```
 
-`vanilla_reference` 不带环境变量会跳过；真正一致性证据来自三个 manifest profile 分别带变量运行，而不是那个 skip-pass。未知 profile 在启动 javac 前报错。完整结果见 `tests-completion.log`、`parity-completion-<id>.log`、`fmt-completion.log`、`clippy-completion.log`、`noise-completion-<variant>.log`。
+Without the environment variable, `vanilla_reference` is skipped; the real consistency evidence comes from running with the variable for each of the three manifest profiles, not from that skip-pass. An unknown profile errors out before javac is started. See `tests-completion.log`, `parity-completion-<id>.log`, `fmt-completion.log`, `clippy-completion.log` and `noise-completion-<variant>.log` for the full results.
 
-### 仍开放的验收
+### Acceptance still open
 
-只有一个 seed、三个 overworld chunks；未覆盖多个 seed、Nether/End、完整邻区 features/structures、blending/retrogen、多 Worker cancellation、biome tie 与更广泛特殊地形。没有真实浏览器的 cold-load、JIT/GC、Worker 队列、结果安装和全 status trace；约 2x 的浏览器 chunk 目标未验证。受本任务明确禁止 Chrome/完整 TeaVM 的约束，不能把 Node 成功或 JVM golden 当作这些验收完成。
+Only one seed and three overworld chunks: multiple seeds, Nether/End, full neighbor features/structures, blending/retrogen, multi-Worker cancellation, biome ties and broader special terrain are not covered. There is no real-browser cold-load, JIT/GC, Worker queue, result installation or full status trace; the roughly 2x browser chunk target is unverified. Because this task explicitly forbids Chrome/full TeaVM, Node success or JVM golden cannot be taken as completing these acceptances.
 
-没有依赖下载，没有共享 work 写入、其他 worktree/branch 修改、push 或发布。新测量工具、IR compatibility 与 surface 优化可单独审阅；JavaScript-target 构建输出保持不变。
+No dependencies were downloaded, no shared work writes, no changes to other worktrees/branches, no push or release. The new measurement tooling, IR compatibility and surface optimization can be reviewed separately; JavaScript-target build output is unchanged.
 
-## 9. 全 status 实测与 ordinary ore 实验
+## 9. Full-status measurement and the ordinary ore experiment
 
-2026-10-08 的后续测量不再把第 7 节的假设当作 share。每个 profile 用两个 seed、每个 seed 请求 400 个 FULL chunks，分别关闭和启用现有 Java hooks，并补测 native、Node wasm baseline/SIMD 与 ordinary ore 组合。方法、全部 status、ordered delta ABI、独立 vanilla golden、mirror gate 和复跑命令见 [worldgen-ore-throughput.md](worldgen-ore-throughput.md)。原始报告保存在仓库之外的输出目录。
+The follow-up measurements of 2026-10-08 no longer treat the Section 7 hypotheses as shares. For each profile, two seeds with 400 FULL chunks requested per seed were run with the existing Java hooks disabled and enabled respectively, plus supplementary native, Node wasm baseline/SIMD and ordinary ore combinations. The method, all statuses, the ordered delta ABI, the independent vanilla golden, the mirror gate and the re-run commands are in [worldgen-ore-throughput.md](worldgen-ore-throughput.md). The raw reports are kept in an output directory outside the repository.
 
-ordinary ore 的 JVM exclusive CPU share 只有 2.65% / 3.10% / 2.94%；carvers 只有 1.78% / 2.19% / 1.62%。它们不是此前假设的 10–25%。剩余最大已识别 feature 是 SculkPatch，另外 34.63–47.95% 的 JVM process CPU 仍未归属，包括后台 JIT/GC 与未插桩路径。选 ordinary ore 是为了验证可独立复核的 geometry/snapshot/delta 边界，不是宣称选中了最大完整 Java 热点。
+The JVM exclusive CPU share of ordinary ore is only 2.65% / 3.10% / 2.94%; carvers only 1.78% / 2.19% / 1.62%. They are not the 10–25% assumed earlier. The largest remaining identified feature is SculkPatch, and a further 34.63–47.95% of JVM process CPU is still unattributed, including background JIT/GC and uninstrumented paths. Ordinary ore was chosen to validate a geometry/snapshot/delta boundary that can be independently reviewed, not to claim it is the largest full Java hotspot.
 
-新 ore ABI 已经通过三 profile 的独立 JVM ordered golden 和两个 wasm 变体，但保持默认关闭，没有接入生产 browser hook。当时现有 worldgen hooks 的完整 chunk block 哈希存在不一致，连 OFF/OFF 也有少量边界漂移；这些是当时开放的正确性门槛，不能用局部 ore parity 抹掉。该问题已在同日的确定性复测中修复（FEATURES-before-FULL 屏障与完整 stored biome 上下文），worldgen 在两个有 JVM hook seam 的 profile 上重新获批，见 [worldgen-correctness.md](worldgen-correctness.md)。2x browser full-chunk 目标仍未达到或验证。
+The new ore ABI has passed the independent JVM ordered golden for all three profiles and both wasm variants, but stays off by default and is not wired into the production browser hook. At that time the full-chunk block hashes of the existing worldgen hooks were inconsistent, with small boundary drifts even for OFF/OFF; these were correctness gates open at the time and cannot be wiped away by local ore parity. The issue was fixed in a deterministic re-test the same day (a FEATURES-before-FULL barrier and full stored biome context), and worldgen was re-approved on the two profiles that have a JVM hook seam; see [worldgen-correctness.md](worldgen-correctness.md). The 2x browser full-chunk target has still not been reached or verified.

@@ -1,142 +1,142 @@
-# 新 Minecraft 版本接入手册
+# New Minecraft Version Bring-up Guide
 
-## 1. 输入与边界
+## 1. Inputs and boundaries
 
-`port/versions/<id>.json` 是版本选择入口。协议、世界版本、Java release、
-库坐标、seam、patchSet、source sets、kernelSemantics 和 shader harness
-配方均由 profile 数据决定；不要在 Java、Rust、JS 中新增 Minecraft 版本分支。
+`port/versions/<id>.json` is the entry point for version selection. Protocol, world version, Java release,
+library coordinates, seam, patchSet, source sets, kernelSemantics and the shader harness
+recipe are all determined by profile data; do not add Minecraft version branches in Java, Rust or JS.
 
-先由现有 `fetch-version.sh`、`remap-client.sh` 准备输入，再开始快速检查。
-本机不下载；缺少 REQUIRED 阶段的输入或离线依赖时记为 blocking，不代为下载。
-仅用于可选差异审核的 native entry、relay、lint、API、golden 或 corpus 基线证据
-缺失时记为 review，保留旧表或关闭对应 kernel，并写明下一步。
-新版本目录至少包含：
+Prepare inputs with the existing `fetch-version.sh` and `remap-client.sh` first, then start the fast checks.
+Nothing is downloaded on this machine; missing inputs or offline dependencies for a REQUIRED stage are recorded as blocking and are not fetched on your behalf.
+Missing baseline evidence (native entry, relay, lint, API, golden or corpus) that is used only for optional diff review
+is recorded as review: keep the old table or disable the corresponding kernel, and state the next step.
+A new version directory contains at least:
 
-| 路径 | 用途 |
+| Path | Purpose |
 |---|---|
-| `port/work/<id>/client-named.jar` | Mojang names、内嵌 `version.json`、class headers |
-| `port/work/<id>/client-original.jar` | 用 launcher metadata 的 SHA-1 校验官方输入 |
-| `port/work/<id>/version.json` | launcher metadata、releaseTime、坐标及 library SHA-1 |
-| `port/work/<id>/libraries/` | metadata 中 artifact.path 对应的离线 jar/native 库 |
-| `port/work/<previous>/` | 前一版本 jar 和 metadata，用于迁移比较 |
+| `port/work/<id>/client-named.jar` | Mojang names, embedded `version.json`, class headers |
+| `port/work/<id>/client-original.jar` | Official input, verified against the SHA-1 in the launcher metadata |
+| `port/work/<id>/version.json` | Launcher metadata, releaseTime, coordinates and library SHA-1 values |
+| `port/work/<id>/libraries/` | Offline jar/native libraries matching artifact.path in the metadata |
+| `port/work/<previous>/` | Previous version jar and metadata, used for migration comparison |
 
-`port/work` 可能是共享 junction：只读。不要递归遍历它、修改它或清理它。
-离线 Maven cache 需要本仓库配置的 TeaVM JSO/interop 及现有 ASM artifacts；
-离线 Cargo cache 需要 `port/native/Cargo.lock` 的包。缺失即 blocking。
-设置 `GAIUS_JAVA_HOME` / `JAVA_HOME` 选择能处理目标 class release 的 JDK；
-设置 `GAIUS_MAVEN_REPOSITORY` 可使用指定离线 cache。
+`port/work` may be a shared junction: treat it as read-only. Do not traverse it recursively, modify it or clean it.
+The offline Maven cache needs the TeaVM JSO/interop and existing ASM artifacts configured in this repository;
+the offline Cargo cache needs the packages in `port/native/Cargo.lock`. Anything missing is blocking.
+Set `GAIUS_JAVA_HOME` / `JAVA_HOME` to select a JDK that can handle the target class release;
+set `GAIUS_MAVEN_REPOSITORY` to use a specific offline cache.
 
-## 2. 快速路径：不编译 TeaVM
+## 2. Fast path: no TeaVM compilation
 
 ```bash
 node port/tools/bringup/gaius-bringup.mjs <id> --fast
 node port/tools/bringup/gaius-bringup.mjs <id> --fast --from <previous> --out <output-directory>
 ```
 
-`--from` 固定迁移基线；省略时按官方 releaseTime 选择最近的已有 profile，
-无日期时才按数字感知的 ID 顺序选择。snapshot ID 不要求是纯数字版本。
-临时 draft 标记 `bringup.provisional=true`，不能充当前一版本或已审核配方；
-`bringupAllowed` 仅表示允许带跳过列表的调试模式，不是审核状态，不能混用。
-`--root` / `--work` 用于隔离复制目录；输出拒绝指向共享 work 或其 junction 目标。
+`--from` pins the migration baseline; when omitted, the nearest existing profile is chosen by official releaseTime,
+and only when no date is available by numeric-aware ID order. A snapshot ID need not be a plain numeric version.
+A temporary draft is marked `bringup.provisional=true` and cannot serve as a previous version or a reviewed recipe;
+`bringupAllowed` only permits a debug mode with a skip list. It is not a review status and must not be conflated with one.
+`--root` / `--work` are for isolated copy directories; the output refuses to point at the shared work directory or its junction target.
 
-默认生成 `port/mc/profiles/<id>/bringup-report.json` 和 `.md`，以及
-`profile.draft.json`、独立 `bringup-evidence-*` 目录和离线 Cargo target。
-不会安装/覆盖 `port/versions/<id>.json`，不会重写旧 lock，不运行 profilegen
-`--write`，不会改变默认 JavaScript dist。
+By default it produces `port/mc/profiles/<id>/bringup-report.json` and `.md`, plus
+`profile.draft.json`, a separate `bringup-evidence-*` directory and an offline Cargo target.
+It does not install or overwrite `port/versions/<id>.json`, does not rewrite old locks, does not run profilegen
+`--write`, and does not change the default JavaScript dist.
 
-依次执行：
+It runs the following in order:
 
-1. JarProbe 从 jar 内 `version.json`、class major 读取协议、世界/pack 版本及
-   Java release；从 launcher metadata 提取库坐标、官方 SHA-1，建立独立存储命名空间。
-   通过 `seam.json` 中全部 SPI 类的存在性匹配唯一已知 seam generation。
-   继承匹配 generation 的最近已审核配方，kernel 初始全部关闭。
-2. 确认 named Minecraft entry 存在，校验 original jar 与每个 library 的 SHA-1，
-   执行 draft profile schema/seam 检查。比较 named/original 的 version metadata；官方
-   named distribution 还按排序后的 class 内容 SHA-256 验证等价，允许剥离 jar 签名。
-   此项不是重新执行 remapper；obfuscated distribution 不宣称逐方法映射证明。
-3. 编译小型 seam adapter，运行 seamprobe；比较 aggregate signature/body 与
-   16-hex 明细指纹。另列前一 jar 消失的类、唯一 simple-name relocation 建议，
-   以及前一 patch manifests 的改写 owner 消失情况。建议不是自动重命名证明。
-4. 运行 extrefs，比较 section + coordinate + class/method/field usage；不把
-   profile ID、section 计数或文本 header 误当成 usage 变化。
-5. patchkit 用 draft 和当前 run 的 usage lock，在独立副本上检查 js/wasmgc
-   两个 target，并分别与前一已审核 manifest 做 diff；不构建整个客户端。
-6. kernelmirror 校验前一 lock 的 profile SHA-256，重算前一/当前 seam 配方的镜像方法并
-   比较 lock；方法、语义或依赖变化自动关闭对应 kernel，继续走 vanilla Java。
-   前一 profile 已关闭的 kernel 不因新 lock 自动打开；依赖关闭传递到下游。
-7. 按 profile 的 `bringup.shader` 配方在 JVM dump 实际 shader corpus，必要时
-   做 frontend link；用 native Rust translator 执行 pass/fail。Cargo 使用
-   `--offline --locked -j 2`；Java heap 不超过 `-Xmx3g`。
-8. sourcesets 对 src/client × js/wasmgc 解析，输出文件/来源/relocation 清单。
-   解析成功不等于 Java 编译成功。
+1. JarProbe reads protocol, world/pack versions and the
+   Java release from the jar's inner `version.json` and class major; extracts library coordinates and official SHA-1 values from the launcher metadata, and builds an isolated storage namespace.
+   The single known seam generation is matched by the existence of all SPI classes in `seam.json`.
+   The nearest reviewed recipe of the matched generation is inherited, with all kernels initially disabled.
+2. Confirm the named Minecraft entry exists, verify the SHA-1 of the original jar and of every library,
+   and run the draft profile schema/seam checks. Compare the named/original version metadata; for an official
+   named distribution, equivalence is also verified by the SHA-256 of sorted class contents, allowing stripped jar signatures.
+   This does not re-run the remapper; an obfuscated distribution does not claim a per-method mapping proof.
+3. Compile a small seam adapter and run seamprobe; compare the aggregate signature/body with the
+   16-hex detail fingerprints. Also list classes that vanished from the previous jar, unique simple-name relocation suggestions,
+   and owners rewritten by the previous patch manifests that have vanished. Suggestions are not proof of an automatic rename.
+4. Run extrefs, comparing section + coordinate + class/method/field usage; a profile ID,
+   section count or text header is not mistaken for a usage change.
+5. patchkit checks both the js and wasmgc targets on isolated copies using the draft and this run's usage lock,
+   and diffs each against the previous reviewed manifest; it does not build the whole client.
+6. kernelmirror verifies the profile SHA-256 of the previous lock, recomputes the mirrored methods of the previous/current seam recipes and
+   compares the locks; a change in methods, semantics or dependencies automatically disables the corresponding kernel, which falls back to vanilla Java.
+   A kernel already disabled in the previous profile is not re-enabled just because of a new lock; disabling propagates to downstream dependents.
+7. Following the profile's `bringup.shader` recipe, dump the real shader corpus on the JVM, doing a
+   frontend link when needed; run pass/fail with the native Rust translator. Cargo uses
+   `--offline --locked -j 2`; the Java heap does not exceed `-Xmx3g`.
+8. sourcesets resolves src/client × js/wasmgc and outputs a file/source/relocation inventory.
+   Successful resolution does not mean Java compilation succeeds.
 
-以下轻量审核同样属于 `--fast`；无需 TeaVM 游戏构建或 Chrome：
+The following lightweight reviews are also part of `--fast`; no TeaVM game build or Chrome is needed:
 
-| 阶段 | 离线证据和工具 | 未通过或缺失时的分类与降级 |
+| Stage | Offline evidence and tooling | Classification and degradation on failure or missing evidence |
 |---|---|---|
-| `native-entry` | 复用 extrefs `usage.lock`，按 native-library section 生成入口差异与 seam `requiredEntries` 检查，写入 `native-entry.json` | optional 变化或证据缺失为 review，保留已有 adapter；仅已声明 REQUIRED 入口缺失为 blocking；不宣称 native/browser smoke 通过 |
-| `relay-protocol` | `port/scripts/build-relay-protocol.mjs` 校验 profile 与 `apps/bridge/protocols/<protocol>.json` 并生成独立 `relay-protocol.js` 及 `relay-protocol.json` | review；保留前一已审核表，新 profile 不据此开启联机支持 |
-| `version-lint` | `port/scripts/quickcheck/lint_version_literals.py --enforce`，覆盖验证脚本，写入 `version-literals.json` | review；报告实际命中文件，修复 profile 派生默认值或有理由的精确豁免 |
-| `apidiff` | 复用 extrefs `apilock` 检查 library override 的 `api.lock`，附带 section、coordinate、class/method/field usage 差异，生成 `apidiff.json` | API 变化或基线/工具证据缺失为 review；按 owner 定位 adapter、patch 或库配方 |
-| `kernel-golden` | 复用 `port/native/golden/run-golden.sh --verify <id>` 和 `port/native/fixtures/<id>/`，在独立 `GOLDEN_BUILD_ROOT` 重新生成 fixtures，逐文件比较前版 hashes，写入 `kernel-golden.diff.json` | 差异、验证失败或缺失 fixture 为 review/auto-disabled；无法定位或验证全部影响时保守关闭所有 kernel，保持 vanilla Java |
-| `shader-corpus` | 用既有 dump/link 配方离线提取前一版本 corpus，与本轮 JVM corpus 的 pipeline/module/layout 摘要形成 `shader-corpus-baseline.json` | 差异或 baseline 缺失为 review；保留已审核 corpus，补齐证据后再审核 |
+| `native-entry` | Reuses the extrefs `usage.lock` to produce the entry diff for the native-library section and the seam `requiredEntries` check, written to `native-entry.json` | An optional change or missing evidence is review, keeping the existing adapter; only a missing declared REQUIRED entry is blocking; does not claim native/browser smoke passes |
+| `relay-protocol` | `port/scripts/build-relay-protocol.mjs` validates the profile against `apps/bridge/protocols/<protocol>.json` and generates a standalone `relay-protocol.js` and `relay-protocol.json` | review; keep the previous reviewed table; the new profile does not enable multiplayer support on this basis |
+| `version-lint` | `port/scripts/quickcheck/lint_version_literals.py --enforce`, covering verification scripts, written to `version-literals.json` | review; report the files actually hit, then fix by deriving defaults from the profile or adding a justified exact exemption |
+| `apidiff` | Reuses the extrefs `apilock` to check the `api.lock` of library overrides, with section, coordinate and class/method/field usage diffs, producing `apidiff.json` | An API change or missing baseline/tool evidence is review; locate the adapter, patch or library recipe by owner |
+| `kernel-golden` | Reuses `port/native/golden/run-golden.sh --verify <id>` and `port/native/fixtures/<id>/`, regenerates fixtures in a separate `GOLDEN_BUILD_ROOT` and compares hashes with the previous version file by file, writing `kernel-golden.diff.json` | A diff, verification failure or missing fixture is review/auto-disabled; if the impact cannot be located or fully verified, all kernels are conservatively disabled, staying on vanilla Java |
+| `shader-corpus` | Extracts the previous version's corpus offline with the existing dump/link recipe and forms `shader-corpus-baseline.json` from the pipeline/module/layout summaries against this run's JVM corpus | A diff or missing baseline is review; keep the reviewed corpus and review again once the evidence is filled in |
 
-只有 REQUIRED 项失败会阻塞；可选审核失败不会因统一异常处理变成 blocking。
-patchkit 中仅 `REQUIRED` 失败可阻塞，`PERF`、`FEATURE`、`TELEMETRY` 失败记为
-review/disabled。kernel 被 decline 时记为 review/auto-disabled，继续 vanilla Java。
-所有分类均保留失败原因，并尽可能继续独立阶段。
-子进程按剩余 20 分钟预算限时，所有日志和证据留在输出目录。
-文件读取、报告写入和系统进程终止开销不保证是硬实时 20 分钟。
-`--draft-only` 只做 profile/remap bootstrap，报告明确显示余下检查待完成。
+Only REQUIRED failures block; an optional review failure does not become blocking through uniform exception handling.
+In patchkit only `REQUIRED` failures can block; `PERF`, `FEATURE` and `TELEMETRY` failures are recorded as
+review/disabled. A declined kernel is recorded as review/auto-disabled and continues on vanilla Java.
+Every classification keeps its failure reason, and independent stages continue where possible.
+Subprocesses are time-limited by the remaining 20-minute budget, and all logs and evidence stay in the output directory.
+File reads, report writes and system process termination overhead are not guaranteed to fit a hard real-time 20 minutes.
+`--draft-only` performs only the profile/remap bootstrap, and the report explicitly shows the remaining checks as pending.
 
-## 3. automatic / review / blocking 决策
+## 3. automatic / review / blocking decisions
 
-| 分类 | 含义及动作 |
+| Classification | Meaning and action |
 |---|---|
-| automatic | 数据提取、校验或检查完成，无迁移差异；保留证据，不据此发布 |
-| review | 库/usage/API/patch/corpus 变化、body-only SPI 变化、可选证据缺失、可选检查失败、kernel 自动关闭、同 jar 别名等；按报告的文件与动作逐项审核 |
-| blocking | REQUIRED 阶段失败：未知/歧义 seam、SPI signature/generation 变化、已声明 REQUIRED native 入口缺失、REQUIRED patch 失败、必需 jar/cache 缺失、输入校验或必需 shader translation 失败；修复后重跑 |
+| automatic | Data extraction, verification or checks completed with no migration differences; keep the evidence, do not publish on this basis |
+| review | Library/usage/API/patch/corpus changes, body-only SPI changes, missing optional evidence, failed optional checks, automatic kernel disabling, same-jar aliases, etc.; review item by item per the files and actions in the report |
+| blocking | A REQUIRED stage failed: unknown/ambiguous seam, SPI signature/generation change, a declared REQUIRED native entry missing, a REQUIRED patch failure, a required jar/cache missing, input verification failure or a required shader translation failure; fix and re-run |
 
-退出码：`0` 全 automatic，`1` 有 review 且无 blocking，`2` 有 blocking。
-`noBlockingItems=true` 与退出 `0` 不同：同 jar 新 ID 会有 alias review，仍可零阻塞。
-shader native translation 通过不证明 WebGPU 渲染；lock 相同不证明 golden parity；
-fast 报告始终把 TeaVM、Chrome、parity、promotion 的 claims 标为 false。
-`status=FAIL` 本身不表示 blocking；必须同时检查 `required` 与 `classification`。
-`auto-disabled` 描述降级动作，报告分类仍为 review，不计入 REQUIRED failures。
+Exit codes: `0` all automatic, `1` has review and no blocking, `2` has blocking.
+`noBlockingItems=true` differs from exit `0`: a new ID for the same jar gets an alias review and can still have zero blocking.
+A passing shader native translation does not prove WebGPU rendering; identical locks do not prove golden parity;
+the fast report always sets its claims for TeaVM, Chrome, parity and promotion to false.
+`status=FAIL` by itself does not mean blocking; check both `required` and `classification`.
+`auto-disabled` describes a degradation action; the report classification remains review and it is not counted in REQUIRED failures.
 
-修复流程：先适配 seam 和 source sets，再处理 REQUIRED patches；FEATURE/PERF 等
-失效时按 patchkit 策略禁用，不把失败静默当作正常。镜像方法变化时保持 kernel
-关闭，更新实现后用目标版本 vanilla JVM golden fixtures 做 bit-exact parity。
-不要用容差近似、旧版本 fixtures 或新 lock 代替 parity。
+Fix flow: adapt the seam and source sets first, then handle REQUIRED patches; when FEATURE/PERF and similar
+patches fail, disable them per the patchkit policy and never silently treat the failure as normal. When a mirrored method changes, keep the kernel
+disabled, and after updating the implementation reach bit-exact parity with the target version's vanilla JVM golden fixtures.
+Do not substitute tolerance-based approximation, old-version fixtures or a new lock for parity.
 
-审核后才安装 draft、审核 kernelSemantics / source set 配方，使用各工具显式
-refresh 检查 lock/manifest。用 profilegen 的正常审核流程维护版本数据和派生表；
-fast 工具不会把未审核版本加入 JS allowlist，也不会自行提升为 release。
+Only after review install the draft and review the kernelSemantics / source set recipes, and use each tool's explicit
+refresh to check locks/manifests. Maintain version data and derived tables through the normal profilegen review flow;
+fast tools never add an unreviewed version to the JS allowlist and never promote to a release on their own.
 
-## 4. `--full`：审核后的构建和实际 acceptance
+## 4. `--full`: post-review build and real acceptance
 
-`gaius-bringup.mjs <id> --full --from <previous>` 是 release-day 入口：先执行全部
-fast 步骤，再执行审核所需的 patchkit lock diff、SPI fingerprint、apidiff/extrefs、kernel
-golden、shader corpus、版本字面量/可达性 lint、relay 表生成复检。上述轻量摘要已纳入
-fast；full 的额外执行不改变 fast 对可选证据缺失的 review 和自动降级语义。报告 JSON/MD 的
-每项都带 `PASS`、`REVIEW`、`AUTO_DISABLED`、`FAIL` 或 `SKIPPED`、实际原因和 `required`；退出码只有
-required 项失败时为 `2`，资源缺失按声明的 optional gate 记 SKIPPED，不伪装成 PASS。
-patchkit 的差异分类保留 auto-carry、review target-changed 和 required-failed；golden
-差异会为对应 kernel 自动 decline，继续 vanilla Java。`--build` 才启用 WasmGC
-client/server 构建（设置了 `GAIUS_SLOT` 时经该 slot.sh 包装串行）和 `WebAssembly.validate`
-检查；默认不构建、不启动 Chrome。
+`gaius-bringup.mjs <id> --full --from <previous>` is the release-day entry point: it first runs all
+fast steps, then runs the patchkit lock diff, SPI fingerprint, apidiff/extrefs, kernel
+golden, shader corpus, version literal/reachability lint and relay table regeneration recheck needed for review. The lightweight summaries above are already part of
+fast; the extra full-mode runs do not change fast's review and automatic degradation semantics for missing optional evidence. Every item in the report JSON/MD
+carries `PASS`, `REVIEW`, `AUTO_DISABLED`, `FAIL` or `SKIPPED`, the actual reason and `required`; the exit code is `2` only when
+a required item fails, and missing resources are recorded as SKIPPED against the declared optional gate, never disguised as PASS.
+The patchkit diff classification keeps auto-carry, review target-changed and required-failed; a golden
+diff automatically declines the corresponding kernel, which continues on vanilla Java. Only `--build` enables the WasmGC
+client/server build (serialized through that slot.sh wrapper when `GAIUS_SLOT` is set) and the `WebAssembly.validate`
+check; by default nothing is built and Chrome is not started.
 
-下面为 full 构建的命令模板，不要与其他完整构建并发运行。
-`ID` 来自已审核 profile；`OUT` 是独立完整构建目录；`GAIUS_SLOT` 可选，指向构建机上串行化
-构建/Chrome 的包装脚本（接口 `build|chrome <tag> -- <command>`，与 `gaius-bringup.mjs --build`
-读取的变量相同），未设置时下面的 `slot` 函数直接运行命令。
-先确认 Maven、Rust、Binaryen、字体/资源等已缓存；现有构建脚本可能获取缺少的
-字体或 Maven wrapper，故无下载权限时必须先补齐缓存，否则停止。
+Below is the command template for the full build; do not run it concurrently with other full builds.
+`ID` comes from a reviewed profile; `OUT` is a separate full-build directory; `GAIUS_SLOT` is optional and points to a wrapper script on the build machine that serializes
+builds/Chrome (interface `build|chrome <tag> -- <command>`, the same variable read by `gaius-bringup.mjs --build`);
+when unset, the `slot` function below runs the command directly.
+First confirm that Maven, Rust, Binaryen, fonts/resources and so on are cached; the existing build scripts may fetch missing
+fonts or the Maven wrapper, so without download permission the caches must be filled in first, otherwise stop.
 
 ```bash
 export GAIUS_VERSION_PROFILE_PATH="versions/$ID.json"
 export CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2 MAVEN_ARGS=--offline
-export GAIUS_TEAVM_MAX_HEAP=<heap>   # 按构建机内存选择；默认 14g。设置 MAVEN_OPTS 会覆盖编译器 JVM 参数
+export GAIUS_TEAVM_MAX_HEAP=<heap>   # choose by build machine memory; default 14g. Setting MAVEN_OPTS overrides the compiler JVM arguments
 slot() { local kind="$1" tag="$2"; shift 3; if [ -n "${GAIUS_SLOT:-}" ]; then bash "$GAIUS_SLOT" "$kind" "$tag" -- "$@"; else "$@"; fi; }
 export GAIUS_BUILD_ROOT="$OUT/js-build"
 export GAIUS_DIST_DIRECTORY="$OUT/js-dist"
@@ -159,42 +159,42 @@ GAIUS_FILE_DIST="$OUT/wasmgc-dist" GAIUS_FILE_MODE=single GAIUS_FILE_OUTPUT="$OU
   slot chrome "bringup-$ID-wasm" -- node port/scripts/browser-file-entry-acceptance.mjs --runtime wasm
 ```
 
-`MAVEN_ARGS=--offline` 要求现有 Maven 支持该环境变量；有 `GAIUS_SLOT` 时 build 与 Chrome
-分别串行。完整客户端在较小的 heap 下可能 OOM，失败就报告，并按构建机容量调整
-`GAIUS_TEAVM_MAX_HEAP`，不要在受限的共享机器上擅自提高。日志 BUILD_EXIT、wasm sidecar/hash、实际 runtime、
-世界进入/terrain draw、worker tick、singleplayer 和 multiplayer/skin/LAN 的
-产品验收均需要独立检查；title-only 或 HTTP 200 不足以验收。上述模板的单人
-acceptance 不是全部发布 gates；按现有发布手册补充 multiplayer 和协议/世界兼容检查。
+`MAVEN_ARGS=--offline` requires the existing Maven to support that environment variable; with `GAIUS_SLOT`, build and Chrome
+are each serialized. The full client may OOM with a smaller heap: report the failure and adjust
+`GAIUS_TEAVM_MAX_HEAP` to the build machine's capacity; do not raise it on your own on a constrained shared machine. The log BUILD_EXIT, wasm sidecar/hash, actual runtime,
+world entry/terrain draw, worker tick, and singleplayer and multiplayer/skin/LAN
+product acceptance each need independent checking; a title screen alone or an HTTP 200 is not enough for acceptance. The singleplayer
+acceptance in the template above is not the full set of release gates; add the multiplayer and protocol/world compatibility checks from the existing release handbook.
 
-## 5. 六小时 snapshot CI
+## 5. Six-hour snapshot CI
 
-`.github/workflows/snapshot-bringup.yml` 每六小时 UTC 第 17 分触发，也可手动触发。
-默认关闭：只有 repository variable `GAIUS_SNAPSHOT_BRINGUP_ENABLED=true` 才运行。
-调度并非保证准点；CI 不提交、不推送、不发布。
+`.github/workflows/snapshot-bringup.yml` triggers every six hours at minute 17 UTC and can also be triggered manually.
+It is off by default: it runs only when the repository variable `GAIUS_SNAPSHOT_BRINGUP_ENABLED=true` is set.
+Scheduling is not guaranteed to be punctual; CI does not commit, push or publish.
 
-CI-only 脚本读取 Mojang manifest 的 `latest.snapshot`，校验所选 metadata SHA-1，
-获取对应 client 并校验 SHA-1；从 jar 建立 provisional profile，调用现有
-`fetch-version.sh` / `remap-client.sh` 准备该版本、前一版本及 shader 配方依赖，
-然后运行同一个离线 `--fast`。已审核 ID 不覆盖 profile，改为对自身审核基线复检。
-`latest.snapshot` 有时指向已审核 release，不将它误报成新 profile。
+The CI-only script reads `latest.snapshot` from the Mojang manifest, verifies the SHA-1 of the selected metadata,
+fetches the corresponding client and verifies its SHA-1; it builds a provisional profile from the jar, calls the existing
+`fetch-version.sh` / `remap-client.sh` to prepare that version, the previous version and the shader recipe dependencies,
+and then runs the same offline `--fast`. An already reviewed ID does not overwrite its profile and is instead rechecked against its own reviewed baseline.
+`latest.snapshot` sometimes points to an already reviewed release; do not misreport it as a new profile.
 
-workflow 恢复离线 Maven/Cargo caches，key 由 Cargo.lock/port config 决定；首次
-启用前要有暖 cache，cache 冷启动/被清理会 blocking，不能宣称 snapshot 兼容。
-可先设置 `GAIUS_SNAPSHOT_BRINGUP_RUNNER` 为已有暖缓存的 Linux runner label；
-首次成功运行会保存相同 Linux cache key，随后恢复默认 `ubuntu-latest`。
-该变量不设置时仍使用 Ubuntu runner，不猜测或写入任何机器身份。
-未缓存或不支持的新 JDK/class format 同样需人工更新运行环境。
-只有 CI acquisition 可联网；`--fast` 无下载动作。review 退出转换为 CI 成功并
-保留报告，blocking 保留非零；两者都不提升 profile。初始化失败报告确保 acquisition
-或 bootstrap 提前失败也有 artifact；实际 fast 结果替换该占位报告。
+The workflow restores the offline Maven/Cargo caches, with the key determined by Cargo.lock/port config; a warm cache is needed before the first
+enablement, and a cold or purged cache is blocking and must not be used to claim snapshot compatibility.
+You can first set `GAIUS_SNAPSHOT_BRINGUP_RUNNER` to the label of a Linux runner that already has warm caches;
+the first successful run saves the same Linux cache key, after which the default `ubuntu-latest` is restored.
+When the variable is unset, an Ubuntu runner is still used, and no machine identity is guessed or written.
+A new JDK/class format that is uncached or unsupported likewise requires a manual update of the runtime environment.
+Only CI acquisition may use the network; `--fast` has no download action. A review exit is converted to CI success with the report
+kept, while blocking stays non-zero; neither promotes a profile. The initialization-failure report ensures that an early acquisition
+or bootstrap failure still produces an artifact; the actual fast result replaces that placeholder report.
 
-artifact 保存 JSON/MD、draft、diffs、locks、日志、translator results，不上传 jar、
-native binary 或完整 Cargo target；保留 14 天。未知 shader ABI/SPI 记 blocking，
-不猜 generation、不吞 REQUIRED 失败、不照搬新 kernel 语义。
+The artifact stores JSON/MD, drafts, diffs, locks, logs and translator results, and does not upload jars,
+native binaries or the full Cargo target; it is retained for 14 days. An unknown shader ABI/SPI is recorded as blocking;
+generations are not guessed, REQUIRED failures are not swallowed, and new kernel semantics are not copied over.
 
-## 6. 可复现验证与历史迁移范围
+## 6. Reproducible verification and historical migration scope
 
-测试：
+Tests:
 
 ```bash
 node --test port/tools/bringup/bringup.test.mjs port/tools/bringup/native-api.test.mjs
@@ -203,78 +203,78 @@ node port/tools/patchkit/patchkit.mjs lint
 node port/tools/profilegen/profilegen.mjs --check
 ```
 
-2026-10-08 的实际证明留在 `<out>/bringup`：
+The actual proofs from 2026-10-08 are kept in `<out>/bringup`:
 
-- `scratch` 是源码隔离复制，不是另一 git worktree；`26.4` 是 `26.3` 的独立 jar
-  复制和只读 library junction，不是真实官方 `26.4`。命令为
-  `node <output>/scratch/port/tools/bringup/gaius-bringup.mjs 26.4 --fast --from 26.3`。
-  默认报告路径在 scratch 的 `port/mc/profiles/26.4`；期望零 blocking、alias review。
-- 真实迁移命令为 `node port/tools/bringup/gaius-bringup.mjs 26.3 --fast --from 26.2
-  --out <output>/migration`。它比较前一 lock/manifests 和前一 vanilla jar，而不是
-  因当前 checkout 已修复就隐去历史 SPI、类迁移、依赖和 kernel 变化。
-- 当前 checkout 的 patchers 已完成该迁移，因此此命令的 REQUIRED 失败为零，
-  不应声称重新复现历史初始六个 patch 失败。前一 manifest owner inventory 只覆盖
-  实际改写 owner；架构迁移记录的更广 precheck census（60 个 owner、32 个建议）
-  不是同一统计口径。
-- 实跑的稳定迁移数据：549 个旧 class 消失、194 个唯一名字 relocation 建议，
-  前一 manifest 44 个 owner 消失/15 个建议；usage 新增 1537/消失 1365；
-  kernel 镜像方法 UNCHANGED 3498、BODY 127、SIGNATURE 1895、GONE 1010，
-  五个 kernel 全关闭；native shader 216/216 pipelines、175/175 modules 通过。
+- `scratch` is an isolated copy of the sources, not another git worktree; `26.4` is a separate jar
+  copy of `26.3` with a read-only library junction, not the real official `26.4`. The command is
+  `node <output>/scratch/port/tools/bringup/gaius-bringup.mjs 26.4 --fast --from 26.3`.
+  The default report path is `port/mc/profiles/26.4` inside scratch; the expected result is zero blocking and an alias review.
+- The real migration command is `node port/tools/bringup/gaius-bringup.mjs 26.3 --fast --from 26.2
+  --out <output>/migration`. It compares the previous lock/manifests and the previous vanilla jar, and does not
+  hide the historical SPI, class migration, dependency and kernel changes just because the current checkout has already been fixed.
+- The patchers in the current checkout have already completed that migration, so this command has zero REQUIRED failures
+  and must not be claimed to reproduce the original six patch failures. The previous manifest's owner inventory covers only
+  the owners actually rewritten; the broader precheck census recorded by the architecture migration (60 owners, 32 suggestions)
+  uses a different counting basis.
+- Stable migration data from the actual run: 549 old classes vanished, 194 unique-name relocation suggestions,
+  44 owners vanished/15 suggestions in the previous manifest; usage added 1537/vanished 1365;
+  kernel mirror methods UNCHANGED 3498, BODY 127, SIGNATURE 1895, GONE 1010,
+  all five kernels disabled; native shader 216/216 pipelines and 175/175 modules passed.
 
-最后一轮 alias 用时 68.792 秒：automatic 10 / review 1 / blocking 0，exit 1；
-真实迁移用时 64.205 秒：automatic 4 / review 6 / blocking 2，exit 2。
-两项 blocking 分别为前一 SPI generation 迁移和 SPI signature 变化，不是工具执行失败。
-`proof-summary.{json,md}` 汇总命令、计数、输入/报告 SHA 和验证日志；完整差异和
-逐命令 exit 以对应最新 `bringup-report.json` 为准。
-scratch 零阻塞不是新版官方 jar 或浏览器运行的支持证明。
+The last alias run took 68.792 seconds: automatic 10 / review 1 / blocking 0, exit 1;
+the real migration took 64.205 seconds: automatic 4 / review 6 / blocking 2, exit 2.
+The two blocking items are the previous SPI generation migration and an SPI signature change respectively, not tool execution failures.
+`proof-summary.{json,md}` summarizes the commands, counts, input/report SHAs and verification logs; the full diffs and
+per-command exits are as given in the corresponding latest `bringup-report.json`.
+Zero blocking in scratch is not proof of support for a new official jar or for browser execution.
 
-已有 `check-version-profile.mjs --all` 的 legacy profile 本地 metadata asset-index
-SHA-1 与审核 profile 不同，详见 output 的 `profile-check.log`；本任务没有刷新它，
-这不是 fast mode 的通过项，也不阻塞上述两个隔离证明。
+For the existing `check-version-profile.mjs --all`, the local metadata asset-index
+SHA-1 of the legacy profile differs from the reviewed profile; see the output's `profile-check.log`. This task did not refresh it,
+it is not a pass item of fast mode, and it does not block the two isolated proofs above.
 
-### 离线输入与人工工作
+### Offline inputs and manual work
 
-`--fast` 建立可审阅的迁移草稿，不是发布证明。fast 覆盖 seamprobe、usage/extrefs、
-patchkit、kernel mirror、native shader translation、sourcesets，以及 native entry、
-relay protocol、verification lint、apidiff、kernel golden 和 shader corpus 基线差异。
-native entry 仅有摘要时不能宣称 native smoke 通过；corpus hash/diff、native translation
-或 JVM fixture 验证均不能代替 kernel bit-exact parity 和浏览器 acceptance。
-`--full` 执行完整审核门；只有显式的 `--build` 才编译 WasmGC。所有输入必须来自现有
-离线缓存；REQUIRED 阶段缺少 jar、LWJGL native、Maven artifact、Cargo crate 或 shader
-工具时记录 blocking，可选审核缺少证据时记录 review，不联网补齐。
+`--fast` builds a reviewable migration draft, not release proof. fast covers seamprobe, usage/extrefs,
+patchkit, kernel mirror, native shader translation, sourcesets, plus the native entry,
+relay protocol, verification lint, apidiff, kernel golden and shader corpus baseline diffs.
+When native entry has only a summary, it cannot claim native smoke passes; corpus hash/diff, native translation
+and JVM fixture verification cannot substitute for kernel bit-exact parity and browser acceptance.
+`--full` runs the complete review gates; only an explicit `--build` compiles WasmGC. All inputs must come from the existing
+offline caches; when a REQUIRED stage lacks a jar, LWJGL native, Maven artifact, Cargo crate or shader
+tool, record blocking; when an optional review lacks evidence, record review; do not go online to fill the gap.
 
-Bring-up 的 JVM seamprobe 按平台选择 `natives-windows`、`natives-windows-arm64`、`natives-macos`、`natives-macos-arm64` 或 `natives-linux`。对应 classifier jar 必须已经在离线工作根的 libraries 中；工具通过 `-Dorg.lwjgl.system.SharedLibraryExtractPath` 解压到证据目录。缺少 native jar 时先修复输入，不要把 shader 或 JVM 阶段标成通过。
+The bring-up JVM seamprobe selects `natives-windows`, `natives-windows-arm64`, `natives-macos`, `natives-macos-arm64` or `natives-linux` by platform. The corresponding classifier jar must already be in the libraries of the offline work root; the tool extracts it into the evidence directory via `-Dorg.lwjgl.system.SharedLibraryExtractPath`. If the native jar is missing, fix the input first and do not mark the shader or JVM stage as passed.
 
-### 26.4 及后续版本：逐层人工动作
+### 26.4 and later versions: manual actions layer by layer
 
-以 `node port/tools/bringup/gaius-bringup.mjs 26.4 --fast --from 26.3 --out <out>`
-开始；真实官方输入必须已缓存，不能用复制旧 jar 的 alias dry run 证明新版本支持。
-报告每项的 `action` 与下表对应：先读其 `evidence`，再按文件执行动作。
-`<evidence>` 指本轮 `<out>/bringup-evidence-*`；`<id>` 与 `<previous>` 由命令固定。
-没有差异的层只需保留证据；不要因此新增版本分支或刷新已审核锁。
+Start with `node port/tools/bringup/gaius-bringup.mjs 26.4 --fast --from 26.3 --out <out>`;
+the real official inputs must already be cached, and an alias dry run that copies an old jar cannot prove support for the new version.
+Each item's `action` in the report corresponds to the table below: read its `evidence` first, then perform the action file by file.
+`<evidence>` means this run's `<out>/bringup-evidence-*`; `<id>` and `<previous>` are fixed by the command.
+A layer with no differences only needs its evidence kept; do not add version branches or refresh reviewed locks because of it.
 
-| 层/报告阶段 | 人工检查的实际文件 | 动作与完成条件 |
+| Layer / report stage | Files to check manually | Action and completion condition |
 |---|---|---|
-| profile | `<out>/profile.draft.json`、`port/versions/<id>.json` | 核对 `official`、Java/protocol/world/pack 版本、libraries、storage、`renderSeam`、`inputSeam`、`patchSet`、`extraPatchers`、`kernelSemantics`、`shaderFront`、`bringup` 和 `pages`；审核后才安装 draft |
-| remap/输入 | `port/work/<id>/client-original.jar`、`client-named.jar`、`version.json`、`libraries/` | 对照报告的 SHA 和缺失路径补齐或修复离线输入；工作根可能共享，只读使用，由输入维护者修复；重跑 remap/校验通过后继续 |
-| seamprobe | `<evidence>/classes.diff.json`、`spi.diff.json`、`patch-owners.diff.json`，`port/mc/seams/<generation>/seam.json` 与 `src/main/java/` | 根据 class relocation 和 SPI 明细适配受影响 adapter；未知 generation 先声明 seam 配方；signature/generation REQUIRED 差异修复并重跑，不自动改名 |
-| extrefs | `<evidence>/usage.diff.json`、`usage.lock`，`port/mc/profiles/<id>/usage.lock`、`port/versions/<id>.json` | 按 library coordinate 和 owner 审阅新增/消失 usage；修复库配方或对应 shim；审核后通过工具显式刷新 usage lock |
-| native entry | `<evidence>/native-entry.json`、`usage.lock`，`port/mc/seams/<generation>/seam.json` 的 `requiredEntries`、`port/overrides/libraries/<library>/src/`、`port/tools/src/main/java/dev/gaius/tools/Lwjgl*Patcher.java` | 按 usage owner 定位 library override 和入口 patcher；补齐 REQUIRED 入口签名/重定向后重跑；optional 变化保留 review、旧 adapter 或 FEATURE stub；构建 overlay 后运行 `port/scripts/lwjgl-browser-compat-smoke.sh` 补实际 smoke |
-| patchkit | `<evidence>/patch.js.diff.json`、`patch.wasmgc.diff.json`，`port/tools/src/main/java/dev/gaius/tools/patches/`、`port/tools/patchkit/classification.tsv`、`acknowledgements.json` | REQUIRED 失败修复对应 domain patch/registration 后重跑；目标变化逐项审核 ack；PERF/FEATURE/TELEMETRY 失败保持 disabled、记录原因，不提升为 blocking；审核后才刷新 `port/mc/profiles/<id>/patch-manifest.*.json` |
-| kernel mirror | `<evidence>/kernel-mirror.diff.json`、`kernel-mirror.lock`，`port/native/kernel-mirror.toml`、`port/versions/<id>.json` 的 `kernelMirror` | 审阅方法/依赖变化和传递关闭原因；被 decline 的 kernel 保持关闭与 vanilla Java；不能仅因新 lock 生成成功就打开 |
-| kernel golden | `<evidence>/kernel-golden.diff.json`，`port/native/fixtures/<id>/`、`port/native/golden/src/`、`port/native/crates/`、`port/mc/profiles/<id>/kernel-semantics.json` | 用目标版本 vanilla JVM 重新取得 fixtures，运行 `bash port/native/golden/run-golden.sh --verify <id>`；修复受影响 kernel 并取得 bit-exact parity 才可审核启用；缺失或 mismatch 保持 review/auto-disabled |
-| shader translation | `<evidence>/shader-translation/results.json` 和 shader 日志，`port/versions/<id>.json` 的 `bringup.shader`、`port/native/golden/shaders/java/dev/gaius/shaderxlat/`、`port/native/crates/gaius-shaderxlat/` | 修复 profile-owned dump/link 配方或 translator，并补齐已有离线 natives；必需 translation 全通过后才能解除该 REQUIRED blocker；另做浏览器验收 |
-| shader corpus baseline | `<evidence>/shader-corpus-baseline.json`、`shader-corpus/corpus.json`、`previous-shader-corpus/corpus.json`，`port/versions/<previous>.json` 的 `bringup.shader` | 按报告给出的 baseline 路径审阅 pipeline/module/layout 变化；修复前一版本离线输入或 dump/link 配方，可用 `port/native/golden/shaders/dump-corpus.sh` 和 `run-corpus.sh` 补齐 corpus；缺失基线保留 review 和已审核 corpus，不能认作 browser parity |
-| sourcesets | `<evidence>/sourcesets.json`，`port/versions/<id>.json` 的 `renderSeam`/`patchSet`、`port/mc/shared/sourcesets.json` 的 sets/relocations 与 `port/mc/shared/` 下对应 source set | 修正缺失 source/relocation 或 profile 配方；解析通过后交给后续 Java/TeaVM 构建验证，不把解析当编译通过 |
-| relay protocol | `<evidence>/relay-protocol/relay-protocol.js`，`apps/bridge/protocols/<protocol>.json`、`port/versions/<id>.json` 的 `relayProtocol`/`protocolVersion`/`official` | 用现有 `tools/gen-protocol-ids.mjs` 从离线报告生成并审核表，再运行 `node port/scripts/build-relay-protocol.mjs --profile <id> --out <evidence>/relay-protocol`；协议或 provenance 未核对时保留前表和 review，不启用新 profile 联机 |
-| verification lint | `<evidence>/version-literals.log`，命中的 `port/scripts/` 或 `apps/bridge/` 文件、`port/scripts/verification-profiles.mjs`、`port/scripts/quickcheck/version-literals-exempt.txt` | 把硬编码默认 profile/矩阵改为 profile 数据派生；数据文件确需豁免时写精确路径与理由；重跑 `python port/scripts/quickcheck/lint_version_literals.py --enforce` |
-| API diff | `<evidence>/apidiff.json`、`apidiff-*.log`、`usage.lock`，对应 `port/overrides/libraries/<library>/src/versions/<range>/api.lock` 与相邻 source、`port/tools/src/main/java/dev/gaius/tools/patches/platform/` 或 seam 文件 | 按 API owner 修复 library shim、JDK patch 或 seam；审核 overlay 后用 `bash port/tools/extrefs/extrefs.sh apilock <id> --write` 刷新相关 lock；对没有 API baseline 的变化库逐项审阅，不能用空摘要声明兼容 |
-| profile 派生输出 | `port/tools/profilegen/profilegen.mjs --regions` 列出的文件，`port/versions/<id>.json` | draft 审核安装后运行 `node port/tools/profilegen/profilegen.mjs --write`，再 `--check`；核对派生表 diff，不能手改生成区域或让 fast 自动加入 allowlist |
+| profile | `<out>/profile.draft.json`, `port/versions/<id>.json` | Verify `official`, Java/protocol/world/pack versions, libraries, storage, `renderSeam`, `inputSeam`, `patchSet`, `extraPatchers`, `kernelSemantics`, `shaderFront`, `bringup` and `pages`; install the draft only after review |
+| remap/inputs | `port/work/<id>/client-original.jar`, `client-named.jar`, `version.json`, `libraries/` | Fill in or fix offline inputs against the SHAs and missing paths in the report; the work root may be shared, so use it read-only and let the input maintainer fix it; continue once the re-run of remap/verification passes |
+| seamprobe | `<evidence>/classes.diff.json`, `spi.diff.json`, `patch-owners.diff.json`, `port/mc/seams/<generation>/seam.json` and `src/main/java/` | Adapt the affected adapters based on the class relocations and SPI details; for an unknown generation, declare the seam recipe first; fix signature/generation REQUIRED diffs and re-run, with no automatic renaming |
+| extrefs | `<evidence>/usage.diff.json`, `usage.lock`, `port/mc/profiles/<id>/usage.lock`, `port/versions/<id>.json` | Review added/vanished usage by library coordinate and owner; fix the library recipe or the corresponding shim; after review, explicitly refresh the usage lock through the tool |
+| native entry | `<evidence>/native-entry.json`, `usage.lock`, `requiredEntries` in `port/mc/seams/<generation>/seam.json`, `port/overrides/libraries/<library>/src/`, `port/tools/src/main/java/dev/gaius/tools/Lwjgl*Patcher.java` | Locate the library override and entry patcher by usage owner; fill in the REQUIRED entry signatures/redirects and re-run; keep optional changes as review, the old adapter or a FEATURE stub; after building the overlay, run `port/scripts/lwjgl-browser-compat-smoke.sh` for an actual smoke test |
+| patchkit | `<evidence>/patch.js.diff.json`, `patch.wasmgc.diff.json`, `port/tools/src/main/java/dev/gaius/tools/patches/`, `port/tools/patchkit/classification.tsv`, `acknowledgements.json` | Fix the corresponding domain patch/registration for a REQUIRED failure and re-run; review target changes one by one for ack; PERF/FEATURE/TELEMETRY failures stay disabled with the reason recorded and are not promoted to blocking; refresh `port/mc/profiles/<id>/patch-manifest.*.json` only after review |
+| kernel mirror | `<evidence>/kernel-mirror.diff.json`, `kernel-mirror.lock`, `port/native/kernel-mirror.toml`, `kernelMirror` in `port/versions/<id>.json` | Review method/dependency changes and the reasons for transitive disabling; a declined kernel stays disabled and on vanilla Java; never enable it merely because the new lock was generated successfully |
+| kernel golden | `<evidence>/kernel-golden.diff.json`, `port/native/fixtures/<id>/`, `port/native/golden/src/`, `port/native/crates/`, `port/mc/profiles/<id>/kernel-semantics.json` | Regenerate fixtures with the target version's vanilla JVM and run `bash port/native/golden/run-golden.sh --verify <id>`; fix the affected kernel and obtain bit-exact parity before it can be reviewed for enabling; a missing fixture or mismatch stays review/auto-disabled |
+| shader translation | `<evidence>/shader-translation/results.json` and shader logs, `bringup.shader` in `port/versions/<id>.json`, `port/native/golden/shaders/java/dev/gaius/shaderxlat/`, `port/native/crates/gaius-shaderxlat/` | Fix the profile-owned dump/link recipe or the translator, and fill in the existing offline natives; the REQUIRED blocker is lifted only after all required translations pass; do separate browser acceptance |
+| shader corpus baseline | `<evidence>/shader-corpus-baseline.json`, `shader-corpus/corpus.json`, `previous-shader-corpus/corpus.json`, `bringup.shader` in `port/versions/<previous>.json` | Review pipeline/module/layout changes at the baseline paths given in the report; fix the previous version's offline inputs or the dump/link recipe, and use `port/native/golden/shaders/dump-corpus.sh` and `run-corpus.sh` to fill in the corpus; a missing baseline stays review with the reviewed corpus kept, and must not be taken as browser parity |
+| sourcesets | `<evidence>/sourcesets.json`, `renderSeam`/`patchSet` in `port/versions/<id>.json`, sets/relocations in `port/mc/shared/sourcesets.json` and the corresponding source set under `port/mc/shared/` | Fix missing sources/relocations or the profile recipe; once resolution passes, hand off to the subsequent Java/TeaVM build verification, and do not treat resolution as a successful compile |
+| relay protocol | `<evidence>/relay-protocol/relay-protocol.js`, `apps/bridge/protocols/<protocol>.json`, `relayProtocol`/`protocolVersion`/`official` in `port/versions/<id>.json` | Generate and review the table from the offline report with the existing `tools/gen-protocol-ids.mjs`, then run `node port/scripts/build-relay-protocol.mjs --profile <id> --out <evidence>/relay-protocol`; when protocol or provenance is unverified, keep the previous table and review, and do not enable multiplayer for the new profile |
+| verification lint | `<evidence>/version-literals.log`, the hit files under `port/scripts/` or `apps/bridge/`, `port/scripts/verification-profiles.mjs`, `port/scripts/quickcheck/version-literals-exempt.txt` | Change hard-coded default profiles/matrices to be derived from profile data; when a data file truly needs an exemption, write the exact path and reason; re-run `python port/scripts/quickcheck/lint_version_literals.py --enforce` |
+| API diff | `<evidence>/apidiff.json`, `apidiff-*.log`, `usage.lock`, the corresponding `port/overrides/libraries/<library>/src/versions/<range>/api.lock` and adjacent sources, `port/tools/src/main/java/dev/gaius/tools/patches/platform/` or seam files | Fix the library shim, JDK patch or seam by API owner; after reviewing the overlay, refresh the relevant locks with `bash port/tools/extrefs/extrefs.sh apilock <id> --write`; review changed libraries that have no API baseline one by one, and never declare compatibility from an empty summary |
+| profile-derived output | The files listed by `port/tools/profilegen/profilegen.mjs --regions`, `port/versions/<id>.json` | After the draft is reviewed and installed, run `node port/tools/profilegen/profilegen.mjs --write`, then `--check`; verify the derived table diffs, and never hand-edit generated regions or let fast add to the allowlist automatically |
 
-如果新版本没有匹配的 seam generation，或 SPI、资源格式、shader harness 改变，
-人工修改集中在对应 seam、配方和 REQUIRED patch。无法证明 bit-exact parity 的 kernel
-必须保持关闭；缺失可选证据必须保留可执行的后续动作，不能标成已通过。
+If the new version has no matching seam generation, or the SPI, resource format or shader harness changes,
+the manual changes concentrate on the corresponding seam, recipes and REQUIRED patches. A kernel whose bit-exact parity cannot be proven
+must stay disabled; missing optional evidence must keep an actionable follow-up and must not be marked as passed.
 
 ### Honest effort estimate
 
-匹配既有 seam generation 且离线输入齐全时，`--fast`、报告审阅和 profile 元数据通常需要 30–90 分钟；独立的 `--full` 审核通常需要 1–3 小时。新的 renderpearl generation 若涉及 SPI 或 patch 变化，通常需要 1–3 个工程日完成 seam/patch 适配和审核，再加构建与浏览器 acceptance 窗口。缺少必需输入、REQUIRED patch 失败、shader ABI 变化或 TeaVM 内存失败会延长时间，直到 blocking 项解决。golden mismatch 的 kernel 保持关闭，补齐审核证据所需时间另计。
+When an existing seam generation matches and the offline inputs are complete, `--fast`, report review and profile metadata typically take 30–90 minutes; a separate `--full` review typically takes 1–3 hours. A new renderpearl generation involving SPI or patch changes typically takes 1–3 engineering days for seam/patch adaptation and review, plus build and browser acceptance windows. Missing required inputs, REQUIRED patch failures, shader ABI changes or TeaVM memory failures extend the time until the blocking items are resolved. A kernel with a golden mismatch stays disabled, and the time needed to gather the review evidence is counted separately.

@@ -236,24 +236,24 @@ export function humanAction(stage, detail = {}, context = {}) {
     const version = `port/versions/${id}.json`;
     const profile = `port/mc/profiles/${id}`;
     const actions = {
-        profile: `${out}/profile.draft.json：审阅官方 hashes、libraries、renderSeam/patchSet（决定选用的 source sets）、storage 和 bringup 配方；确认后将审核数据安装到 ${version}，执行 node port/tools/profilegen/profilegen.mjs --check。`,
-        remap: `port/work/${id}/version.json、client-original.jar、client-named.jar：由输入维护者修复离线输入/映射及 SHA 校验，再重跑；共享输入只读，不由 bring-up 修改。`,
-        seamprobe: `port/mc/seams/${seam}/seam.json：依据 classes.diff.json/spi.diff.json 确认 REQUIRED SPI；在该 seam 的 src/main/java 中按 owner 修复适配器，重跑 seamprobe。`,
-        extrefs: `${profile}/usage.lock：审阅 usage.diff.json 后用 bash port/tools/extrefs/extrefs.sh usage ${id} --write 更新；外部库变动还需审阅 ${version} 的 libraries。`,
-        patchkit: `port/tools/src/main/java/dev/gaius/tools/PatchRegistry.java：按 patch.<target>.diff.json 定位 patch owner/registration 修复 REQUIRED；FEATURE/PERF/TELEMETRY 保持禁用并记录原因，审核后更新 ${profile}/patch-manifest.js.json、patch-manifest.wasmgc.json。`,
-        kernelmirror: `port/native/kernel-mirror.toml、${profile}/kernel-mirror.lock、kernel-semantics.json：按 kernel-mirror.diff.json 审阅方法与依赖；变化或无法验证的 kernel 保持关闭、继续 vanilla Java，不凭相同 lock 启用。`,
-        shaders: `${version} 的 bringup.shader：核对 source/main/arguments/nativeLibrariesFrom；按该 source 修复 port/native/golden/shaders/java/dev/gaius/shaderxlat 中的 dumper，重新取得 native translation 证据。`,
-        sourcesets: `${version} 的 renderSeam/patchSet（决定选用的 source sets）、port/mc/shared/sourcesets.json 和各 set 的 relocations.tsv：按 sourcesets.json 证据修正路径和搬移规则，再交给 coordinator 编译验证。`,
-        "native-entry": `port/src/main/java/org/lwjgl/system/BrowserSharedLibrary.java、port/tools/src/main/java/dev/gaius/tools/LwjglSdlBrowserPatcher.java：按 native-entry.json 中的 owner 更新 entry adapter；审阅 port/overrides/libraries 下的 api.lock，保留旧 adapter 直到 native entry 检查通过。`,
-        "relay-protocol": `apps/bridge/protocols/${protocol}.json、${version} 的 relayProtocol：用已审核 vanilla protocol report 更新表和 source hashes；运行 node port/scripts/build-relay-protocol.mjs --profile ${id} --out ${out}/relay-checked；临时保留 ${from} 的表，不把旧表宣称支持新协议。`,
-        "version-lint": `port/scripts/quickcheck/version-literals-exempt.txt：仅登记有理由的数据文件豁免；按 version-literals.json findings.file 修复 verification 脚本，运行 python port/scripts/quickcheck/lint_version_literals.py --enforce。`,
-        apidiff: `port/overrides 下的 api.lock：按 apidiff.json 定位 library/owner，修复对应 override；确认 API 后运行 bash port/tools/extrefs/extrefs.sh apilock ${id} --write，审阅 ${version} 的 libraries。`,
-        "kernel-golden": `port/native/fixtures/${id}/*.jsonl、${profile}/kernel-semantics.json：审阅 kernel-golden.diff.json，运行 bash port/native/golden/run-golden.sh --verify ${id}；缺失或不一致时关闭 kernel，补齐 golden 与 Rust parity 后再审核启用。`,
-        "shader-corpus": `${version} 的 bringup.shader、port/native/golden/shaders/java/dev/gaius/shaderxlat：对照 shader-corpus-baseline.json 和 previous-shader-corpus/corpus.json 审阅新增/消失/变化 pipelines 与 SPIR-V；缺失证据保留前版 corpus，修复 recipe/dumper 后重跑。`,
+        profile: `${out}/profile.draft.json: review the official hashes, libraries, renderSeam/patchSet (which decides the source sets used), storage and bringup recipe; once confirmed, install the reviewed data into ${version} and run node port/tools/profilegen/profilegen.mjs --check。`,
+        remap: `port/work/${id}/version.json, client-original.jar, client-named.jar: the input maintainer should fix the offline inputs/mappings and SHA checks, then rerun; shared inputs are read-only and are not modified by bring-up.`,
+        seamprobe: `port/mc/seams/${seam}/seam.json: confirm the REQUIRED SPI from classes.diff.json/spi.diff.json; fix the adapter by owner in that seam's src/main/java, then rerun seamprobe.`,
+        extrefs: `${profile}/usage.lock: after reviewing usage.diff.json, update with bash port/tools/extrefs/extrefs.sh usage ${id} --write; if external libraries changed, also review the libraries in ${version}.`,
+        patchkit: `port/tools/src/main/java/dev/gaius/tools/PatchRegistry.java: use patch.<target>.diff.json to locate the patch owner/registration and fix REQUIRED patches; keep FEATURE/PERF/TELEMETRY disabled and record why, then after review update ${profile}/patch-manifest.js.json, patch-manifest.wasmgc.json。`,
+        kernelmirror: `port/native/kernel-mirror.toml, ${profile}/kernel-mirror.lock, kernel-semantics.json: review methods and dependencies per kernel-mirror.diff.json; keep any changed or unverifiable kernel disabled and stay on vanilla Java, and do not enable it on the strength of an identical lock.`,
+        shaders: `${version} bringup.shader: check source/main/arguments/nativeLibrariesFrom; fix the dumper in port/native/golden/shaders/java/dev/gaius/shaderxlat according to that source, then regenerate the native translation evidence.`,
+        sourcesets: `${version} renderSeam/patchSet (which decides the source sets used), port/mc/shared/sourcesets.json and each set's relocations.tsv: correct the paths and relocation rules based on the sourcesets.json evidence, then hand off to the coordinator for compile verification.`,
+        "native-entry": `port/src/main/java/org/lwjgl/system/BrowserSharedLibrary.java, port/tools/src/main/java/dev/gaius/tools/LwjglSdlBrowserPatcher.java: update the entry adapter by the owner in native-entry.json; review the api.lock files under port/overrides/libraries, and keep the old adapter until the native entry check passes.`,
+        "relay-protocol": `apps/bridge/protocols/${protocol}.json, ${version} relayProtocol: update the tables and source hashes from the reviewed vanilla protocol report; run node port/scripts/build-relay-protocol.mjs --profile ${id} --out ${out}/relay-checked; temporarily keep the ${from} tables, and do not claim the old tables support the new protocol.`,
+        "version-lint": `port/scripts/quickcheck/version-literals-exempt.txt: only register exemptions for data files with a justified reason; fix the verification scripts per findings.file in version-literals.json, then run python port/scripts/quickcheck/lint_version_literals.py --enforce。`,
+        apidiff: `port/overrides api.lock: locate the library/owner from apidiff.json and fix the corresponding override; once the API is confirmed, run bash port/tools/extrefs/extrefs.sh apilock ${id} --write and review the libraries in ${version}.`,
+        "kernel-golden": `port/native/fixtures/${id}/*.jsonl, ${profile}/kernel-semantics.json: review kernel-golden.diff.json and run bash port/native/golden/run-golden.sh --verify ${id}; if goldens are missing or inconsistent, disable the kernel, and re-enable it only after completing the golden and Rust parity work and review.`,
+        "shader-corpus": `${version} bringup.shader, port/native/golden/shaders/java/dev/gaius/shaderxlat: compare against shader-corpus-baseline.json and previous-shader-corpus/corpus.json and review added/removed/changed pipelines and SPIR-V; where evidence is missing, keep the previous version's corpus, then fix the recipe/dumper and rerun.`,
     };
     const base = stage.replace(/-full$/u, "");
-    const extra = detail.actions?.map(({file, action}) => `${file}：${action}`).join("；");
-    return (actions[base] ?? `${version}：查看该阶段 evidence 与日志，完成文件级修复后重跑 gaius-bringup。`) + (extra ? ` 具体文件动作：${extra}` : "");
+    const extra = detail.actions?.map(({file, action}) => `${file}: ${action}`).join("; ");
+    return (actions[base] ?? `${version}: check this stage's evidence and logs, complete the file-level fixes, then rerun gaius-bringup.`) + (extra ? ` File-level actions: ${extra}` : "");
 }
 
 export function shellPath(path) {
@@ -303,7 +303,7 @@ export function run(options) {
         previousProfile: null, items: [], stages: [], claims: {teavm: false, chrome: false, parity: false, promotion: false}};
     const item = (classification, stage, title, detail, path = null, status = null, required = classification === "blocking") => report.items.push({
         status: status ?? (classification === "blocking" ? "FAIL" : detail?.autoDisabled || detail?.optionalFailed?.length ? "AUTO_DISABLED" : classification === "review" ? "REVIEW" : "PASS"), required, classification, stage, title,
-        detail, action: (classification === "automatic" ? "本项无需手改，保留证据；若后续发生差异，按以下文件动作处理。" : "") +
+        detail, action: (classification === "automatic" ? "No manual change needed for this item; keep the evidence. If differences appear later, handle them using the file actions below." : "") +
             humanAction(stage, detail, {id: options.id, from: report.previousProfile, out: shellPath(options.out), seam: draft?.renderSeam, protocol: draft?.protocolVersion}),
         evidence: path ? relative(options.out, path).replaceAll("\\", "/") : null});
     const command = (label, executable, args, extra = {}) => {
@@ -454,7 +454,7 @@ export function run(options) {
                     const logPath = join(evidence, `${label}.log`);
                     const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : String(error.message);
                     const diff = apiDiffReport("seam-api-diff", relative(options.out, logPath).replaceAll("\\", "/"), log,
-                        "按 changes 中的 owner、constructor 和 abstract method 差异修复 renderpearl-1 adapter，再重跑 seamprobe。");
+                        "Fix the renderpearl-1 adapter according to the owner, constructor and abstract method differences in changes, then rerun seamprobe.");
                     const diffPath = join(evidence, "seam-api-diff.json");
                     save(diffPath, diff);
                     error.apiDiff = {...diff, evidence: relative(options.out, diffPath).replaceAll("\\", "/")};
@@ -479,7 +479,7 @@ export function run(options) {
                 {signatureChanged, bodyChanged, added: delta.added.length, removed: delta.removed.length, unchanged: delta.unchanged},
                 join(evidence, "spi.diff.json"));
         }, "blocking", (error) => error.apiDiff ? {failureType: "seam-api-change", apiDiff: error.apiDiff,
-            degradation: "seam 编译阻塞；已保留精确 API 差异，后续独立阶段继续运行"} : null);
+            degradation: "seam compilation is blocked; exact API differences are preserved and later independent stages keep running"} : null);
         stage("extrefs", () => {
             classpath();
             const asm = ["asm", "asm-tree"].map((name) => artifact("org.ow2.asm", name, "9.8"));
@@ -600,7 +600,7 @@ export function run(options) {
                 const logPath = join(evidence, `${label}compile.log`);
                 const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : String(error.message);
                 const diff = apiDiffReport("shader-api-diff", relative(options.out, logPath).replaceAll("\\", "/"), log,
-                    "按 changes 中的 shader API owner/signature 修复 dumper；没有当前 corpus 时不得宣称 shader parity。");
+                    "Fix the dumper according to the shader API owner/signature in changes; do not claim shader parity when there is no current corpus.");
                 const diffPath = join(evidence, "shader-api-diff.json");
                 save(diffPath, diff);
                 error.apiDiff = {...diff, evidence: relative(options.out, diffPath).replaceAll("\\", "/")};
@@ -625,7 +625,7 @@ export function run(options) {
             item("automatic", "shaders", "Native corpus translation passed (no browser claim)", results.summary, join(out, "results.json"));
         }, "blocking", (error) => error.apiDiff ? {failureType: "shader-api-change", apiDiff: error.apiDiff,
             currentCorpus: false, retainedPreviousCorpus: false,
-            degradation: "shader dumper 编译阻塞；保留 API diff，不生成伪造 current corpus"} : null);
+            degradation: "shader dumper compilation is blocked; the API diff is preserved and no fabricated current corpus is generated"} : null);
         stage("sourcesets", () => {
             const result = [];
             for (const kind of ["src", "client"]) {
@@ -904,15 +904,15 @@ export function run(options) {
     report.exitCode = options.mode === "full" ? fullExitCode(report.items) : (report.counts.blocking ? 2 : report.counts.review ? 1 : 0);
     report.noBlockingItems = report.counts.blocking === 0;
     save(join(options.out, "bringup-report.json"), report);
-    const markdown = [`# 版本接入 ${options.id}，基线 ${previous.id}`, "", `模式：${options.mode}；耗时 ${(report.durationMs / 1000).toFixed(1)} 秒；退出码 ${report.exitCode}。`,
-        `automatic：${report.counts.automatic}；review：${report.counts.review}；blocking：${report.counts.blocking}。`, "",
-        report.noBlockingItems ? "**没有阻塞项；review 仍需审核。**" : "**阻塞项需要修复 REQUIRED adapter/patch 或必需输入。**", "",
-        "本报告仅建立接入草稿；不证明 TeaVM、Chrome、kernel parity、发布提升或 JavaScript 发布输出通过。", ""];
+    const markdown = [`# Version bring-up ${options.id}, baseline ${previous.id}`, "", `Mode: ${options.mode}; duration ${(report.durationMs / 1000).toFixed(1)} s; exit code ${report.exitCode}.`,
+        `automatic: ${report.counts.automatic}; review: ${report.counts.review}; blocking: ${report.counts.blocking}.`, "",
+        report.noBlockingItems ? "**No blocking items; review items still need review.**" : "**Blocking items require fixing a REQUIRED adapter/patch or a required input.**", "",
+        "This report only produces a bring-up draft; it does not prove that TeaVM, Chrome, kernel parity, release promotion or the JavaScript release output pass.", ""];
     for (const classification of ["blocking", "review", "automatic"]) {
         markdown.push(`## ${classification}`, "");
         for (const entry of report.items.filter((entry) => entry.classification === classification)) {
-            markdown.push(`- **${entry.stage}: ${entry.title}** (${entry.status}, required=${entry.required})`, `  ${JSON.stringify(entry.detail)}`, `  人工动作：${entry.action}`,
-                entry.evidence ? `  证据：\`${entry.evidence}\`` : "");
+            markdown.push(`- **${entry.stage}: ${entry.title}** (${entry.status}, required=${entry.required})`, `  ${JSON.stringify(entry.detail)}`, `  Manual action: ${entry.action}`,
+                entry.evidence ? `  Evidence: \`${entry.evidence}\`` : "");
         }
         markdown.push("");
     }

@@ -310,12 +310,12 @@ function escapeCell(value) {
 }
 
 export function renderMarkdown(matrix) {
-  const lines = ["# v0.4.0 发布验收矩阵", "", `- staged: \`${matrix.staged}\``,
+  const lines = ["# v0.4.0 Release Acceptance Matrix", "", `- staged: \`${matrix.staged}\``,
     `- seed: \`${matrix.seed}\``,
-    `- 配置: jobs=${matrix.settings?.jobs ?? "未记录"}, ACCEPT_TERRAIN_VISIBLE=1, SETTLE_S=${matrix.settings?.settleSeconds ?? "未记录"}, BOOT_TIMEOUT_MS=${matrix.settings?.bootTimeoutMs ?? "未记录"}, WORLD_TIMEOUT_MS=${matrix.settings?.worldTimeoutMs ?? "未记录"}, CDP_TIMEOUT_MS=${matrix.settings?.cdpTimeoutMs ?? "未记录"}（默认）, SLOT_TIMEOUT_S=${matrix.settings?.slotTimeoutSeconds ?? "未记录"}`,
-    `- 开始: ${matrix.startedAt}`, `- 结束: ${matrix.finishedAt || "运行中"}`,
-    `- 结果: **${matrix.verdict}**（${matrix.rows.filter(x => x.verdict === "PASS").length} PASS / ${matrix.rows.filter(x => x.verdict === "FAIL").length} FAIL）`,
-    "", "| Profile | 场景 | 结果 | 用时 | 原因 | 证据 |", "| --- | --- | --- | ---: | --- | --- |"];
+    `- Settings: jobs=${matrix.settings?.jobs ?? "not recorded"}, ACCEPT_TERRAIN_VISIBLE=1, SETTLE_S=${matrix.settings?.settleSeconds ?? "not recorded"}, BOOT_TIMEOUT_MS=${matrix.settings?.bootTimeoutMs ?? "not recorded"}, WORLD_TIMEOUT_MS=${matrix.settings?.worldTimeoutMs ?? "not recorded"}, CDP_TIMEOUT_MS=${matrix.settings?.cdpTimeoutMs ?? "not recorded"} (default), SLOT_TIMEOUT_S=${matrix.settings?.slotTimeoutSeconds ?? "not recorded"}`,
+    `- Started: ${matrix.startedAt}`, `- Finished: ${matrix.finishedAt || "in progress"}`,
+    `- Result: **${matrix.verdict}** (${matrix.rows.filter(x => x.verdict === "PASS").length} PASS / ${matrix.rows.filter(x => x.verdict === "FAIL").length} FAIL)`,
+    "", "| Profile | Scenario | Result | Duration | Reason | Evidence |", "| --- | --- | --- | ---: | --- | --- |"];
   for (const row of matrix.rows) {
     const links = Object.entries(row.evidence || {}).flatMap(([name, value]) => {
       if (typeof value === "string") return [`[${name}](${value.replaceAll("\\", "/")})`];
@@ -325,7 +325,7 @@ export function renderMarkdown(matrix) {
     }).join(" · ");
     lines.push(`| ${row.profile} | ${row.id} | **${row.verdict}** | ${row.seconds ?? "—"} s | ${escapeCell(row.reasons?.join("; ") || "—")} | ${links || "—"} |`);
   }
-  if (matrix.pending?.length) lines.push("", `未运行: ${matrix.pending.join(", ")}`);
+  if (matrix.pending?.length) lines.push("", `Not run: ${matrix.pending.join(", ")}`);
   return lines.join("\n") + "\n";
 }
 

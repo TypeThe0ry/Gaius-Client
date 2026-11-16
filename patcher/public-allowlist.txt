@@ -103,3 +103,4 @@ relay-nodes.json
 !port/scripts/mc1-hotpath-parity/Mc1HotPathParity.java
 !port/web/runtime/webgpu/gpu-indirect-wgsl-validation.mjs
 !port/scripts/climate-handoff/**
+docs/assets/*.svg

@@ -109,8 +109,6 @@ async function run({ github, context }) {
       ...findings.map((f) => `- ${f}`),
       '',
       'Gaius never shares game files, builds or download links. Please edit your post to remove them; a maintainer will review it.',
-      '',
-      `自动检查发现${comment ? '这条评论' : '此 issue'}可能违反 [issue 规范](https://github.com/${owner}/${repo}/blob/main/CONTRIBUTING.md)。Gaius 不分享游戏文件、构建或下载链接，请编辑删除相关内容，维护者会进行审核。`,
     ].join('\n'),
   });
 }

@@ -140,7 +140,7 @@ test("only REQUIRED patch failures are blockers; optional failures stay review",
     assert.deepEqual(result.optional.map((patch) => `${patch.kind}:${patch.id}`), ["FEATURE:feature", "PERF:perf", "TELEMETRY:telemetry"]);
     assert.deepEqual(result.unknown, []);
     assert.equal(result.classification, "blocking");
-    assert.match(humanAction("patchkit"), /FEATURE\/PERF\/TELEMETRY 保持禁用/u);
+    assert.match(humanAction("patchkit"), /keep FEATURE\/PERF\/TELEMETRY disabled/u);
 });
 
 test("actual patch gate keeps every optional failure and crash in review", () => {
@@ -202,7 +202,7 @@ test("malformed javac output remains an actionable blocking diff", () => {
     const report = apiDiffReport("shader-api-diff", "shader-compile.log", "javac failed without diagnostics");
     assert.deepEqual(report.changes, []);
     assert.equal(report.actionable, false);
-    assert.match(report.action, /修复 dumper|changed/u);
+    assert.match(report.action, /Fix the dumper|changed/u);
 });
 
 test("golden verifier rejects path traversal tags before generating or deleting outputs", () => {
