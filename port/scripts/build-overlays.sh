@@ -2,6 +2,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$root/patcher/recipes/local-bridge-sources.sh"
+gaius_local_bridge_sources "$root/port/tools/src/main/java/dev/gaius/tools/bridges"
 source "$root/port/scripts/teavm-publication-gate.sh"
 source "$root/port/scripts/overlay-lock.sh"
 # The writer lock of the overlay directory (overlay-lock.sh), taken once the profile names
@@ -348,16 +350,22 @@ fi
 
 find "$classes" -type f -delete
 
-# Generate derived TeaVM sources into the locked overlay workspace.
-classlib_recipe_sources="$overlay_work/classlib-recipe-sources"
-classlib_recipe_tool="$root/patcher/recipes/apply-teavm-classlib.py"
-vineflower_jar="${GAIUS_VINEFLOWER_JAR:-$root/port/work/tools/$(jq -er '.vineflower.file' "$root/patcher/toolchain.lock")}"
-python3 -B "$classlib_recipe_tool" --version "$teavm_version" \
-  --maven-repository "$maven_repository" --vineflower "$vineflower_jar" --out "$classlib_recipe_sources"
-sources=(
-  "$classlib_recipe_sources/org/teavm/classlib/java/nio/TByteOrder.java"
-  "$classlib_recipe_sources/org/teavm/classlib/java/util/zip/TInflaterInputStream.java"
-)
+sources=()
+# The source-only distribution reconstructs the reviewed TeaVM overrides from
+# pinned local inputs. A full checkout already has both source overrides.
+byte_order=org/teavm/classlib/java/nio/TByteOrder.java
+inflater_stream=org/teavm/classlib/java/util/zip/TInflaterInputStream.java
+if [[ ! -f "$source_root/$byte_order" || ! -f "$source_root/$inflater_stream" ]]; then
+  if [[ -e "$source_root/$byte_order" || -e "$source_root/$inflater_stream" ]]; then
+    echo "Expected both TeaVM overrides or neither" >&2
+    exit 1
+  fi
+  classlib_recipe_sources="$overlay_work/classlib-recipe-sources"
+  vineflower_jar="${GAIUS_VINEFLOWER_JAR:-$root/port/work/tools/$(jq -er '.vineflower.file' "$root/patcher/toolchain.lock")}"
+  python3 -B "$root/patcher/recipes/apply-teavm-classlib.py" --version "$teavm_version" \
+    --maven-repository "$maven_repository" --vineflower "$vineflower_jar" --out "$classlib_recipe_sources"
+  sources=("$classlib_recipe_sources/$byte_order" "$classlib_recipe_sources/$inflater_stream")
+fi
 classlib_target_root="$(target_source_root "$source_root")"
 while IFS= read -r source; do
   if [[ -f "$classlib_target_root/${source#"$source_root/"}" ]]; then
@@ -764,7 +772,8 @@ javac --release 21 -proc:none \
   -classpath "$java_asm_jar${java_classpath_separator}$java_asm_tree_jar${java_classpath_separator}$java_maven_repository/org/teavm/teavm-core/$teavm_version/teavm-core-$teavm_version.jar" \
   -sourcepath "$root/port/tools/src/main/java" \
   -d "$tool_classes" \
-  "$root/port/tools/src/main/java/dev/gaius/tools/"*.java
+  "$root/port/tools/src/main/java/dev/gaius/tools/"*.java \
+  "${GAIUS_EXTRA_BRIDGE_SOURCES[@]}"
 
 # Client patchers record every patch through dev.gaius.tools.PatchRegistry.
 # They receive the profile id and the bring-up state both as system
@@ -1329,7 +1338,15 @@ while IFS= read -r source; do
   client_override_sources+=("$source")
 done < <(find "$client_override_staging" -type f -name '*.java' -print | sort)
 echo "Compiling ${#client_override_sources[@]} Minecraft $version browser overrides"
-client_override_classpath="$java_client_jar${java_classpath_separator}$java_classlib_classes${java_classpath_separator}$java_work_classpath"
+# Generate the same-package bridges during the overlay build, before compiling
+# their Java callers. Keep main-source bridges separate for Maven's output tree.
+main_bridge_classes="$overlay_work/main-bridge-classes"
+rm -rf "$main_bridge_classes"
+java -classpath "$tool_classes:$asm_jar" dev.gaius.tools.BrowserBridges \
+  "$patch_set" "$render_seam" src "$(extrefs_native_path "$main_bridge_classes")"
+java -classpath "$tool_classes:$asm_jar" dev.gaius.tools.BrowserBridges \
+  "$patch_set" "$render_seam" client "$(extrefs_native_path "$client_override_classes")"
+client_override_classpath="$(extrefs_native_path "$client_override_classes")${java_classpath_separator}$java_client_jar${java_classpath_separator}$java_classlib_classes${java_classpath_separator}$java_work_classpath"
 for artifact in teavm-interop teavm-jso teavm-jso-apis; do
   client_override_classpath="$client_override_classpath${java_classpath_separator}${java_maven_repository}/org/teavm/$artifact/$teavm_version/$artifact-$teavm_version.jar"
 done
@@ -1422,7 +1439,7 @@ for extra_patcher in $GAIUS_EXTRA_PATCHERS; do
 done
 
 # WebGPU core and render seam.  port/gpu/webgpu-core holds no vanilla symbol: it
-# is compiled for every profile against the TeaVM JSO API alone, so a vanilla reference fails
+# is compiled against the TeaVM JSO and classlib APIs, so a vanilla reference fails
 # here.  The profile's render seam (renderSeam above) is compiled against the core and the
 # patched client.  Both source roots follow the target rule (src/target-<target>/java replaces and
 # adds files).  With a seam, core and seam classes join the client overlay jar after the
@@ -1468,7 +1485,7 @@ done < <(target_merged_sources "$root/port/gpu/webgpu-core/src/main/java")
 echo "Compiling ${#gpu_core_sources[@]} WebGPU core sources"
 javac_with_source_argfile "$overlay_work/gpu-core-sources.argfile" \
   --release 21 -proc:none \
-  -classpath "$gpu_jso_classpath" \
+  -classpath "$gpu_jso_classpath${java_classpath_separator}$java_classlib_classes" \
   -d "$gpu_core_classes" \
   -- "${gpu_core_sources[@]}"
 if [[ "$render_seam" == none ]]; then

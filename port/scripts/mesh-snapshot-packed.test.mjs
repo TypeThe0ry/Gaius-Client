@@ -45,7 +45,7 @@ test("fast snapshot path is switchable and keeps vanilla fallbacks", () => {
   assert.match(source, /gaius\$blockEntities\(\)/u);
 });
 
-test("default-off snapshot switch is read once and packed scratch stays lazy", () => {
+test("snapshot switch is opt-in and rd32snap can select either path", () => {
   const bridge = readFileSync(new URL("../src/main/java/dev/gaius/browser/kernel/mesh/MeshKernelBridge.java",
     import.meta.url), "utf8");
   const buffers = readFileSync(new URL("../src/main/java/dev/gaius/browser/kernel/mesh/MeshJobBuffers.java",
@@ -53,12 +53,31 @@ test("default-off snapshot switch is read once and packed scratch stays lazy", (
   const snapshot = readFileSync(new URL("../mc/shared/canonical/src/java/dev/gaius/browser/kernel/mesh/SectionSnapshot.java",
     import.meta.url), "utf8");
   const launcher = readFileSync(new URL("../web/launcher/index.template.html", import.meta.url), "utf8");
-  assert.match(bridge, /private static final boolean FAST_SNAPSHOT_ENABLED = fastSnapshotEnabledJs\(\)/u);
+  const profile262 = JSON.parse(readFileSync(new URL("../versions/26.2.json", import.meta.url), "utf8"));
+  const profile263 = JSON.parse(readFileSync(new URL("../versions/26.3.json", import.meta.url), "utf8"));
+  assert.match(bridge, /private static final boolean FAST_SNAPSHOT_ENABLED = fastSnapshotEnabledJs\(MeshProfile\.PROFILE == 2\)/u);
   assert.match(bridge, /return FAST_SNAPSHOT_ENABLED;/u);
   assert.match(bridge, /__gaiusLauncherFlags[\s\S]{0,120}meshSnapshotFast/u);
   assert.doesNotMatch(bridge, /URLSearchParams/u);
   assert.match(launcher, /__gaiusLauncherFlags = Object\.freeze\(\{/u);
-  assert.match(launcher, /meshSnapshotFast: launcherBoolean\("gaiusMeshSnapshot"\)/u);
+  assert.match(launcher, /meshSnapshotFastLegacy = launcherBoolean\("gaiusMeshSnapshot"\)/u);
+  assert.match(launcher, /urlParams\.has\("rd32snap"\)[\s\S]*urlParams\.get\("rd32snap"\) !== "0"[\s\S]*: meshSnapshotFastLegacy/u);
+  assert.match(launcher, /meshSnapshotFastLegacy,/u);
+  assert.match(launcher, /meshSnapshotFast,/u);
+  assert.match(launcher, /meshSnapshotCheck = urlParams\.get\("rd32snapcheck"\) === "1"/u);
+  assert.match(launcher, /meshSnapshotCheck,/u);
+  assert.match(launcher, /meshSnapshotTrace = urlParams\.get\("rd32trace"\) === "1"/u);
+  assert.match(snapshot, /noteSnapshotPathNanos\(true, System\.nanoTime\(\) - fastStarted\)/u);
+  assert.match(snapshot, /noteSnapshotPathNanos\(false, System\.nanoTime\(\) - legacyStarted\)/u);
+  assert.match(snapshot, /captureChecked\(MeshJobBuffers legacy/u);
+  assert.match(snapshot, /firstDifference\(legacy, fast,/u);
+  assert.match(snapshot, /b\.floats\.length \* 4\s*\+ 12/u);
+  assert.match(snapshot, /return legacyCaptured;/u);
+  assert.equal(profile263.kernelSemantics.code, 2);
+  assert.notEqual(profile262.kernelSemantics.code, 2);
+  assert.match(bridge, /fastSnapshotEnabledJs\(MeshProfile\.PROFILE == 2\)/u);
+  assert.match(bridge, /rd32Profile \? flags\.meshSnapshotFast === true[\s\S]*flags\.meshSnapshotFastLegacy === true/u);
+  assert.match(snapshot, /fast && MeshProfile\.PROFILE != 2\s+&& capturePackedStates/u);
   assert.match(launcher, /chunkPipelineBatching,/u);
   assert.match(launcher, /meshInstallPriority: launcherBoolean\("gaiusMeshInstallPriority"\)/u);
   assert.match(launcher, /meshAdaptiveBudget: launcherBoolean\("gaiusMeshAdaptiveBudget"\)/u);

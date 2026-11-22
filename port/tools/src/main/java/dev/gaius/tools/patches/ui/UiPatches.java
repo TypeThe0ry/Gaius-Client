@@ -46,6 +46,87 @@ public final class UiPatches {
     private UiPatches() {
     }
 
+    public static void patchEaglerServerProtocolUi(String jar, Path output) throws IOException {
+        ClassNode node = read(jar, "net/minecraft/client/gui/screens/ManageServerScreen.class");
+        MethodNode bridge = new MethodNode(Opcodes.ACC_PUBLIC, "gaiusAddProtocolWidget",
+                "(Lnet/minecraft/client/gui/components/events/GuiEventListener;)V", null, null);
+        LabelNode skip = new LabelNode();
+        bridge.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        bridge.instructions.add(new JumpInsnNode(Opcodes.IFNULL, skip));
+        bridge.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        bridge.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        bridge.instructions.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "net/minecraft/client/gui/screens/Screen",
+                "addRenderableWidget",
+                "(Lnet/minecraft/client/gui/components/events/GuiEventListener;)"
+                        + "Lnet/minecraft/client/gui/components/events/GuiEventListener;", false));
+        bridge.instructions.add(new InsnNode(Opcodes.POP));
+        bridge.instructions.add(skip);
+        bridge.instructions.add(new InsnNode(Opcodes.RETURN));
+        bridge.maxStack = 2;
+        node.methods.add(bridge);
+        MethodNode init = find(node, "init", "()V");
+        int hooks = 0;
+        for (AbstractInsnNode instruction : init.instructions.toArray()) {
+            if (instruction.getOpcode() != Opcodes.RETURN) continue;
+            InsnList call = new InsnList();
+            call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            call.add(new FieldInsnNode(Opcodes.GETFIELD, node.name, "serverData",
+                    "Lnet/minecraft/client/multiplayer/ServerData;"));
+            call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            call.add(new FieldInsnNode(Opcodes.GETFIELD, node.name, "width", "I"));
+            call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            call.add(new FieldInsnNode(Opcodes.GETFIELD, node.name, "height", "I"));
+            call.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                    "dev/gaius/browser/GaiusServerProtocolUi", "createSelector",
+                    "(Lnet/minecraft/client/multiplayer/ServerData;II)"
+                            + "Lnet/minecraft/client/gui/components/CycleButton;", false));
+            call.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, node.name, "gaiusAddProtocolWidget",
+                    "(Lnet/minecraft/client/gui/components/events/GuiEventListener;)V", false));
+            call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            call.add(new FieldInsnNode(Opcodes.GETFIELD, node.name, "ipEdit",
+                    "Lnet/minecraft/client/gui/components/EditBox;"));
+            call.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                    "dev/gaius/browser/GaiusServerProtocolUi", "applyAddressHint",
+                    "(Lnet/minecraft/client/gui/components/EditBox;)V", false));
+            init.instructions.insertBefore(instruction, call);
+            hooks++;
+        }
+        if (hooks == 0) throw new IOException("ManageServerScreen.init return not found");
+        init.maxStack = Math.max(init.maxStack, 4);
+        writeComputeFrames(node, output);
+    }
+
+    public static void patchEaglerConnectionStatusUi(String jar, Path output) throws IOException {
+        ClassNode node = Files.isRegularFile(output) ? read(output)
+                : read(jar, "net/minecraft/client/gui/screens/ConnectScreen.class");
+        MethodNode update = find(node, "updateStatus",
+                "(Lnet/minecraft/network/chat/Component;)V");
+        int hooks = 0;
+        for (AbstractInsnNode instruction : update.instructions.toArray()) {
+            if (instruction.getOpcode() != Opcodes.RETURN) continue;
+            InsnList call = new InsnList();
+            call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            call.add(new FieldInsnNode(Opcodes.GETFIELD, node.name, "connection",
+                    "Lnet/minecraft/network/Connection;"));
+            call.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            call.add(new FieldInsnNode(Opcodes.GETFIELD, node.name, "status",
+                    "Lnet/minecraft/network/chat/Component;"));
+            call.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                    "dev/gaius/browser/GaiusConnectionStatusUi", "decorate",
+                    "(Lnet/minecraft/network/Connection;Lnet/minecraft/network/chat/Component;)"
+                            + "Lnet/minecraft/network/chat/Component;", false));
+            call.add(new FieldInsnNode(Opcodes.PUTFIELD, node.name, "status",
+                    "Lnet/minecraft/network/chat/Component;"));
+            update.instructions.insertBefore(instruction, call);
+            hooks++;
+        }
+        if (hooks == 0) throw new IOException("ConnectScreen.updateStatus return not found");
+        update.maxStack = Math.max(update.maxStack, 3);
+        writeComputeFrames(node, output);
+    }
+
     public static void patchOptionsBrowserLowSimulationDistance(String jar, Path output)
             throws IOException {
         ClassNode node = read(jar, "net/minecraft/client/Options.class");

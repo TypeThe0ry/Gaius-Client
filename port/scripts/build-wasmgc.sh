@@ -281,6 +281,22 @@ if [[ "$role" == client || "$role" == singleplayer-worker ]]; then
   jar --update --date=1980-01-01T00:00:02Z --file "$client_overlay" -C "$gson_patches" .
 fi
 
+refresh_gaius_languages() {
+  local resources="$1" source locale target="$1/assets/gaius/lang"
+  local list="$resources/dev/gaius/browser/minecraft-resources.txt"
+  mkdir -p "$target"
+  for source in "$root/port/src/main/resources/assets/gaius/lang/"*.json; do
+    locale="${source##*/}"
+    cp -- "$source" "$target/$locale"
+    if [[ "$role" == client ]]; then
+      printf 'assets/gaius/lang/%s\n' "$locale" >>"$list"
+    fi
+  done
+  if [[ "$role" == client ]]; then
+    LC_ALL=C sort -u -o "$list" "$list"
+  fi
+}
+
 if [[ "$role" == client ]]; then
   phase_begin resources
   # Add the generated Unicode font definitions after shared runtime patches.
@@ -288,6 +304,8 @@ if [[ "$role" == client ]]; then
   jar --update --date="$jar_date" --file "$client_overlay" -C "$gson_patches" .
   rm -rf "$build_root/generated-resources"
   cp -R "$resource_root/generated-resources" "$build_root/generated-resources"
+  # The copied resource root can come from an older build than the current language files.
+  refresh_gaius_languages "$build_root/generated-resources"
   for font_definition in \
     assets/minecraft/font/include/unifont.json \
     assets/minecraft/font/include/unifont_pua.json; do
@@ -344,12 +362,12 @@ else
   cp -R "$resource_root/server-worker/generated-resources" "$role_root/generated-resources"
   # MinecraftResourceSupplier embeds the bundled language files in both roles; the server
   # Worker resource root only carries its own list, so take them from the client root.
-  for language_root in assets/minecraft/lang assets/gaius/lang; do
-    if [[ -d "$resource_root/generated-resources/$language_root" ]]; then
-      mkdir -p "$role_root/generated-resources/$language_root"
-      cp -n "$resource_root/generated-resources/$language_root/"*.json         "$role_root/generated-resources/$language_root/" 2>/dev/null || true
-    fi
-  done
+  language_root=assets/minecraft/lang
+  if [[ -d "$resource_root/generated-resources/$language_root" ]]; then
+    mkdir -p "$role_root/generated-resources/$language_root"
+    cp -n "$resource_root/generated-resources/$language_root/"*.json "$role_root/generated-resources/$language_root/" 2>/dev/null || true
+  fi
+  refresh_gaius_languages "$role_root/generated-resources"
   target_file="singleplayer-server.wasm"
   resource_directory="$role_root/generated-resources"
   export GAIUS_MAIN_CLASS="dev.gaius.browser.BrowserIntegratedServerMain"
@@ -590,8 +608,8 @@ fi
 # strict train does not fail on it).
 atlas_prebake_supported=1
 atlas_client_jar="$root/port/work/$version/client-named.jar"
-if [[ -f "$atlas_client_jar" ]] && ! unzip -l "$atlas_client_jar" 2>/dev/null \
-    | grep -q 'net/minecraft/client/resources/model/sprite/AtlasManager.class'; then
+if [[ -f "$atlas_client_jar" ]] && ! unzip -Z1 "$atlas_client_jar" 2>/dev/null \
+    | grep -Fx 'net/minecraft/client/resources/model/sprite/AtlasManager.class' >/dev/null; then
   atlas_prebake_supported=0
   echo "atlas prebake: Minecraft $version has no AtlasManager; the vanilla atlas code runs" >&2
 fi

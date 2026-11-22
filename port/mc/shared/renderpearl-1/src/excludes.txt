@@ -10,4 +10,3 @@ dev/gaius/browser/kernel/mesh/Blaze3dMeshOps.java
 dev/gaius/browser/kernel/worldgen/WorldgenKernel262.java
 dev/gaius/browser/kernel/worldgen/WorldgenKernelHooks262.java
 dev/gaius/browser/kernel/worldgen/WorldgenSeedSource262.java
-net/minecraft/world/level/levelgen/GaiusWorldgenExport262.java

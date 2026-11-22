@@ -8,12 +8,14 @@
         "file": "OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz",
         "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz",
         "bytes": 141341188,
+        "redirectHost": "release-assets.githubusercontent.com",
         "sha256": "68982529869257d0ee6b824ec5aa270ff8b118bb438670da0b97ebdab178d7fb"
       },
       "windows-x64": {
         "file": "OpenJDK25U-jdk_x64_windows_hotspot_25.0.5_8.zip",
         "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_x64_windows_hotspot_25.0.5_8.zip",
         "bytes": 141285173,
+        "redirectHost": "release-assets.githubusercontent.com",
         "sha256": "636bdc13dc649ddc7d5921c5c7d23cca6e44fd19d662b45cc9c02135a6c96c42"
       }
     }
@@ -32,17 +34,24 @@
     "bytes": 9160848,
     "sha256": "4b7195b6a4f5c81af4c0212677a32ee8143643401bc6e1e8412e6b06ea82beac"
   },
+  "remapper": {
+    "version": "2.0.18",
+    "file": "AutoRenamingTool-2.0.18-all.jar",
+    "url": "https://maven.neoforged.net/releases/net/neoforged/AutoRenamingTool/2.0.18/AutoRenamingTool-2.0.18-all.jar",
+    "bytes": 756920,
+    "sha256": "64ece9706e5b111cebcb662d4eab56ba6b9b9b3b4bee1766382352fe02a6a7f3"
+  },
   "teavm": {
     "version": "0.15.0",
     "repository": "https://repo1.maven.org/maven2/",
     "artifacts": [
-      {"path": "org/teavm/teavm-classlib/0.15.0/teavm-classlib-0.15.0.jar", "sha256": "7d805be4670a892a34c89d9d750a8afd65e2f8201b7b3a10343634ea19d1c410"},
-      {"path": "org/teavm/teavm-core/0.15.0/teavm-core-0.15.0.jar", "sha256": "501ca5eae7a835cd6278c822685f32800fa0818e3f42204afc9b558408c943df"},
-      {"path": "org/teavm/teavm-interop/0.15.0/teavm-interop-0.15.0.jar", "sha256": "5c8511d71ae6f6d2ca913130393b64a959303e521727b2d9c1a9b1e14519216f"},
-      {"path": "org/teavm/teavm-jso/0.15.0/teavm-jso-0.15.0.jar", "sha256": "58b337b93924106bf819c45890c7c231a0c740145afe77795f1e0f099f621d71"},
-      {"path": "org/teavm/teavm-jso-apis/0.15.0/teavm-jso-apis-0.15.0.jar", "sha256": "171abaff01d9c029218df911470184ed8e30e6b511be6bb03381a924ec4a8c3c"},
-      {"path": "org/teavm/teavm-platform/0.15.0/teavm-platform-0.15.0.jar", "sha256": "999d369ab15aa83c17987d048ba59560759169891de7e13a5a1c2bd93dd060a8"},
-      {"path": "org/teavm/teavm-maven-plugin/0.15.0/teavm-maven-plugin-0.15.0.jar", "sha256": "1133e16e45f1fd3cb93129fd96d142e1f5ef3608891d83b2273442d5446a3879"}
+      {"path": "org/teavm/teavm-classlib/0.15.0/teavm-classlib-0.15.0.jar", "bytes": 17718996, "sha256": "7d805be4670a892a34c89d9d750a8afd65e2f8201b7b3a10343634ea19d1c410"},
+      {"path": "org/teavm/teavm-core/0.15.0/teavm-core-0.15.0.jar", "bytes": 2956367, "sha256": "501ca5eae7a835cd6278c822685f32800fa0818e3f42204afc9b558408c943df"},
+      {"path": "org/teavm/teavm-interop/0.15.0/teavm-interop-0.15.0.jar", "bytes": 12599, "sha256": "5c8511d71ae6f6d2ca913130393b64a959303e521727b2d9c1a9b1e14519216f"},
+      {"path": "org/teavm/teavm-jso/0.15.0/teavm-jso-0.15.0.jar", "bytes": 8437, "sha256": "58b337b93924106bf819c45890c7c231a0c740145afe77795f1e0f099f621d71"},
+      {"path": "org/teavm/teavm-jso-apis/0.15.0/teavm-jso-apis-0.15.0.jar", "bytes": 177814, "sha256": "171abaff01d9c029218df911470184ed8e30e6b511be6bb03381a924ec4a8c3c"},
+      {"path": "org/teavm/teavm-platform/0.15.0/teavm-platform-0.15.0.jar", "bytes": 101636, "sha256": "999d369ab15aa83c17987d048ba59560759169891de7e13a5a1c2bd93dd060a8"},
+      {"path": "org/teavm/teavm-maven-plugin/0.15.0/teavm-maven-plugin-0.15.0.jar", "bytes": 21053, "sha256": "1133e16e45f1fd3cb93129fd96d142e1f5ef3608891d83b2273442d5446a3879"}
     ]
   },
   "mavenRepository": {
@@ -1769,18 +1778,6 @@
         "sha256": "f793e78f01f703717d09472e56cdf212fe298970c882e2116e8e549fb6d140c2"
       },
       {
-        "path": "org/ow2/asm/asm-tree/9.8/asm-tree-9.8.jar",
-        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-tree/9.8/asm-tree-9.8.jar",
-        "bytes": 51934,
-        "sha256": "14b7880cb7c85eed101e2710432fc3ffb83275532a6a894dc4c4095d49ad59f1"
-      },
-      {
-        "path": "org/ow2/asm/asm-tree/9.8/asm-tree-9.8.pom",
-        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-tree/9.8/asm-tree-9.8.pom",
-        "bytes": 2592,
-        "sha256": "7149e7faa0e191296f879aeed9209c8942d398f0698d2cca1a9c628f2e2a8f77"
-      },
-      {
         "path": "org/ow2/asm/asm-tree/9.10.1/asm-tree-9.10.1.jar",
         "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-tree/9.10.1/asm-tree-9.10.1.jar",
         "bytes": 51958,
@@ -1791,6 +1788,18 @@
         "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-tree/9.10.1/asm-tree-9.10.1.pom",
         "bytes": 2598,
         "sha256": "963eebdea6e2e1ff25c9068b64a238e1585c99f8acd455595ac159a7f52b6c41"
+      },
+      {
+        "path": "org/ow2/asm/asm-tree/9.8/asm-tree-9.8.jar",
+        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-tree/9.8/asm-tree-9.8.jar",
+        "bytes": 51934,
+        "sha256": "14b7880cb7c85eed101e2710432fc3ffb83275532a6a894dc4c4095d49ad59f1"
+      },
+      {
+        "path": "org/ow2/asm/asm-tree/9.8/asm-tree-9.8.pom",
+        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-tree/9.8/asm-tree-9.8.pom",
+        "bytes": 2592,
+        "sha256": "7149e7faa0e191296f879aeed9209c8942d398f0698d2cca1a9c628f2e2a8f77"
       },
       {
         "path": "org/ow2/asm/asm-util/9.8/asm-util-9.8.jar",
@@ -1817,18 +1826,6 @@
         "sha256": "92eee24bc3c843e4881d46c1dd6505471ee3142facfb466b428cfea5a56c6b60"
       },
       {
-        "path": "org/ow2/asm/asm/9.8/asm-9.8.jar",
-        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.8/asm-9.8.jar",
-        "bytes": 126113,
-        "sha256": "876eab6a83daecad5ca67eb9fcabb063c97b5aeb8cf1fca7a989ecde17522051"
-      },
-      {
-        "path": "org/ow2/asm/asm/9.8/asm-9.8.pom",
-        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.8/asm-9.8.pom",
-        "bytes": 2370,
-        "sha256": "c1367c3bb383d7619e7f797e38df7513885f2eef04ae7b5908f68222657b5baa"
-      },
-      {
         "path": "org/ow2/asm/asm/9.10.1/asm-9.10.1.jar",
         "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.10.1/asm-9.10.1.jar",
         "bytes": 126151,
@@ -1839,6 +1836,18 @@
         "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.10.1/asm-9.10.1.pom",
         "bytes": 2373,
         "sha256": "e1b1c3832ca3ac0a9e563c405f4c760118b5556a4920daee14058886197e094d"
+      },
+      {
+        "path": "org/ow2/asm/asm/9.8/asm-9.8.jar",
+        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.8/asm-9.8.jar",
+        "bytes": 126113,
+        "sha256": "876eab6a83daecad5ca67eb9fcabb063c97b5aeb8cf1fca7a989ecde17522051"
+      },
+      {
+        "path": "org/ow2/asm/asm/9.8/asm-9.8.pom",
+        "url": "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.8/asm-9.8.pom",
+        "bytes": 2370,
+        "sha256": "c1367c3bb383d7619e7f797e38df7513885f2eef04ae7b5908f68222657b5baa"
       },
       {
         "path": "org/ow2/ow2/1.5.1/ow2-1.5.1.pom",
@@ -2264,6 +2273,7 @@
           "linux-x64": {
             "file": "binaryen-version_133-x86_64-linux.tar.gz",
             "url": "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz",
+            "redirectHost": "release-assets.githubusercontent.com",
             "bytes": 111200018,
             "sha256": "2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489",
             "root": "binaryen-version_133",
@@ -2274,6 +2284,7 @@
           "windows-x64": {
             "file": "binaryen-version_133-x86_64-windows.tar.gz",
             "url": "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-windows.tar.gz",
+            "redirectHost": "release-assets.githubusercontent.com",
             "bytes": 111045528,
             "sha256": "17a2cbeac6b5693c5fbafab3838d3c65fd9c1eb38b05f5baec6c657e8c84995b",
             "root": "binaryen-version_133",
@@ -2289,6 +2300,7 @@
           "linux-x64": {
             "file": "LLVM-21.1.8-Linux-X64.tar.xz",
             "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X64.tar.xz",
+            "redirectHost": "release-assets.githubusercontent.com",
             "bytes": 2019005384,
             "sha256": "b3b7f2801d15d50736acea3c73982994d025b01c2f035b91ae3b49d1b575732b",
             "root": "LLVM-21.1.8-Linux-X64",
@@ -2302,6 +2314,7 @@
           "windows-x64": {
             "file": "clang+llvm-21.1.8-x86_64-pc-windows-msvc.tar.xz",
             "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz",
+            "redirectHost": "release-assets.githubusercontent.com",
             "bytes": 942572476,
             "sha256": "749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47",
             "root": "clang+llvm-21.1.8-x86_64-pc-windows-msvc",
@@ -2340,8 +2353,8 @@
       "pinsSha256": "3f6ca91a3d13e78255d60be93925ca1e338cc261e2e20c7415fc0ea6b9e61d0e",
       "prebuiltArchive": {
         "file": "gaius-shader-toolchain-emscripten-6.0.10.zip",
-        "bytes": 4130506,
-        "sha256": "5c0ad6fde45e877b788253b41ca1adf3c21a3a8eb8ea3d1763fd60db01e79dc6"
+        "bytes": 4139382,
+        "sha256": "4fdf284544ae79aa49531d6a0b5a4485c41cf6baad8af28e358301fca91d735c"
       },
       "distribution": {
         "status": "planned",
@@ -2349,12 +2362,12 @@
         "manifestSha256": null
       },
       "manifest": "gaius-shader-toolchain.json",
-      "manifestSha256": "9560cc54cb47ebc9cb538f5bcc753ec3ea71d4789de15999acc69087a2832fc6",
+      "manifestSha256": "cec5548319c8388e8349e10c43def99173dabd0f22feea8eebad0ce67bd8c4eb",
       "files": {
-        "gaius-shader-toolchain.js": "9a75b7de7fdb692694026a3cc2430d51da9d2cc823ff85de99123a40514678f1",
-        "gaius-shaderc.js": "a5f8ca60b82bead280b208b09c23b5e691b44d03f3fc9f82740ee7117aadd3ab",
-        "gaius-shaderc.wasm": "22fd6ac98d8decf93701001fb42f185d4766b8d9802fe39db6dbce865e427c4c",
-        "gaius-spvc.js": "caa95ce2f54747cc1977d958b16a2c502264652f31fe6108c5f4312499fe34ff",
+        "gaius-shader-toolchain.js": "f3a8fd9043e4f97281f234dc8d521fba2f5c9395e661b3bdcf69e943b80a6e23",
+        "gaius-shaderc.js": "4ac8af8692fc02c0b06dcf426f64a21b929448587e36fe628bad7e163be8387b",
+        "gaius-shaderc.wasm": "906a475c09371e38e9faae86e1647802834dbf6861ad86a9ae32120f6fc9060c",
+        "gaius-spvc.js": "9eab8595c34bed6a0664e984492ba1ba7708fc07c50d7115a5c662b96971bba8",
         "gaius-spvc.wasm": "71c51a32f0dbd9104f990d3edcdc25e78e80c86a3fc80413d3f7059ba759c8ba"
       },
       "sdk": {

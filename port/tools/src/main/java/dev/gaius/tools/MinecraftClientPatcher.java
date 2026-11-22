@@ -83,6 +83,9 @@ public final class MinecraftClientPatcher {
                 "net/minecraft/client/multiplayer/resolver/ResolvedServerAddress$1.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchConnectionBrowserWebSocket", "REQUIRED js wasmgc", () -> NetworkPatches.patchConnectionBrowserWebSocket(args[0], root.resolve(
                 "net/minecraft/network/Connection.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchEaglerConnectionInitializer", "FEATURE js wasmgc", () -> NetworkPatches.patchEaglerConnectionInitializer(args[0], root.resolve(
+                "net/minecraft/network/Connection$1.class"), root.resolve(
+                "net/minecraft/client/multiplayer/ServerStatusPinger.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchConnectionExceptionDiagnostics", "REQUIRED js wasmgc", () -> NetworkPatches.patchConnectionExceptionDiagnostics(root.resolve(
                 "net/minecraft/network/Connection.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchCompressionDecoderBrowser", "REQUIRED js wasmgc", () -> NetworkPatches.patchCompressionDecoderBrowser(root.resolve(
@@ -93,7 +96,17 @@ public final class MinecraftClientPatcher {
                 "net/minecraft/commands/Commands.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchServerCommandPacketErrorDiagnostics", "TELEMETRY js wasmgc >=26.2", () -> NetworkPatches.patchServerCommandPacketErrorDiagnostics(args[0], root.resolve(
                 "net/minecraft/server/network/ServerGamePacketListenerImpl.class")));
-        PatchRegistry.run("MinecraftClientPatcher.patchConnectScreenBrowserRecovery", "REQUIRED js wasmgc", () -> NetworkPatches.patchConnectScreenBrowserRecovery(args[0], root.resolve(
+        PatchRegistry.run("MinecraftClientPatcher.patchServerAddressWebSocketScheme", "FEATURE js wasmgc", () -> NetworkPatches.patchServerAddressWebSocketScheme(args[0], root.resolve(
+                "net/minecraft/client/multiplayer/resolver/ServerAddress.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchServerDataTransportProtocol", "FEATURE js wasmgc", () -> NetworkPatches.patchServerDataTransportProtocol(args[0], root.resolve(
+                "net/minecraft/client/multiplayer/ServerData.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchConnectScreenBrowserRecovery", "REQUIRED js wasmgc", () -> NetworkPatches.patchConnectScreenBrowserRecovery(args[0], root));
+        PatchRegistry.run("MinecraftClientPatcher.patchConnectionTransportMetadata", "FEATURE js wasmgc", () -> NetworkPatches.patchConnectionTransportMetadata(args[0],
+                root.resolve("net/minecraft/network/Connection.class"),
+                root.resolve("net/minecraft/client/gui/screens/ConnectScreen$1.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchEaglerServerProtocolUi", "FEATURE js wasmgc", () -> UiPatches.patchEaglerServerProtocolUi(args[0], root.resolve(
+                "net/minecraft/client/gui/screens/ManageServerScreen.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchEaglerConnectionStatusUi", "FEATURE js wasmgc", () -> UiPatches.patchEaglerConnectionStatusUi(args[0], root.resolve(
                 "net/minecraft/client/gui/screens/ConnectScreen.class")));
         PatchRegistry.run("MinecraftClientPatcher.patchPacketProcessorBrowserSlice", "REQUIRED js wasmgc", () -> NetworkPatches.patchPacketProcessorBrowserSlice(args[0], root.resolve(
                 "net/minecraft/network/PacketProcessor.class")));
@@ -382,8 +395,10 @@ public final class MinecraftClientPatcher {
         // (or the reloaded game) shows on the next frame instead of after the 2 s logo fade-out.
         PatchRegistry.run("MinecraftClientPatcher.patchLoadingOverlayBrowserNoFade", "FEATURE js wasmgc", () -> UiPatches.patchLoadingOverlayBrowserNoFade(args[0], root.resolve(
                 "net/minecraft/client/gui/screens/LoadingOverlay.class")));
-        PatchRegistry.run("MinecraftClientPatcher.patchJoinMultiplayerScreenRelays", "FEATURE js wasmgc", () -> NetworkPatches.patchJoinMultiplayerScreenRelays(args[0], root.resolve(
-                "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen.class")));
+        PatchRegistry.run("MinecraftClientPatcher.patchJoinMultiplayerScreenRelays", "FEATURE js wasmgc", () -> {
+            Path output = root.resolve("net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen.class");
+            NetworkPatches.patchJoinMultiplayerScreenRelays(args[0], output);
+        });
         // Startup: copy image rectangles row by row and memoize block face sturdiness.
         PatchRegistry.run("MinecraftClientPatcher.patchNativeImageBulkCopyRect", "PERF js wasmgc", () -> RenderPatches.patchNativeImageBulkCopyRect(args[0], root.resolve(
                 "com/mojang/blaze3d/platform/NativeImage.class")));
@@ -515,4 +530,5 @@ public final class MinecraftClientPatcher {
         });
         PatchRegistry.printSummary();
     }
+
 }

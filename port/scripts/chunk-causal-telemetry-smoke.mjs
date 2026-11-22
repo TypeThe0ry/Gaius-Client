@@ -18,15 +18,15 @@ const context=vm.createContext({
 context.globalThis=context;
 const enabled="return globalThis.__gaiusChunkCausalTelemetryEnabled === true;";
 const init=body("private static native void initializeEnabledStateJs();");
-assert.match(init, /\bvar root=/,
-  "initializer JSBody root must use renamer-safe var");
-assert.match(init, /\bvar causalState=/,
-  "initializer JSBody state must use renamer-safe var");
+assert.match(init, /\bconst root=/,
+  "initializer JSBody root declaration drifted");
+assert.match(init, /\bconst causal=/,
+  "initializer JSBody state declaration drifted");
 assert.throws(() => new vm.Script("(b,c)=>{const c=globalThis.value;}"),
   /Identifier 'c'|already been declared/,
   "the released short-name wrapper shape reproduces the local/parameter collision");
 assert.doesNotThrow(() => new vm.Script(`(b,c)=>{${init}\n}`),
-  "var declarations remain legal beside TeaVM's short wrapper parameters");
+  "initializer declarations remain legal beside TeaVM's short wrapper parameters");
 const epochs=body("private static native void setEpochsJs");
 const packet=body("private static native void packetHandlerEnterJs");
 const uniform=body("private static native void registerDrawSectionJs");

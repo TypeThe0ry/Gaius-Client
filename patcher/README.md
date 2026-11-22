@@ -10,18 +10,26 @@ computer, from your own copy of the game. It is compatible with Java Edition
 > the [Minecraft EULA](https://www.minecraft.net/eula). See the
 > [disclaimer](../DISCLAIMER.md).
 
+## Public source snapshot
+
+The public tree cannot build the game on its own. All three overlay profiles
+need the omitted light and Unihex bridge generators in addition to the official
+game files. The [local overlay recipe](recipes/README.md#local-bridge-generation)
+describes how maintainers who already have the matching source inputs generate
+the bridges locally. This snapshot supports source inspection and standalone
+checks.
+
 ## What the patcher does
 
 1. **Collects the official files from your installation.** It reads the
    client jar, libraries and assets from your launcher's game directory and
    checks every file against the SHA-1 pinned in
-   `port/versions/<version>.json`. Install the matching version with the official
-   launcher first. A standalone
+   `port/versions/<version>.json`. It never downloads game files: a version you
+   have not installed with the official launcher cannot be built. A standalone
    `fetch` can obtain the 1.21.11 obfuscation mappings, which the launcher does
-   not keep, or you can pass them with `--mappings`. `build --offline` requires
-   local mappings and a prepared toolchain. Online tool preparation can obtain
-   pinned build dependencies. See the [disclaimer](../DISCLAIMER.md) for the
-   separate maintenance scripts that fetch from official Mojang endpoints.
+   not keep, or you can pass them with `--mappings`. The `build` command always
+   runs offline and requires those mappings in its work directory or at the
+   local path passed with `--mappings`. Nothing goes through a Gaius server.
 2. **Prepares the few sources that change official classes.** Gaius changes
    about ten official classes (`patcher/source-patches.json`). Their Gaius
    versions are published only as source patches, which hold the lines Gaius
@@ -58,32 +66,62 @@ a build.
 
 `build` is offline after the local launcher files and toolchain have been
 installed. On an online run, missing pinned host-tool archives, JDK, Maven and
-Vineflower files are downloaded once to `work-root/tools` and verified before
-use. Locked Maven dependencies are verified in `work-root/maven-repository`;
-`--toolchain-dir` can provide a cache containing `maven-repository/`. Pass
-`--mappings` for 1.21.11 when
+Vineflower files are downloaded once and verified before use. `fetch` and `tools install` can populate
+`<work-root>/maven-repository` from the locked Maven closure. Use
+`--toolchain-dir <dir>` to provide an offline source at `<dir>/maven-repository`.
+`tools status --json --offline` counts the verified files in the working
+repository; `tools install --only maven-repository --json-progress` provisions
+missing files, resumes interrupted downloads, and publishes only verified bytes.
+Pass `--mappings` for 1.21.11 when
 the mappings are not already in your work directory. A build writes `site/`, `Gaius-<version>.html` and
 `expected-hashes.json` under `--out` (or under the default work-root build
 directory). Add `--json-progress` to receive one compact JSON object per line
 on stdout; build logs stay on stderr and a failure emits an error object before
-exiting non-zero. For 26.3, provide the pinned prebuilt shader toolchain with
-`--shader-toolchain <dir>` or `GAIUS_SHADER_TOOLCHAIN_PREBUILT`. The pinned ZIP
-may also be supplied in `--toolchain-dir`. The bundle is excluded from the
-public repository. Its public download URL and accompanying license/notice
-bundle are pending verification. See the [root README](../README.md) for
-component source and license records. Builds invoke
+exiting non-zero. For 26.3, use `tools status --json --offline` for the exact
+placement path and file list for the prebuilt shader toolchain. The Gaius
+release process prepares this package. This tool cannot download it. Use
+`--shader-toolchain <dir>` (or
+`GAIUS_SHADER_TOOLCHAIN_PREBUILT`) to select the unpacked directory. The locked
+Emscripten SDK is only needed when rebuilding the shader modules separately.
+Builds invoke
 the repository's Bash release scripts; on Windows, Git for Windows Bash must
 be available as `bash` on `PATH`.
 
+Python 3 is required for release metadata, asset preparation, and site staging.
+The patcher checks `PYTHON` if set, otherwise it looks for a working `python`
+or `python3`, then `py -3` on Windows. The selected interpreter is passed to
+all staged build scripts through `PYTHON`.
+
+The default patcher build skips the Wasm kernels. To include them, pass
+`--strict-kernel`. This mode requires the pinned Rust/Cargo versions, the
+`wasm32-unknown-unknown` target, and a populated offline Cargo dependency cache.
+Check the same prerequisites as the build with `tools status --json --offline`
+using `--strict-kernel` for the strict build. Each row includes `required`,
+`requiredReason`, and `requiredFor`. Each result identifies the tool, its status, and why the selected build needs it.
+
 `patcher/toolchain.lock` records the JDK, Maven, Vineflower, TeaVM, Rust kernel
 inputs, Wasm host tools and 26.3 shader toolchain versions and hashes. The
-host-tool archives are pinned for Linux and Windows x86-64. An XZ-capable
-`tar` is required, and Linux also needs `dpkg-deb`. `--toolchain-dir <dir>`
+default build requires LLVM 21.1.8 and Binaryen 133 on all three profiles.
+Their archives are pinned for Linux and Windows x86-64. Install them with
+`java patcher/GaiusPatcher.java tools install --only llvm,binaryen --json-progress`.
+The installer verifies the archives and unpacks the locked files into an
+atomic, content-keyed directory under `<work-root>/tools/host-wasm/`.
+An XZ-capable `tar` is required, and Linux also needs `dpkg-deb`.
+`--toolchain-dir <dir>`
 uses a local cache containing the pinned files and optional `maven-repository/`;
 missing offline files produce a message with the tool name, expected hash and
 work-root destination. Verified tools and the selected Maven repository are
 staged in the disposable build tree. `build.log` and `wasm-host-tools.json`
 record the host-tool versions used for the build.
+
+When updating the shader toolchain, build it with
+`port/scripts/build-wasm-shader-toolchain.sh --out <dir>` and then run
+`python3 patcher/tools/lock_shader_toolchain.py <dir> --archive <output.zip>`. The generator verifies
+the built manifest, source pins, files, and checked-in loader before updating
+only the shader section of the lock, including the SHA-256 and size of the
+generated ZIP. Use the matching output directory or ZIP with the updated lock;
+do not mix files from different builds. Public distribution remains subject to
+a separate review. The source export omits the ZIP and its locked loader; to build with the shader toolchain, supply the exact files or archive recorded in the lock.
 
 ## Terms of use
 
@@ -121,9 +159,7 @@ For 1.21.11, which ships obfuscated, remap the client
 
 Run `manifest <build-output-dir> --out <dir>` to record the site and portable
 HTML hashes of a reference build. Run `verify <build-output-dir> --manifest
-<file>` with a trusted manifest to check a build (add `--json-progress` for
-machine-readable status; a non-zero exit code indicates missing files, hash
-mismatches, or unexpected modifications).
+<file>` with a trusted manifest to check a build. `verify` checks the recorded hashes and reports any differences.
 
 | Option | Meaning |
 | --- | --- |
@@ -136,7 +172,8 @@ mismatches, or unexpected modifications).
 | `--backend <auto|webgpu|webgl2>` | Set the graphics backend preference; an existing `gpu` query parameter wins |
 | `--resource-pack <file>` | Copy one local resource-pack file into `site/resourcepacks/`; repeat for more files |
 | `--offline` | Never use the network |
-| `--json-progress` | Print one JSON progress object per line to stdout (`build`, `manifest`, `verify`) |
+| `--strict-kernel` | Enable Wasm kernels and require their locked Rust inputs (`build` and `tools status`) |
+| `--json-progress` | Print one JSON progress object per line to stdout (`build`, `manifest`, `verify`, `tools install`) |
 | `--manifest <file>` | Reference manifest for `verify` |
 | `--out <dir>` | Build output directory containing the site and portable HTML |
 | `--accept-terms` | Accept the [terms of use](TERMS.md) without the prompt |
@@ -146,18 +183,13 @@ mismatches, or unexpected modifications).
 
 ## What may be public
 
-Only files Gaius wrote (with external build-time dependency licenses referenced
-in `NOTICE` and `LICENSES/`): the patcher, the bytecode patches, the browser
-runtime and UI, the Rust kernels, the build scripts and the version profiles.
-Third-party-derived overrides (TeaVM/Harmony, Gson, SLF4J, jopt-simple, LWJGL,
-mojang-logging), vendored test fixtures (`fake-indexeddb`), and prebuilt shader
-toolchain artifacts are excluded and must be generated locally at build time or
-fetched from upstream public URLs with SHA verification (see the
-[root README](../README.md)). Modified copies of official classes are published
-only as patches against the user's own game. Official jars, libraries, assets,
-mappings, anything derived from them (patched jars, compiled `classes.wasm` or
-`classes.js`, packed assets, built HTML) and screenshots of the game never enter
-this repository or its releases.
+Only files Gaius wrote (plus the third-party libraries listed in `NOTICE`):
+the patcher, the bytecode patches, the browser runtime and UI, the Rust
+kernels, the build scripts and the version profiles. Modified copies of
+official classes are published only as patches against the user's own game. Official jars, libraries, assets, mappings, anything derived
+from them (patched jars, compiled `classes.wasm` or `classes.js`, packed
+assets, built HTML) and screenshots of the game never enter this repository
+or its releases.
 
 `patcher/public-allowlist.txt` lists what is exported; files under
 `patcher/public-root/` (README, disclaimer, issue rules, issue forms and the

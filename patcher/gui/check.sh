@@ -2,12 +2,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT_DIR="${GAIUS_BUILDER_OUT_DIR:-${SCRIPT_DIR}/target/check}"
-TMP_DIR="${GAIUS_BUILDER_TMP_DIR:-${TMPDIR:-/tmp}}"
+DEFAULT_OUT="${SCRIPT_DIR}/target/check"
+OUT_DIR="${GAIUS_BUILDER_OUT_DIR:-${DEFAULT_OUT}}"
+TMP_DIR="${GAIUS_BUILDER_TMP_DIR:-${TMPDIR:-/tmp}/gaius-builder-check}"
 mkdir -p "${OUT_DIR}/shots" "${TMP_DIR}"
-OUT_DIR="$(cd "${OUT_DIR}" && pwd)"
-TMP_DIR="$(cd "${TMP_DIR}" && pwd)"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${SCRIPT_DIR}/target}"
+export CARGO_TARGET_DIR="${TMP_DIR}/target"
 export TMP="${TMP_DIR}"
 export TEMP="${TMP_DIR}"
 export TMPDIR="${TMP_DIR}"

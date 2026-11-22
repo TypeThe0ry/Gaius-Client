@@ -41,7 +41,7 @@
 
 import {spawnSync} from "node:child_process";
 import {readAcknowledgements, targetChanges, validateTargets} from "./target-lock.mjs";
-import {stageSources} from "../sourcesets/sourcesets.mjs";
+import {loadProfile, stageSources} from "../sourcesets/sourcesets.mjs";
 import {createHash} from "node:crypto";
 import {copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
   writeFileSync} from "node:fs";
@@ -918,9 +918,15 @@ function verifyOverlay(argv) {
       dependencies = resolve(nativePath(options["--dependencies"]));
       if (existsSync(dependencies)) throw new UsageError(`verifier dependency output already exists: ${dependencies}`);
       mkdirSync(dependencies, {recursive: true});
+      const selected = loadProfile(profile, repositoryRoot);
       for (const kind of ["src", "client"]) {
+        const emitted = spawnSync(jdkTool("java"), ["-classpath", classpath, "dev.gaius.tools.BrowserBridges",
+          selected.patchSet, selected.renderSeam, kind, dependencies], {encoding: "utf8"});
+        if (emitted.status !== 0) {
+          throw new UsageError(`could not generate ${profile} ${kind} bridge dependencies: ${emitted.error ?? emitted.stderr}`);
+        }
         const staged = join(scratch, `sources-${kind}`);
-        stageSources(profile, kind, target, staged, repositoryRoot);
+        stageSources(selected, kind, target, staged, repositoryRoot);
         sourcePaths.push(staged);
       }
       sourcePaths.push(join(repositoryRoot, `port/overrides/classlib/src/target-${target}/java`),

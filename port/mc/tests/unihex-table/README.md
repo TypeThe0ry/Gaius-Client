@@ -11,8 +11,10 @@ parsing them. This gate proves on the JVM that the fonts are unchanged:
    `UnihexProvider$Definition.loadData` of the unpatched jar (vanilla is the oracle).
 2. `UnihexGatePatcher` writes the real browser font patches (`patchUnihexProviderBrowserBulkParser`,
    `patchUnihexProviderBrowserAccess`, `patchFontProviderSelectionIndex`) of the same jar; the
-   Gaius loader is compiled from the profile's staged sources (`VersionOps` reduced to the glyph
-   upload of the generation's implementation, copied verbatim).
+   gate runs the `BrowserUnihexLoader` class and its nested classes emitted by `BrowserBridges`
+   for the profile's `src` role. It checks the loader bytecode for bulk ZIP reads and override
+   handling. The JVM support code compiles from the profile's staged sources with `VersionOps`
+   reduced to the generation's glyph upload implementation, copied verbatim.
 3. `UnihexGate` runs once per arm in its own JVM and writes a dump:
    - `providers`: every unihex provider of `include/unifont.json` and `include/unifont_pua.json`
      plus each zip without overrides and with synthetic size overrides (overlapping ranges,
@@ -38,6 +40,9 @@ parsing them. This gate proves on the JVM that the fonts are unchanged:
 
 The browser parts are covered by `node --test port/scripts/unihex-table-page.test.mjs` (the
 page's table parse and archive verification, and the JS bodies of `UnihexGlyphTable`).
+
+The JVM fixture's recording GPU uses the Renderpearl API of 26.3. Running the full gate against
+26.2 or 1.21.11 requires adapting the GPU fixture and glyph upload support to the older APIs.
 
 Known limit shared by both browser paths (before and after the table): the bulk parser patch
 passes size overrides as `Dimensions.pack()`, so a resource pack override with `left` or `right`

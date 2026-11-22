@@ -4,12 +4,25 @@
 //! `schema: "gaius-patcher-progress-v1"`, a phase, step, percentage, English
 //! message, and optional error. Unknown JSON fields and non-JSON stdout lines
 //! are ignored for control flow and retained in bounded raw output.
+//! `tools status --json` emits one `gaius-patcher-tools-v1` record per tool.
+//! `required` is a boolean, `requiredReason` is its reason code, and
+//! `requiredFor` scopes required rows to profiles. `resolvedCommand` can
+//! identify the Python invocation that the patcher selected. States
+//! are `present`, `missing`, `hash-mismatch`, and `unsupported`. Size zero
+//! indicates an unmeasured size. Install events use a separate schema,
+//! `gaius-patcher-tools-progress-v1`, with aggregate `pct`, `bytes`,
+//! `totalBytes`, `id`, `step`, and nullable `error` fields.
+//! `doctor <version> --verify-files --json` emits UTF-8 JSON Lines with
+//! `schema: "gaius-patcher-verify-v1"`. Each `progress` or `group` event has
+//! a group ID and `checked`/`total` counters. A terminal `group` has a `failed`
+//! array of relative paths, nullable expected/actual hashes, and reasons;
+//! optional `failureCount` records the count when details are capped.
 
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -21,6 +34,8 @@ use sha2::{Digest, Sha256};
 
 const CAPTURE_LIMIT: usize = 256 * 1024;
 const STREAM_LINE_LIMIT: usize = 16 * 1024;
+const VERIFY_LINE_LIMIT: usize = 1024 * 1024;
+const VERIFY_SCHEMA: &str = "gaius-patcher-verify-v1";
 const LINE_TRUNCATION_MARKER: &str = " …[line truncated]";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -48,6 +63,130 @@ pub struct VersionStatus {
     pub state: CheckState,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VerifyGroup {
+    Client,
+    Libraries,
+    AssetIndex,
+    AssetObjects,
+}
+
+impl VerifyGroup {
+    pub const ALL: [Self; 4] = [
+        Self::Client,
+        Self::Libraries,
+        Self::AssetIndex,
+        Self::AssetObjects,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Client => "client",
+            Self::Libraries => "libraries",
+            Self::AssetIndex => "asset-index",
+            Self::AssetObjects => "asset-objects",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct VerifyProgress {
+    pub group: VerifyGroup,
+    pub checked: u64,
+    pub total: u64,
+}
+
+impl VerifyProgress {
+    pub fn mock_running() -> Self {
+        Self {
+            group: VerifyGroup::AssetObjects,
+            checked: 320,
+            total: 1000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct VerifyFailure {
+    pub path: String,
+    #[serde(deserialize_with = "Deserialize::deserialize")]
+    pub expected: Option<String>,
+    #[serde(deserialize_with = "Deserialize::deserialize")]
+    pub actual: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifyGroupResult {
+    pub group: VerifyGroup,
+    pub checked: u64,
+    pub total: u64,
+    pub failed: Vec<VerifyFailure>,
+    pub failure_count: u64,
+}
+
+impl VerifyGroupResult {
+    pub fn passed(&self) -> bool {
+        self.checked == self.total && self.failure_count == 0 && self.failed.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifyReport {
+    pub groups: Vec<VerifyGroupResult>,
+}
+
+impl VerifyReport {
+    pub fn passed(&self) -> bool {
+        self.groups.len() == VerifyGroup::ALL.len()
+            && VerifyGroup::ALL.iter().all(|group| {
+                self.groups
+                    .iter()
+                    .any(|result| result.group == *group && result.passed())
+            })
+    }
+
+    pub fn mock_ok() -> Self {
+        Self {
+            groups: VerifyGroup::ALL
+                .into_iter()
+                .zip([1, 85, 1, 1000])
+                .map(|(group, count)| VerifyGroupResult {
+                    group,
+                    checked: count,
+                    total: count,
+                    failed: Vec::new(),
+                    failure_count: 0,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn mock_failed_index() -> Self {
+        let mut report = Self::mock_ok();
+        let index = &mut report.groups[VerifyGroup::AssetIndex as usize];
+        index.failed.push(VerifyFailure {
+            path: "assets/indexes/34.json".to_owned(),
+            expected: Some("1".repeat(40)),
+            actual: Some("2".repeat(40)),
+            reason: "sha1-mismatch".to_owned(),
+        });
+        index.failure_count = 1;
+        let objects = &mut report.groups[VerifyGroup::AssetObjects as usize];
+        objects.checked = 0;
+        objects.total = 0;
+        objects.failed.push(VerifyFailure {
+            path: "assets/indexes/34.json".to_owned(),
+            expected: None,
+            actual: None,
+            reason: "prerequisite-failed".to_owned(),
+        });
+        objects.failure_count = 1;
+        report
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DoctorReport {
     pub java: Option<DoctorItem>,
@@ -56,10 +195,105 @@ pub struct DoctorReport {
     pub profiles_dir: Option<String>,
     pub work_dir: Option<DoctorItem>,
     pub versions: Vec<VersionStatus>,
+    #[serde(default)]
+    pub tools: Vec<ToolStatus>,
     pub warnings: Vec<String>,
     pub raw_output: String,
     pub stderr: String,
     pub exit_code: i32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolStatus {
+    pub schema: String,
+    pub id: String,
+    pub display_name: String,
+    pub required: bool,
+    pub required_reason: ToolRequirement,
+    pub required_for: Vec<String>,
+    #[serde(default)]
+    pub resolved_command: Option<String>,
+    pub state: String,
+    pub bytes: u64,
+    pub source_host: String,
+    #[serde(default)]
+    pub source_url: String,
+    pub destination_path: String,
+    pub expected_sha256: String,
+    #[serde(default)]
+    pub installable: bool,
+    #[serde(default)]
+    pub hint: String,
+    #[serde(flatten)]
+    pub inventory: ToolInventory,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ToolInventory {
+    pub checked_files: Option<u64>,
+    pub total_files: Option<u64>,
+    pub first_failed_path: Option<String>,
+    pub total_bytes: Option<u64>,
+    pub expected_files: Vec<String>,
+    pub differing_files: Vec<String>,
+    pub sdk_platforms: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolRequirement {
+    RequiredDefault,
+    RequiredStrictKernel,
+    Optional,
+}
+
+impl ToolStatus {
+    pub fn ready(&self) -> bool {
+        if self.id == "shader-toolchain" {
+            self.state == "verified"
+        } else {
+            self.state == "present"
+        }
+    }
+
+    pub fn can_install(&self) -> bool {
+        self.installable && !matches!(self.id.as_str(), "shader-toolchain" | "emscripten-sdk")
+    }
+
+    pub fn blocks(&self, versions: &[String]) -> bool {
+        self.id != "emscripten-sdk"
+            && self.required
+            && !self.ready()
+            && self
+                .required_for
+                .iter()
+                .any(|version| versions.contains(version))
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ToolPaths {
+    pub toolchain_dir: Option<PathBuf>,
+    pub shader_toolchain: Option<PathBuf>,
+}
+
+impl ToolPaths {
+    fn append_args(&self, args: &mut Vec<OsString>, include_shader: bool) {
+        if let Some(path) = &self.toolchain_dir {
+            args.extend([
+                OsString::from("--toolchain-dir"),
+                path.as_os_str().to_owned(),
+            ]);
+        }
+        if include_shader && let Some(path) = &self.shader_toolchain {
+            args.extend([
+                OsString::from("--shader-toolchain"),
+                path.as_os_str().to_owned(),
+            ]);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -115,7 +349,7 @@ pub struct BuildRequest<'a> {
     pub version: &'a str,
     pub output: &'a Path,
     pub mappings: Option<&'a Path>,
-    pub shader_toolchain: Option<&'a Path>,
+    pub tool_paths: &'a ToolPaths,
     pub minecraft_dir: Option<&'a Path>,
     pub settings: &'a BuildSettings,
 }
@@ -126,6 +360,36 @@ pub struct BuildSettings {
     pub render_distance: Option<u32>,
     pub backend: Option<String>,
     pub resource_packs: Vec<PathBuf>,
+    pub strict_kernel: bool,
+}
+
+impl BuildSettings {
+    pub fn quality_from_ui_index(index: usize) -> &'static str {
+        ["low", "mid", "high", "ultra"][index.min(3)]
+    }
+
+    pub fn backend_from_ui_index(index: usize) -> &'static str {
+        ["webgpu", "webgl2", "auto"][index.min(2)]
+    }
+
+    pub fn render_distance_from_ui(value: u32) -> u32 {
+        value.clamp(2, 32)
+    }
+
+    pub fn from_ui_indices(
+        quality: usize,
+        render_distance: u32,
+        backend: usize,
+        resource_packs: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            quality: Some(Self::quality_from_ui_index(quality).to_owned()),
+            render_distance: Some(Self::render_distance_from_ui(render_distance)),
+            backend: Some(Self::backend_from_ui_index(backend).to_owned()),
+            resource_packs,
+            strict_kernel: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -148,23 +412,142 @@ pub struct PatcherClient;
 
 impl PatcherBackend for PatcherClient {
     fn doctor(&self) -> Result<DoctorReport, PatcherError> {
-        self.doctor_with_control(ProcessControl::default())
+        self.doctor_with_control(ProcessControl::default(), &ToolPaths::default(), false)
     }
 }
 
 impl PatcherClient {
-    pub fn start_doctor(&self) -> DoctorTask {
+    pub fn start_verify(
+        &self,
+        version: String,
+        minecraft_dir: Option<PathBuf>,
+        mappings: Option<PathBuf>,
+    ) -> VerifyTask {
+        let control = ProcessControl::default();
+        let worker_control = control.clone();
+        let (progress_tx, progress) = mpsc::sync_channel(64);
+        let (completions_tx, completions) = mpsc::channel();
+        let (result_tx, receiver) = mpsc::channel();
+        thread::Builder::new()
+            .name("gaius-verify-files".to_owned())
+            .spawn(move || {
+                let mut args = vec![OsString::from("doctor"), OsString::from(version)];
+                if let Some(dir) = minecraft_dir {
+                    args.extend([OsString::from("--minecraft-dir"), dir.into_os_string()]);
+                }
+                if let Some(path) = mappings {
+                    args.extend([OsString::from("--mappings"), path.into_os_string()]);
+                }
+                args.extend([OsString::from("--verify-files"), OsString::from("--json")]);
+                let output = run_patcher_with_stdout(
+                    &args,
+                    worker_control.clone(),
+                    move |pipe| {
+                        let mut stream = VerifyStream::default();
+                        stream_bounded_lines(pipe, VERIFY_LINE_LIMIT, |bytes, truncated| {
+                            match stream.read_line(bytes, truncated) {
+                                Some(VerifyUpdate::Progress(event)) => {
+                                    let _ = progress_tx.try_send(event);
+                                }
+                                Some(VerifyUpdate::Completed(group)) => {
+                                    let _ = completions_tx.send(group.clone());
+                                }
+                                None => {}
+                            }
+                        })?;
+                        Ok((String::new(), stream))
+                    },
+                    |_| {},
+                    false,
+                );
+                let result = if worker_control.is_cancelled() {
+                    Err(PatcherError("Official file check was cancelled.".to_owned()))
+                } else {
+                    output
+                        .map_err(|_| {
+                            PatcherError(
+                                "Could not run the official file check. Check the Java and patcher setup, then try again."
+                                    .to_owned(),
+                            )
+                        })
+                        .and_then(|(_, stream, status)| stream.finish(status.code()))
+                };
+                let _ = result_tx.send(result);
+            })
+            .expect("file verification worker thread must start");
+        VerifyTask {
+            receiver,
+            progress,
+            completions,
+            control,
+        }
+    }
+
+    pub fn start_doctor(&self, tool_paths: ToolPaths, strict_kernel: bool) -> DoctorTask {
         let control = ProcessControl::default();
         let worker_control = control.clone();
         let (sender, receiver) = mpsc::channel();
         thread::Builder::new()
             .name("gaius-doctor".to_owned())
             .spawn(move || {
-                let report = Self.doctor_with_control(worker_control);
+                let report = Self.doctor_with_control(worker_control, &tool_paths, strict_kernel);
                 let _ = sender.send(report);
             })
             .expect("doctor worker thread must start");
         DoctorTask { receiver, control }
+    }
+
+    pub fn start_tools_install(
+        &self,
+        only: Vec<String>,
+        tool_paths: ToolPaths,
+        strict_kernel: bool,
+    ) -> ToolInstallTask {
+        let control = ProcessControl::default();
+        let worker_control = control.clone();
+        let (progress_tx, progress) = mpsc::channel();
+        let (result_tx, result) = mpsc::channel();
+        thread::Builder::new()
+            .name("gaius-tools-install".to_owned())
+            .spawn(move || {
+                let mut args = vec![
+                    OsString::from("tools"),
+                    OsString::from("install"),
+                    OsString::from("--json-progress"),
+                ];
+                if !only.is_empty() {
+                    args.extend([OsString::from("--only"), OsString::from(only.join(","))]);
+                }
+                tool_paths.append_args(&mut args, true);
+                if strict_kernel {
+                    args.push(OsString::from("--strict-kernel"));
+                }
+                let output = run_patcher(
+                    &args,
+                    worker_control.clone(),
+                    move |event| {
+                        let _ = progress_tx.send(event);
+                    },
+                    |_| {},
+                    false,
+                );
+                let result = output.and_then(|output| {
+                    if worker_control.is_cancelled() {
+                        return Err(PatcherError("tool installation cancelled".to_owned()));
+                    }
+                    if output.exit_code != 0 {
+                        return Err(PatcherError(last_error(&output.stderr, &output.stdout)));
+                    }
+                    Self.tools_status(worker_control, &tool_paths, strict_kernel)
+                });
+                let _ = result_tx.send(result);
+            })
+            .expect("tools install worker thread must start");
+        ToolInstallTask {
+            receiver: result,
+            progress,
+            control,
+        }
     }
 
     pub fn run_build(
@@ -178,19 +561,20 @@ impl PatcherClient {
             request.version,
             request.output,
             request.mappings,
-            request.shader_toolchain,
+            request.tool_paths,
             request.minecraft_dir,
             request.settings,
         );
         run_patcher(&args, control, on_progress, on_log, true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn start_build(
         &self,
         versions: Vec<String>,
         output: PathBuf,
         mappings: Option<PathBuf>,
-        shader_toolchain: Option<PathBuf>,
+        tool_paths: ToolPaths,
         minecraft_dir: Option<PathBuf>,
         settings: BuildSettings,
         control: ProcessControl,
@@ -203,6 +587,40 @@ impl PatcherClient {
             .name("gaius-build".to_owned())
             .spawn(move || {
                 let scenario = env::var("GAIUS_BUILDER_MOCK").ok();
+                if scenario.as_deref().is_none_or(str::is_empty) {
+                    let checked = Self
+                        .tools_status(worker_control.clone(), &tool_paths, settings.strict_kernel)
+                        .and_then(|tools| {
+                            let missing: Vec<_> = tools
+                                .iter()
+                                .filter(|tool| tool.blocks(&versions))
+                                .map(|tool| tool.display_name.as_str())
+                                .collect();
+                            if missing.is_empty() {
+                                Ok(())
+                            } else {
+                                Err(PatcherError(format!(
+                                    "required build tools are not ready: {}",
+                                    missing.join(", ")
+                                )))
+                            }
+                        });
+                    if let Err(error) = checked {
+                        let result = if worker_control.is_cancelled() {
+                            Ok(CommandOutput {
+                                stdout: String::new(),
+                                stderr: "Build cancelled during tool verification.".to_owned(),
+                                exit_code: 130,
+                                pid: 0,
+                                versions: Vec::new(),
+                            })
+                        } else {
+                            Err(error)
+                        };
+                        let _ = result_tx.send(result);
+                        return;
+                    }
+                }
                 let result = {
                     let mut combined = CommandOutput {
                         stdout: String::new(),
@@ -224,9 +642,6 @@ impl PatcherClient {
                         let version_mappings = (version == "1.21.11")
                             .then_some(mappings.as_deref())
                             .flatten();
-                        let version_toolchain = (version == "26.3")
-                            .then_some(shader_toolchain.as_deref())
-                            .flatten();
                         let result =
                             if let Some(scenario) = scenario.as_deref().filter(|v| !v.is_empty()) {
                                 run_mock_build(scenario, &worker_control, &tx, &version)
@@ -236,7 +651,7 @@ impl PatcherClient {
                                         version: &version,
                                         output: &version_output,
                                         mappings: version_mappings,
-                                        shader_toolchain: version_toolchain,
+                                        tool_paths: &tool_paths,
                                         minecraft_dir: minecraft_dir.as_deref(),
                                         settings: &settings,
                                     },
@@ -340,13 +755,48 @@ impl PatcherClient {
         }
     }
 
-    fn doctor_with_control(&self, control: ProcessControl) -> Result<DoctorReport, PatcherError> {
-        let output = run_patcher(&[OsString::from("doctor")], control, |_| {}, |_| {}, false)?;
-        Ok(parse_doctor_output(
-            &output.stdout,
-            &output.stderr,
-            output.exit_code,
-        ))
+    fn doctor_with_control(
+        &self,
+        control: ProcessControl,
+        tool_paths: &ToolPaths,
+        strict_kernel: bool,
+    ) -> Result<DoctorReport, PatcherError> {
+        let output = run_patcher(
+            &[OsString::from("doctor")],
+            control.clone(),
+            |_| {},
+            |_| {},
+            false,
+        )?;
+        let mut report = parse_doctor_output(&output.stdout, &output.stderr, output.exit_code);
+        report.tools = self.tools_status(control, tool_paths, strict_kernel)?;
+        Ok(report)
+    }
+
+    fn tools_status(
+        &self,
+        control: ProcessControl,
+        tool_paths: &ToolPaths,
+        strict_kernel: bool,
+    ) -> Result<Vec<ToolStatus>, PatcherError> {
+        if control.is_cancelled() {
+            return Err(PatcherError("tool check cancelled".to_owned()));
+        }
+        let mut args = ["tools", "status", "--json", "--offline"]
+            .map(OsString::from)
+            .to_vec();
+        tool_paths.append_args(&mut args, true);
+        if strict_kernel {
+            args.push(OsString::from("--strict-kernel"));
+        }
+        let output = run_patcher(&args, control, |_| {}, |_| {}, false)?;
+        if output.exit_code != 0 {
+            return Err(PatcherError(last_build_error(
+                &output.stderr,
+                &output.stdout,
+            )));
+        }
+        parse_tools_status(&output.stdout)
     }
 }
 
@@ -354,7 +804,7 @@ fn build_args(
     version: &str,
     output: &Path,
     mappings: Option<&Path>,
-    shader_toolchain: Option<&Path>,
+    tool_paths: &ToolPaths,
     minecraft_dir: Option<&Path>,
     settings: &BuildSettings,
 ) -> Vec<OsString> {
@@ -367,19 +817,15 @@ fn build_args(
         OsString::from("--accept-terms"),
         OsString::from("--offline"),
     ];
+    if settings.strict_kernel {
+        args.push(OsString::from("--strict-kernel"));
+    }
     if version == "1.21.11"
         && let Some(path) = mappings
     {
         args.extend([OsString::from("--mappings"), path.as_os_str().to_owned()]);
     }
-    if version == "26.3"
-        && let Some(path) = shader_toolchain
-    {
-        args.extend([
-            OsString::from("--shader-toolchain"),
-            path.as_os_str().to_owned(),
-        ]);
-    }
+    tool_paths.append_args(&mut args, version == "26.3");
     if let Some(path) = minecraft_dir {
         args.extend([
             OsString::from("--minecraft-dir"),
@@ -409,6 +855,21 @@ fn build_args(
 
 pub struct DoctorTask {
     pub receiver: mpsc::Receiver<Result<DoctorReport, PatcherError>>,
+    pub control: ProcessControl,
+}
+
+pub struct VerifyTask {
+    /// The only authoritative result; delivered after the process and both pipes close.
+    pub receiver: mpsc::Receiver<Result<VerifyReport, PatcherError>>,
+    pub progress: mpsc::Receiver<VerifyProgress>,
+    /// Provisional group results for display while other groups are being checked.
+    pub completions: mpsc::Receiver<VerifyGroupResult>,
+    pub control: ProcessControl,
+}
+
+pub struct ToolInstallTask {
+    pub receiver: mpsc::Receiver<Result<Vec<ToolStatus>, PatcherError>>,
+    pub progress: mpsc::Receiver<BuildProgress>,
     pub control: ProcessControl,
 }
 
@@ -477,18 +938,283 @@ pub struct MockBackend;
 
 impl PatcherBackend for MockBackend {
     fn doctor(&self) -> Result<DoctorReport, PatcherError> {
-        Ok(parse_doctor_output(
-            include_str!("../tests/fixtures/doctor-output.txt"),
+        let mut report =
+            parse_doctor_output(include_str!("../tests/fixtures/doctor-output.txt"), "", 0);
+        report.tools = mock_tool_statuses(false);
+        Ok(report)
+    }
+}
+
+pub fn mock_tool_statuses(strict_kernel: bool) -> Vec<ToolStatus> {
+    const MAVEN_FILES: u64 = 363;
+    const MAVEN_BYTES: u64 = 86_143_464;
+    [
+        ("jdk-25", "JDK 25", "github.com", 141_341_188, true, ""),
+        (
+            "maven",
+            "Apache Maven 3.9.11",
+            "archive.apache.org",
+            9_160_848,
+            true,
+            "",
+        ),
+        (
+            "vineflower",
+            "Vineflower 1.11.2",
+            "repo1.maven.org",
+            1_856_529,
+            true,
+            "",
+        ),
+        (
+            "llvm",
+            "LLVM 21.1.8",
+            "github.com, archive.ubuntu.com",
+            2_030_629_054,
+            true,
+            "",
+        ),
+        (
+            "binaryen",
+            "Binaryen 133",
+            "github.com",
+            111_200_018,
+            true,
+            "",
+        ),
+        (
+            "remapper",
+            "AutoRenamingTool 2.0.18",
+            "maven.neoforged.net",
+            756_920,
+            true,
+            "1.21.11",
+        ),
+        (
+            "teavm-classlib",
+            "TeaVM classlib 0.15.0",
+            "repo1.maven.org",
+            17_718_996,
+            true,
+            "",
+        ),
+        (
+            "teavm-core",
+            "TeaVM core 0.15.0",
+            "repo1.maven.org",
+            2_956_367,
+            true,
+            "",
+        ),
+        (
+            "teavm-interop",
+            "TeaVM interop 0.15.0",
+            "repo1.maven.org",
+            12_599,
+            true,
+            "",
+        ),
+        (
+            "teavm-jso",
+            "TeaVM jso 0.15.0",
+            "repo1.maven.org",
+            8_437,
+            true,
+            "",
+        ),
+        (
+            "teavm-jso-apis",
+            "TeaVM jso-apis 0.15.0",
+            "repo1.maven.org",
+            177_814,
+            true,
+            "",
+        ),
+        (
+            "teavm-platform",
+            "TeaVM platform 0.15.0",
+            "repo1.maven.org",
+            101_636,
+            true,
+            "",
+        ),
+        (
+            "teavm-maven-plugin",
+            "TeaVM Maven plugin 0.15.0",
+            "repo1.maven.org",
+            21_053,
+            true,
+            "",
+        ),
+        (
+            "maven-repository",
+            "Offline Maven repository",
+            "repo.maven.apache.org",
+            MAVEN_BYTES,
+            true,
+            "26.3",
+        ),
+        (
+            "maven-repository",
+            "Offline Maven repository",
+            "repo.maven.apache.org",
+            MAVEN_BYTES,
+            true,
+            "26.2",
+        ),
+        (
+            "maven-repository",
+            "Offline Maven repository",
+            "repo.maven.apache.org",
+            MAVEN_BYTES,
+            true,
+            "1.21.11",
+        ),
+        (
+            "shader-toolchain",
+            "Prebuilt shader toolchain",
             "",
             0,
-        ))
-    }
+            false,
+            "26.3",
+        ),
+        ("emscripten-sdk", "Emscripten SDK", "", 0, false, ""),
+        ("bash", "Bash", "gnu.org", 0, false, ""),
+        ("node", "Node.js", "nodejs.org", 0, false, ""),
+        ("python", "Python 3", "python.org", 0, false, ""),
+        ("jq", "jq", "jqlang.org", 0, false, ""),
+        ("shell-tools", "Shell utilities", "gnu.org", 0, false, ""),
+        ("rust-cargo", "Rust/Cargo 1.99.1", "rustup.rs", 0, false, ""),
+        (
+            "wasm32-target",
+            "wasm32-unknown-unknown",
+            "rustup.rs",
+            0,
+            false,
+            "",
+        ),
+        (
+            "cargo-cache",
+            "Offline Cargo dependencies",
+            "doc.rust-lang.org",
+            0,
+            false,
+            "",
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(id, display_name, source_host, bytes, installable, only_version)| {
+            let kernel = matches!(id, "rust-cargo" | "wasm32-target" | "cargo-cache");
+            let required_reason = match (id, kernel, strict_kernel) {
+                ("emscripten-sdk", _, _) | (_, true, false) => ToolRequirement::Optional,
+                (_, false, _) => ToolRequirement::RequiredDefault,
+                (_, true, true) => ToolRequirement::RequiredStrictKernel,
+            };
+            let required = required_reason != ToolRequirement::Optional;
+            let (state, path, inventory) = match id {
+                "shader-toolchain" => (
+                    "verified",
+                    "port/work/tools/shader-toolchain",
+                    ToolInventory {
+                        expected_files: [
+                            "gaius-shader-toolchain.json",
+                            "gaius-shader-toolchain.js",
+                            "gaius-shaderc.js",
+                            "gaius-shaderc.wasm",
+                            "gaius-spvc.js",
+                            "gaius-spvc.wasm",
+                        ]
+                        .map(str::to_owned)
+                        .to_vec(),
+                        ..ToolInventory::default()
+                    },
+                ),
+                "maven-repository" => (
+                    "present",
+                    "port/work/maven-repository",
+                    ToolInventory {
+                        checked_files: Some(MAVEN_FILES),
+                        total_files: Some(MAVEN_FILES),
+                        total_bytes: Some(MAVEN_BYTES),
+                        ..ToolInventory::default()
+                    },
+                ),
+                "emscripten-sdk" => (
+                    "informational",
+                    "",
+                    ToolInventory {
+                        sdk_platforms: ["linux-x64".to_owned(), "windows-x64".to_owned()].to_vec(),
+                        ..ToolInventory::default()
+                    },
+                ),
+                _ => ("present", "", ToolInventory::default()),
+            };
+            ToolStatus {
+                schema: "gaius-patcher-tools-v1".to_owned(),
+                id: id.to_owned(),
+                display_name: display_name.to_owned(),
+                required,
+                required_reason,
+                resolved_command: (id == "python").then(|| "python3".to_owned()),
+                required_for: if !required {
+                    Vec::new()
+                } else if only_version.is_empty() {
+                    vec!["26.3".to_owned(), "26.2".to_owned(), "1.21.11".to_owned()]
+                } else {
+                    vec![only_version.to_owned()]
+                },
+                state: state.to_owned(),
+                bytes,
+                source_host: source_host.to_owned(),
+                source_url: String::new(),
+                destination_path: path.to_owned(),
+                expected_sha256: String::new(),
+                installable,
+                hint: String::new(),
+                inventory,
+            }
+        },
+    )
+    .collect()
 }
 
 pub fn parse_progress_line(line: &str) -> Option<BuildProgress> {
     let value: Value = serde_json::from_str(line).ok()?;
     let object = value.as_object()?;
-    if object.get("schema")?.as_str()? != "gaius-patcher-progress-v1" {
+    let schema = object.get("schema")?.as_str()?;
+    if schema == "gaius-patcher-tools-progress-v1" {
+        let pct = object
+            .get("pct")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(100) as u8;
+        let bytes = object.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+        let total = object
+            .get("totalBytes")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        return Some(BuildProgress {
+            schema: schema.to_owned(),
+            phase: "tools".to_owned(),
+            step: object
+                .get("step")
+                .and_then(Value::as_str)
+                .unwrap_or("download")
+                .to_owned(),
+            pct,
+            message: format!(
+                "{}: {bytes}/{total}",
+                object.get("id").and_then(Value::as_str).unwrap_or("")
+            ),
+            error: object
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            version: None,
+        });
+    }
+    if schema != "gaius-patcher-progress-v1" {
         return None;
     }
     let pct = object
@@ -533,6 +1259,7 @@ pub fn parse_doctor_output(stdout: &str, stderr: &str, exit_code: i32) -> Doctor
         profiles_dir: None,
         work_dir: None,
         versions: Vec::new(),
+        tools: Vec::new(),
         warnings: Vec::new(),
         raw_output: stdout.to_owned(),
         stderr: stderr.to_owned(),
@@ -729,9 +1456,26 @@ fn run_patcher(
     args: &[OsString],
     control: ProcessControl,
     mut on_progress: impl FnMut(BuildProgress) + Send + 'static,
-    mut on_log: impl FnMut(String) + Send + 'static,
+    on_log: impl FnMut(String) + Send + 'static,
     inhibit_sleep: bool,
 ) -> Result<CommandOutput, PatcherError> {
+    run_patcher_with_stdout(
+        args,
+        control,
+        move |pipe| read_stdout(pipe, &mut on_progress).map(|stdout| (stdout, ())),
+        on_log,
+        inhibit_sleep,
+    )
+    .map(|(output, (), _)| output)
+}
+
+fn run_patcher_with_stdout<T: Send + 'static>(
+    args: &[OsString],
+    control: ProcessControl,
+    read_stdout: impl FnOnce(ChildStdout) -> io::Result<(String, T)> + Send + 'static,
+    mut on_log: impl FnMut(String) + Send + 'static,
+    inhibit_sleep: bool,
+) -> Result<(CommandOutput, T, ExitStatus), PatcherError> {
     #[cfg(windows)]
     let _sleep_guard = inhibit_sleep.then(WindowsSleepGuard::new);
     let (java, launcher) = resolve_launcher()?;
@@ -742,6 +1486,13 @@ fn run_patcher(
     } else {
         Command::new(java)
     };
+    command.args([
+        "-Dfile.encoding=UTF-8",
+        "-Dstdout.encoding=UTF-8",
+        "-Dstderr.encoding=UTF-8",
+        "-Dsun.stdout.encoding=UTF-8",
+        "-Dsun.stderr.encoding=UTF-8",
+    ]);
     match launcher {
         Launcher::Source(source) => {
             command.arg(source);
@@ -764,15 +1515,23 @@ fn run_patcher(
         .spawn()
         .map_err(|error| PatcherError(format!("could not start the Java patcher: {error}")))?;
     let pid = child.id();
+    let leaf = (args.first().is_some_and(|arg| arg == "tools")
+        && args.get(1).is_some_and(|arg| arg == "install"))
+        || (args.first().is_some_and(|arg| arg == "doctor")
+            && args.iter().any(|arg| arg == "--verify-files"));
     let (killer_tx, killer_rx) = mpsc::channel();
     control.attach(pid, killer_tx);
-    let killer = thread::spawn(move || {
-        if matches!(killer_rx.recv(), Ok(true)) {
-            terminate_process_group(pid, false);
-            thread::sleep(Duration::from_secs(2));
-            terminate_process_group(pid, true);
-        }
-    });
+    let killer = if leaf {
+        None
+    } else {
+        Some(thread::spawn(move || {
+            if matches!(killer_rx.recv(), Ok(true)) {
+                terminate_process_group(pid, false);
+                thread::sleep(Duration::from_secs(2));
+                terminate_process_group(pid, true);
+            }
+        }))
+    };
 
     let stdout_pipe = child
         .stdout
@@ -782,15 +1541,30 @@ fn run_patcher(
         .stderr
         .take()
         .ok_or_else(|| PatcherError("Java patcher stderr was not piped".to_owned()))?;
-    let stdout_reader = thread::spawn(move || read_stdout(stdout_pipe, &mut on_progress));
+    let stdout_reader = thread::spawn(move || read_stdout(stdout_pipe));
     let stderr_reader = thread::spawn(move || read_stderr(stderr_pipe, &mut on_log));
 
-    let status = child
-        .wait()
-        .map_err(|error| PatcherError(format!("could not wait for Java patcher: {error}")));
+    let status = if leaf {
+        loop {
+            if control.is_cancelled() {
+                let _ = child.kill();
+                break child.wait();
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => thread::sleep(Duration::from_millis(50)),
+                Err(error) => break Err(error),
+            }
+        }
+    } else {
+        child.wait()
+    }
+    .map_err(|error| PatcherError(format!("could not wait for Java patcher: {error}")));
     control.finish();
-    let _ = killer.join();
-    let stdout = stdout_reader
+    if let Some(killer) = killer {
+        let _ = killer.join();
+    }
+    let (stdout, parsed) = stdout_reader
         .join()
         .map_err(|_| PatcherError("Java patcher stdout reader stopped unexpectedly".to_owned()))?
         .map_err(|error| PatcherError(format!("could not read Java patcher stdout: {error}")))?;
@@ -799,13 +1573,17 @@ fn run_patcher(
         .map_err(|_| PatcherError("Java patcher stderr reader stopped unexpectedly".to_owned()))?
         .map_err(|error| PatcherError(format!("could not read Java patcher stderr: {error}")))?;
     let status = status?;
-    Ok(CommandOutput {
-        stdout,
-        stderr,
-        exit_code: status.code().unwrap_or(1),
-        pid,
-        versions: Vec::new(),
-    })
+    Ok((
+        CommandOutput {
+            stdout,
+            stderr,
+            exit_code: status.code().unwrap_or(1),
+            pid,
+            versions: Vec::new(),
+        },
+        parsed,
+        status,
+    ))
 }
 
 fn sleep_inhibitor_command(java: OsString) -> Command {
@@ -957,38 +1735,172 @@ fn read_stdout(
     })
 }
 
+#[derive(Deserialize)]
+struct VerifyLine {
+    schema: String,
+    #[serde(flatten)]
+    event: VerifyEvent,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "event", rename_all = "lowercase")]
+enum VerifyEvent {
+    Progress(VerifyProgress),
+    Group(VerifyGroupEvent),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifyGroupEvent {
+    group: VerifyGroup,
+    checked: u64,
+    total: u64,
+    failed: Vec<VerifyFailure>,
+    failure_count: Option<u64>,
+}
+
+#[derive(Default)]
+struct VerifyStream {
+    groups: [Option<VerifyGroupResult>; VerifyGroup::ALL.len()],
+    malformed: bool,
+}
+
+enum VerifyUpdate<'a> {
+    Progress(VerifyProgress),
+    Completed(&'a VerifyGroupResult),
+}
+
+impl VerifyStream {
+    fn read_line(&mut self, bytes: &[u8], truncated: bool) -> Option<VerifyUpdate<'_>> {
+        if self.malformed || (!truncated && bytes.iter().all(u8::is_ascii_whitespace)) {
+            return None;
+        }
+        let Ok(line) = serde_json::from_slice::<VerifyLine>(bytes) else {
+            self.malformed = true;
+            return None;
+        };
+        if truncated || line.schema != VERIFY_SCHEMA {
+            self.malformed = true;
+            return None;
+        }
+        match line.event {
+            VerifyEvent::Progress(event)
+                if event.checked <= event.total && self.groups[event.group as usize].is_none() =>
+            {
+                Some(VerifyUpdate::Progress(event))
+            }
+            VerifyEvent::Group(event) => {
+                let slot = &mut self.groups[event.group as usize];
+                let reported = event.failed.len() as u64;
+                let failure_count = event.failure_count.unwrap_or(reported);
+                if slot.is_some()
+                    || event.checked > event.total
+                    || (failure_count == 0 && event.checked != event.total)
+                    || failure_count < reported
+                    || event.failed.iter().any(|failure| {
+                        !is_relative_verify_path(&failure.path) || failure.reason.trim().is_empty()
+                    })
+                {
+                    self.malformed = true;
+                    None
+                } else {
+                    let completed = slot.insert(VerifyGroupResult {
+                        group: event.group,
+                        checked: event.checked,
+                        total: event.total,
+                        failed: event.failed,
+                        failure_count,
+                    });
+                    Some(VerifyUpdate::Completed(completed))
+                }
+            }
+            _ => {
+                self.malformed = true;
+                None
+            }
+        }
+    }
+
+    fn finish(self, exit_code: Option<i32>) -> Result<VerifyReport, PatcherError> {
+        if self.malformed {
+            return Err(PatcherError(
+                "The patcher sent invalid official file check results. Check the patcher version, then try again."
+                    .to_owned(),
+            ));
+        }
+        let mut groups = Vec::with_capacity(VerifyGroup::ALL.len());
+        for (group, result) in VerifyGroup::ALL.into_iter().zip(self.groups) {
+            groups.push(result.ok_or_else(|| {
+                PatcherError(format!(
+                    "The official file check did not finish (missing {}). Please try again.",
+                    group.as_str()
+                ))
+            })?);
+        }
+        let report = VerifyReport { groups };
+        match exit_code {
+            Some(0) => Ok(report),
+            Some(_) if !report.passed() => Ok(report),
+            _ => Err(PatcherError(
+                "The patcher stopped unexpectedly during the official file check. Please try again."
+                    .to_owned(),
+            )),
+        }
+    }
+}
+
+fn is_relative_verify_path(path: &str) -> bool {
+    !path.trim().is_empty()
+        && !path.contains(':')
+        && !path.chars().any(char::is_control)
+        && path
+            .split(['/', '\\'])
+            .all(|part| !matches!(part, "" | "." | ".."))
+}
+
 fn read_stderr(pipe: impl Read, on_log: &mut impl FnMut(String)) -> io::Result<String> {
     read_bounded_lines(pipe, |line| on_log(line.to_owned()))
 }
 
 fn read_bounded_lines(pipe: impl Read, mut on_line: impl FnMut(&str)) -> io::Result<String> {
     let mut output = String::new();
+    stream_bounded_lines(pipe, STREAM_LINE_LIMIT, |bytes, truncated| {
+        emit_bounded_line(bytes, truncated, &mut output, &mut on_line);
+    })?;
+    Ok(output)
+}
+
+fn stream_bounded_lines(
+    pipe: impl Read,
+    line_limit: usize,
+    mut on_line: impl FnMut(&[u8], bool),
+) -> io::Result<()> {
     let mut reader = BufReader::new(pipe);
-    let mut line = Vec::with_capacity(STREAM_LINE_LIMIT);
+    let mut line = Vec::with_capacity(STREAM_LINE_LIMIT.min(line_limit));
     let mut truncated = false;
     loop {
         let available = reader.fill_buf()?;
         if available.is_empty() {
             if !line.is_empty() || truncated {
-                emit_bounded_line(&line, truncated, &mut output, &mut on_line);
+                on_line(&line, truncated);
             }
             break;
         }
         let newline = available.iter().position(|byte| *byte == b'\n');
         let content_len = newline.unwrap_or(available.len());
-        let remaining = STREAM_LINE_LIMIT.saturating_sub(line.len());
+        let remaining = line_limit.saturating_sub(line.len());
         let kept = content_len.min(remaining);
         line.extend_from_slice(&available[..kept]);
         truncated |= kept < content_len;
         let consumed = content_len + usize::from(newline.is_some());
         reader.consume(consumed);
         if newline.is_some() {
-            emit_bounded_line(&line, truncated, &mut output, &mut on_line);
+            on_line(&line, truncated);
             line.clear();
             truncated = false;
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 fn emit_bounded_line(
@@ -997,13 +1909,99 @@ fn emit_bounded_line(
     output: &mut String,
     on_line: &mut impl FnMut(&str),
 ) {
-    let mut line = String::from_utf8_lossy(bytes).into_owned();
+    let mut line = decode_child_output(bytes);
     if truncated {
         line.push_str(LINE_TRUNCATION_MARKER);
     }
     line.push('\n');
     on_line(&line);
     *output = append_limited(std::mem::take(output), &line);
+}
+
+fn decode_child_output(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(value) => value.to_owned(),
+        Err(_) => encoding_rs::GBK.decode(bytes).0.into_owned(),
+    }
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_utf8_and_gbk_paths() {
+        let text = "C:\\Users\\张三\\工作";
+        assert_eq!(decode_child_output(text.as_bytes()), text);
+        let (encoded, _, _) = encoding_rs::GBK.encode(text);
+        assert_eq!(decode_child_output(&encoded), text);
+        let mut lines = Vec::new();
+        read_bounded_lines(std::io::Cursor::new(encoded.as_ref()), |line| {
+            lines.push(line.to_owned())
+        })
+        .unwrap();
+        assert_eq!(lines.concat().trim(), text);
+        let mut utf8_lines = Vec::new();
+        read_bounded_lines(std::io::Cursor::new(text.as_bytes()), |line| {
+            utf8_lines.push(line.to_owned())
+        })
+        .unwrap();
+        assert_eq!(utf8_lines.concat().trim(), text);
+    }
+
+    #[test]
+    fn tools_status_accepts_unknown_json_fields() {
+        let parsed =
+            parse_tools_status(include_str!("../tests/fixtures/tools-status.jsonl")).unwrap();
+        assert_eq!(parsed[0].display_name, "Maven");
+        assert_eq!(parsed[0].destination_path, "C:/用户/tools/maven");
+        assert_eq!(parsed[0].inventory, ToolInventory::default());
+        assert_eq!(parsed[1].inventory.checked_files, Some(2));
+        assert_eq!(parsed[1].inventory.total_files, Some(3));
+        assert_eq!(parsed[1].inventory.total_bytes, Some(32));
+        assert_eq!(
+            parsed[1].inventory.first_failed_path.as_deref(),
+            Some("org/example/example.jar")
+        );
+        assert!(parsed[1].blocks(&["26.2".to_owned()]));
+        assert!(!parsed[1].blocks(&["26.3".to_owned()]));
+        assert_eq!(parsed[1].id, parsed[2].id);
+        let shader = &parsed[3];
+        assert_eq!(shader.destination_path, "/work/shader-toolchain");
+        assert_eq!(
+            shader.inventory.expected_files,
+            ["gaius-shaderc.js", "gaius-shaderc.wasm"]
+        );
+        assert_eq!(shader.inventory.differing_files, ["gaius-shaderc.wasm"]);
+        assert!(shader.source_url.is_empty());
+        let sdk = &parsed[4];
+        assert!(!sdk.blocks(&["26.3".to_owned()]));
+        assert_eq!(sdk.inventory.sdk_platforms, ["linux-x64", "windows-x64"]);
+    }
+}
+
+pub fn parse_tools_status(stdout: &str) -> Result<Vec<ToolStatus>, PatcherError> {
+    let tools: Vec<ToolStatus> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let status: ToolStatus = serde_json::from_str(line)
+                .map_err(|error| PatcherError(format!("invalid tools status JSON: {error}")))?;
+            if status.schema != "gaius-patcher-tools-v1" {
+                return Err(PatcherError(format!(
+                    "unsupported tools schema: {}",
+                    status.schema
+                )));
+            }
+            Ok(status)
+        })
+        .collect::<Result<_, _>>()?;
+    if tools.is_empty() {
+        return Err(PatcherError(
+            "Java patcher returned no tools status records".to_owned(),
+        ));
+    }
+    Ok(tools)
 }
 
 fn append_limited(mut output: String, next: &str) -> String {
@@ -1034,6 +2032,32 @@ fn last_build_error(stderr: &str, stdout: &str) -> String {
             })
         })
         .unwrap_or_else(|| "The patcher exited with an error.".to_owned())
+}
+
+fn last_error(stderr: &str, stdout: &str) -> String {
+    stdout
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let value: Value = serde_json::from_str(line).ok()?;
+            (value.get("schema")?.as_str()? == "gaius-patcher-tools-progress-v1").then(|| {
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .or_else(|| value.get("message").and_then(Value::as_str))
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+        })
+        .filter(|message| !message.is_empty())
+        .or_else(|| {
+            stderr
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "tool installation failed".to_owned())
 }
 
 pub fn compare_expected_hashes(output: &Path, version: &str) -> HashComparison {
@@ -1206,7 +2230,10 @@ mod tests {
             let source =
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-patcher.py");
             let values = [
-                ("GAIUS_PATCHER_JAVA", Some(OsString::from("python3"))),
+                (
+                    "GAIUS_PATCHER_JAVA",
+                    Some(source.with_file_name("fake-java").into_os_string()),
+                ),
                 ("GAIUS_PATCHER_SOURCE", Some(source.into_os_string())),
                 ("GAIUS_PATCHER_JAR", None),
                 ("GAIUS_BUILDER_MOCK", None),
@@ -1282,7 +2309,7 @@ mod tests {
             vec!["26.2".to_owned()],
             root.clone(),
             None,
-            None,
+            ToolPaths::default(),
             None,
             BuildSettings::default(),
             ProcessControl::default(),
@@ -1298,6 +2325,273 @@ mod tests {
             task.logs.try_iter().collect(),
             root,
         )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backend_tool_preflight_obeys_strict_kernel_requirements() {
+        let _environment = FakePatcherEnv::new("missing-kernel-tools");
+        let root = test_output("kernel-preflight");
+        for strict_kernel in [false, true] {
+            let output = root.join(if strict_kernel { "strict" } else { "default" });
+            let task = PatcherClient.start_build(
+                vec!["26.2".to_owned()],
+                output.clone(),
+                None,
+                ToolPaths::default(),
+                None,
+                BuildSettings {
+                    strict_kernel,
+                    ..BuildSettings::default()
+                },
+                ProcessControl::default(),
+            );
+            let result = task.result.recv_timeout(Duration::from_secs(10)).unwrap();
+            if strict_kernel {
+                let error = result.unwrap_err().0;
+                for id in ["rust-cargo", "wasm32-target", "cargo-cache"] {
+                    assert!(error.contains(id), "{error}");
+                }
+                assert!(!output.exists());
+            } else {
+                assert_eq!(result.unwrap().exit_code, 0);
+                assert!(output.join("26.2/Gaius-26.2.html").exists());
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn t9_tool_paths_reach_status_install_and_build_as_separate_arguments() {
+        let _environment = FakePatcherEnv::new("tool-paths");
+        let paths = ToolPaths {
+            toolchain_dir: Some(PathBuf::from("fixture shared tools")),
+            shader_toolchain: Some(PathBuf::from("fixture shader modules")),
+        };
+        let doctor = PatcherClient.start_doctor(paths.clone(), false);
+        assert!(
+            doctor
+                .receiver
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap()
+                .tools[0]
+                .ready()
+        );
+        let install = PatcherClient.start_tools_install(
+            vec!["maven-repository".to_owned()],
+            paths.clone(),
+            false,
+        );
+        assert!(
+            install
+                .receiver
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap()[0]
+                .ready()
+        );
+        let output = test_output("tool-paths");
+        let task = PatcherClient.start_build(
+            vec!["26.3".to_owned()],
+            output.clone(),
+            None,
+            paths,
+            None,
+            BuildSettings::default(),
+            ProcessControl::default(),
+        );
+        assert_eq!(
+            task.result
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap()
+                .exit_code,
+            0
+        );
+        std::fs::remove_dir_all(output).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fake_child_decodes_gbk_and_utf8_chinese_paths() {
+        let _environment = FakePatcherEnv::new("encoding");
+        let output = run_patcher(
+            &[OsString::from("doctor")],
+            ProcessControl::default(),
+            |_| {},
+            |_| {},
+            false,
+        )
+        .expect("fake patcher process should run");
+        assert!(
+            output.stdout.contains("C:\\Users\\张三\\工作"),
+            "{}",
+            output.stdout
+        );
+        assert!(
+            output.stderr.contains("日志 C:\\Users\\张三\\文件"),
+            "{}",
+            output.stderr
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn official_verify_streams_progress_and_group_completions_before_exit() {
+        let _environment = FakePatcherEnv::new("verify-wait");
+        let task = PatcherClient.start_verify(
+            "26.3".to_owned(),
+            Some(PathBuf::from("fixture launcher")),
+            None,
+        );
+        let timeout = Duration::from_secs(3);
+        let progress = task.progress.recv_timeout(timeout).unwrap();
+        assert_eq!(progress.group, VerifyGroup::Client);
+        assert_eq!(progress.checked, 0);
+        for expected in VerifyGroup::ALL {
+            let group = task.completions.recv_timeout(timeout).unwrap();
+            assert_eq!(group.group, expected);
+            assert!(group.passed());
+        }
+        assert!(matches!(
+            task.receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        task.control.cancel();
+        let error = task.receiver.recv_timeout(timeout).unwrap().unwrap_err();
+        assert!(error.0.contains("cancelled"));
+        assert_eq!(task.control.pid(), None);
+        assert!(matches!(
+            task.receiver.recv_timeout(timeout),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn official_verify_preserves_completed_failures_on_nonzero_exit() {
+        let _environment = FakePatcherEnv::new("verify-failed");
+        let task = PatcherClient.start_verify(
+            "1.21.11".to_owned(),
+            Some(PathBuf::from("fixture launcher")),
+            Some(PathBuf::from("fixture mappings.txt")),
+        );
+        let report = task
+            .receiver
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.control.pid(), None);
+        assert!(!report.passed());
+        assert_eq!(report.groups[2].failed[0].path, "assets/indexes/34.json");
+        assert_eq!(report.groups[3].failed[0].reason, "prerequisite-failed");
+        assert_eq!(report.groups[3].failed[0].actual, None);
+        assert_eq!(report.groups[3].failure_count, 2);
+    }
+
+    fn passing_verify_stream() -> VerifyStream {
+        let mut stream = VerifyStream::default();
+        for group in VerifyGroup::ALL.into_iter().rev() {
+            let line = serde_json::json!({
+                "schema": VERIFY_SCHEMA, "event": "group", "group": group.as_str(),
+                "checked": 1, "total": 1, "failed": [], "futureField": true
+            });
+            assert!(matches!(
+                stream.read_line(line.to_string().as_bytes(), false),
+                Some(VerifyUpdate::Completed(result)) if result.group == group
+            ));
+        }
+        stream
+    }
+
+    #[test]
+    fn official_verify_requires_complete_and_successful_exit_for_passes() {
+        assert!(passing_verify_stream().finish(Some(0)).unwrap().passed());
+        assert!(passing_verify_stream().finish(Some(1)).is_err());
+        assert!(passing_verify_stream().finish(None).is_err());
+        assert!(VerifyStream::default().finish(Some(0)).is_err());
+    }
+
+    #[test]
+    fn official_verify_rejects_protocol_errors_even_after_all_groups_pass() {
+        let duplicate = serde_json::json!({
+            "schema": VERIFY_SCHEMA, "event": "group", "group": "client",
+            "checked": 1, "total": 1, "failed": []
+        });
+        let wrong_schema = duplicate
+            .to_string()
+            .replace(VERIFY_SCHEMA, "unknown-schema");
+        let duplicate = duplicate.to_string();
+        for (line, truncated) in [
+            (duplicate.as_bytes(), false),
+            (wrong_schema.as_bytes(), false),
+            (b"old patcher output", false),
+            (b"\xff", false),
+            (b" ", true),
+        ] {
+            let mut stream = passing_verify_stream();
+            assert!(stream.read_line(line, truncated).is_none());
+            assert!(stream.finish(Some(0)).is_err());
+        }
+    }
+
+    #[test]
+    fn official_verify_rejects_non_relative_paths_and_bad_counts() {
+        for path in [
+            "/home/me/file",
+            r"C:\Users\me\file",
+            r"\server\file",
+            "assets/../file",
+        ] {
+            assert!(!is_relative_verify_path(path), "{path}");
+        }
+        assert!(is_relative_verify_path("assets/indexes/34.json"));
+        for (checked, total, failure_count, failed, valid) in [
+            (2, 1, 0, Vec::new(), false),
+            (0, 1, 0, Vec::new(), false),
+            (
+                1,
+                1,
+                0,
+                vec![serde_json::json!({
+                    "path": "assets/indexes/34.json", "expected": null, "actual": null, "reason": "missing"
+                })],
+                false,
+            ),
+            (
+                0,
+                0,
+                1,
+                vec![serde_json::json!({
+                    "path": "assets/indexes/34.json", "expected": null, "actual": null, "reason": "prerequisite-failed"
+                })],
+                true,
+            ),
+            (
+                1,
+                1,
+                1,
+                vec![serde_json::json!({
+                    "path": "assets/indexes/34.json", "reason": "missing"
+                })],
+                false,
+            ),
+        ] {
+            let mut stream = VerifyStream::default();
+            let record = serde_json::json!({
+                "schema": VERIFY_SCHEMA, "event": "group", "group": "asset-objects",
+                "checked": checked, "total": total, "failureCount": failure_count, "failed": failed,
+            });
+            assert_eq!(
+                stream
+                    .read_line(record.to_string().as_bytes(), false)
+                    .is_some(),
+                valid
+            );
+        }
     }
 
     #[test]
@@ -1375,14 +2669,17 @@ mod tests {
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>()
         };
-        let toolchain = Path::new("local/shader-toolchain");
+        let paths = ToolPaths {
+            toolchain_dir: Some(PathBuf::from("local/tools cache")),
+            shader_toolchain: Some(PathBuf::from("local/shader-toolchain")),
+        };
         let minecraft = Path::new("local/.minecraft");
         let settings = BuildSettings::default();
         let args = values(build_args(
             "1.21.11",
             output,
             Some(mappings),
-            Some(toolchain),
+            &paths,
             Some(minecraft),
             &settings,
         ));
@@ -1396,12 +2693,16 @@ mod tests {
                 .any(|pair| pair == ["--minecraft-dir", "local/.minecraft"])
         );
         assert!(!args.iter().any(|arg| arg == "--shader-toolchain"));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--toolchain-dir", "local/tools cache"])
+        );
 
         let other = values(build_args(
             "26.3",
             Path::new("out/26.3"),
             Some(mappings),
-            Some(toolchain),
+            &paths,
             None,
             &settings,
         ));
@@ -1419,15 +2720,24 @@ mod tests {
             quality: Some("ultra".to_owned()),
             render_distance: Some(24),
             backend: Some("webgpu".to_owned()),
+            strict_kernel: true,
             resource_packs: vec![
                 PathBuf::from("packs/one.zip"),
                 PathBuf::from("packs/two.zip"),
             ],
         };
-        let args = build_args("26.2", Path::new("out/26.2"), None, None, None, &settings)
-            .into_iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
+        let args = build_args(
+            "26.2",
+            Path::new("out/26.2"),
+            None,
+            &ToolPaths::default(),
+            None,
+            &settings,
+        )
+        .into_iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+        assert!(args.iter().any(|arg| arg == "--strict-kernel"));
         for pair in [
             ["--quality", "ultra"],
             ["--render-distance", "24"],
@@ -1443,6 +2753,63 @@ mod tests {
             2
         );
         assert!(args.iter().any(|arg| arg == "packs/two.zip"));
+    }
+
+    #[test]
+    fn ui_setting_indices_map_to_supported_cli_arguments() {
+        for (index, expected) in ["low", "mid", "high", "ultra"].into_iter().enumerate() {
+            let settings = BuildSettings::from_ui_indices(index, 12, 0, Vec::new());
+            assert_eq!(settings.quality.as_deref(), Some(expected));
+            let args = build_args(
+                "26.2",
+                Path::new("out"),
+                None,
+                &ToolPaths::default(),
+                None,
+                &settings,
+            )
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+            assert!(args.windows(2).any(|pair| pair == ["--quality", expected]));
+        }
+
+        for (index, expected) in ["webgpu", "webgl2", "auto"].into_iter().enumerate() {
+            let settings = BuildSettings::from_ui_indices(1, 12, index, Vec::new());
+            assert_eq!(settings.backend.as_deref(), Some(expected));
+            let args = build_args(
+                "26.2",
+                Path::new("out"),
+                None,
+                &ToolPaths::default(),
+                None,
+                &settings,
+            )
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+            assert!(args.windows(2).any(|pair| pair == ["--backend", expected]));
+        }
+
+        for (distance, expected) in [(0, 2), (2, 2), (12, 12), (32, 32), (40, 32)] {
+            let settings = BuildSettings::from_ui_indices(1, distance, 0, Vec::new());
+            assert_eq!(settings.render_distance, Some(expected));
+            let args = build_args(
+                "26.2",
+                Path::new("out"),
+                None,
+                &ToolPaths::default(),
+                None,
+                &settings,
+            )
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+            assert!(
+                args.windows(2)
+                    .any(|pair| { pair == ["--render-distance", expected.to_string().as_str()] })
+            );
+        }
     }
 
     #[test]
@@ -1498,56 +2865,72 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn fake_backend_receives_configured_defaults_and_local_packs() {
+    fn fake_patcher_receives_every_ui_setting_and_repeated_local_packs() {
         let _environment = FakePatcherEnv::new("success");
         let root = test_output("configured-build");
         let first_pack = root.join("first.zip");
         let second_pack = root.join("second pack.zip");
         std::fs::write(&first_pack, b"first pack").expect("write first pack fixture");
         std::fs::write(&second_pack, b"second pack").expect("write second pack fixture");
-        let task = PatcherClient.start_build(
-            vec!["26.2".to_owned()],
-            root.clone(),
-            None,
-            None,
-            None,
-            BuildSettings {
-                quality: Some("high".to_owned()),
-                render_distance: Some(20),
-                backend: Some("webgl2".to_owned()),
-                resource_packs: vec![first_pack, second_pack],
-            },
-            ProcessControl::default(),
-        );
-        let output = task
-            .result
-            .recv_timeout(Duration::from_secs(10))
-            .expect("fake patcher result")
-            .expect("backend result");
-        assert_eq!(output.exit_code, 0);
-        let args: Vec<String> = serde_json::from_slice(
-            &std::fs::read(root.join("26.2/received-args.json")).expect("captured args"),
-        )
-        .expect("captured arguments parse");
-        for (name, value) in [
-            ("--quality", "high"),
-            ("--render-distance", "20"),
-            ("--backend", "webgl2"),
-        ] {
-            let index = args
-                .iter()
-                .position(|arg| arg == name)
-                .expect("setting flag passed");
-            assert_eq!(args[index + 1], value);
+        for (case, quality_index, backend_index, distance) in
+            [(0, 0, 0, 2), (1, 1, 1, 12), (2, 2, 2, 32), (3, 3, 0, 24)]
+        {
+            let case_root = root.join(format!("case-{case}"));
+            let settings = BuildSettings::from_ui_indices(
+                quality_index,
+                distance,
+                backend_index,
+                vec![first_pack.clone(), second_pack.clone()],
+            );
+            let task = PatcherClient.start_build(
+                vec!["26.2".to_owned()],
+                case_root.clone(),
+                None,
+                ToolPaths::default(),
+                None,
+                settings,
+                ProcessControl::default(),
+            );
+            let output = task
+                .result
+                .recv_timeout(Duration::from_secs(10))
+                .expect("fake patcher result")
+                .expect("patcher result");
+            assert_eq!(output.exit_code, 0);
+            let args: Vec<String> = serde_json::from_slice(
+                &std::fs::read(case_root.join("26.2/received-args.json")).expect("captured args"),
+            )
+            .expect("captured arguments parse");
+            for (name, value) in [
+                ("--quality", ["low", "mid", "high", "ultra"][quality_index]),
+                ("--render-distance", ["2", "12", "32", "24"][case]),
+                ("--backend", ["webgpu", "webgl2", "auto"][backend_index]),
+            ] {
+                let index = args
+                    .iter()
+                    .position(|arg| arg == name)
+                    .expect("setting flag passed");
+                assert_eq!(args[index + 1], value);
+            }
+            let received_packs = args
+                .windows(2)
+                .filter(|pair| pair[0] == "--resource-pack")
+                .map(|pair| pair[1].as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(received_packs.len(), 2);
+            assert_eq!(received_packs[0], first_pack.to_string_lossy());
+            assert_eq!(received_packs[1], second_pack.to_string_lossy());
+            let expected_tail = [
+                "--resource-pack",
+                first_pack.to_str().unwrap(),
+                "--resource-pack",
+                second_pack.to_str().unwrap(),
+            ];
+            assert!(
+                args.windows(expected_tail.len())
+                    .any(|window| window == expected_tail)
+            );
         }
-        let packs = args
-            .windows(2)
-            .filter(|pair| pair[0] == "--resource-pack")
-            .map(|pair| pair[1].as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(packs.len(), 2);
-        assert_eq!(packs[0], root.join("first.zip").to_string_lossy());
-        assert_eq!(packs[1], root.join("second pack.zip").to_string_lossy());
         std::fs::remove_dir_all(root).expect("remove owned test output");
     }
 
@@ -1608,7 +2991,7 @@ mod tests {
             vec!["26.2".to_owned()],
             root.join("output"),
             None,
-            None,
+            ToolPaths::default(),
             None,
             BuildSettings::default(),
             control.clone(),
@@ -1657,7 +3040,7 @@ mod tests {
             vec!["26.2".to_owned()],
             root.join("output"),
             None,
-            None,
+            ToolPaths::default(),
             None,
             BuildSettings::default(),
             control.clone(),

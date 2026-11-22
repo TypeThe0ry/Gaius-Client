@@ -83,13 +83,26 @@ class PublicTreeCheckTest(unittest.TestCase):
         self.assertTrue(self.findings(require_hash_scan=True))
 
     def test_blocked_words_are_found_from_digests(self):
-        # One of the stored words, assembled at run time so this file itself stays clean.
-        (self.root / "doc.md").write_text("Our " + "Bench" + "marks page.\n", encoding="utf-8", newline="\n")
+        stem = "forbid" + "word"
+        digests = self.root / "patcher" / "blocked-term-hashes.txt"
+        digests.write_text(
+            digests.read_text(encoding="utf-8") + f"{len(stem)} {hashlib.sha256(stem.encode()).hexdigest()}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (self.root / "doc.md").write_text("Our " + stem.title() + "s page.\n", encoding="utf-8", newline="\n")
         self.assertTrue(any("blocked word" in f for f in self.findings()))
 
     def test_term_exception_allows_one_word_in_one_file(self):
-        word = "Bench" + "marks"
-        digest = hashlib.sha256(("bench" + "mark").encode()).hexdigest()
+        stem = "forbid" + "word"
+        word = stem.title() + "s"
+        digest = hashlib.sha256(stem.encode()).hexdigest()
+        digests = self.root / "patcher" / "blocked-term-hashes.txt"
+        digests.write_text(
+            digests.read_text(encoding="utf-8") + f"{len(stem)} {digest}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
         (self.root / "gpu.js").write_text("// %s the GPU\n" % word, encoding="utf-8", newline="\n")
         (self.root / "other.js").write_text("// %s the GPU\n" % word, encoding="utf-8", newline="\n")
         (self.root / "patcher" / "term-exceptions.txt").write_text("gpu.js %s\n" % digest, encoding="utf-8", newline="\n")

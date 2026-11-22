@@ -266,6 +266,7 @@ maven_maven_directory="$(maven_path "$maven_directory")"
 maven_resource_directory="$(maven_path "$resource_directory")"
 maven_source_directory="$(maven_path "$staged_source_directory")"
 maven_source_resources="$(maven_path "$root/port/src/main/resources")"
+maven_bridge_classes="$(maven_path "$overlay_directory/main-bridge-classes")"
 maven_teavm_core_patch="$(maven_path "$overlay_directory/teavm-core-$teavm_version-gaius.jar")"
 if [[ -n "$excluded_library_prefixes" ]]; then
   IFS=',' read -r -a excluded_library_prefix_list <<<"$excluded_library_prefixes"
@@ -532,6 +533,11 @@ EOF
     <resources>
       <resource>
         <directory>$maven_source_resources</directory>
+      </resource>
+      <!-- The patcher emits these classfiles before javac. The resources phase
+           puts them on this module's compile classpath and in its output. -->
+      <resource>
+        <directory>$maven_bridge_classes</directory>
       </resource>
       <resource>
         <directory>$maven_resource_directory</directory>

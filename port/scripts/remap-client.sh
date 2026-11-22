@@ -17,7 +17,7 @@ output="$work/client-named.jar"
 
 strip_jar_signatures() {
   local archive="$1"
-  python3 - "$archive" <<'PY'
+  "$root/port/scripts/run-python.sh" - "$archive" <<'PY'
 import os
 import re
 import sys
@@ -127,7 +127,7 @@ if command -v unzip >/dev/null 2>&1; then
   fi
   class_count="$(unzip -l "$output" | awk '$4 ~ /\.class$/ { count++ } END { print count + 0 }')"
 else
-  read -r main_present class_count < <(python3 - "$output" "$main_class" <<'PY'
+  read -r main_present class_count < <("$root/port/scripts/run-python.sh" - "$output" "$main_class" <<'PY'
 import sys
 import zipfile
 

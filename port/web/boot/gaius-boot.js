@@ -286,6 +286,136 @@
     }
   })();
 
+  // RD32 diagnostics are entirely opt-in. No frame callback, observer, timer, or
+  // sampling machinery is created on the normal path.
+  if ((params.get("rd32trace") === "1" || params.get("rd32snapcheck") === "1")
+      && global.__gaiusRd32TraceSupported === true) {
+    const priorEveryFrame = global.__gaiusChunkPipelineTelemetryEveryFrame;
+    global.__gaiusChunkCausalTelemetryEnabled = true;
+    global.__gaiusChunkPipelineTelemetryEveryFrame = true;
+    const now = () => global.performance && performance.now ? performance.now() : Date.now();
+    let captureFastNanos = 0, captureLegacyNanos = 0, captureFastCount = 0, captureLegacyCount = 0;
+    const startedAt = Date.now();
+    const trace = global.__gaiusRd32Trace = {
+      schema: "gaius.rd32-trace.v1", version: global.__gaiusProfileId || global.__gaiusSite?.profile || "unknown", enabled: true,
+      startedAt: new Date(startedAt).toISOString(), samples: [], frames: [],
+      sampling: {
+        clock: "performance.now; one-second buckets",
+        frames: "requestAnimationFrame delta; >33ms only; cause is temporal correlation",
+        gc: "PerformanceObserver gc when supported; longtask is not GC-specific",
+        allocations: "allocation sampling and call sites require a DevTools Protocol profiler; page APIs expose neither",
+        liveSet: "total uses measureUserAgentSpecificMemory when available; category byte totals are not exposed by complete managers",
+        generationDecode: "server owns generation and packet decode completes before client handler entry",
+        workerQueue: "mesh worker queue lives in its worker global and does not publish queue depth to page"
+      },
+      gcPauses: [], droppedSamples: 0, droppedFrames: 0, droppedGcPauses: 0,
+      snapshotCheck: {captures: 0, mismatches: 0, samples: [], sampleLimit: 20,
+        recordSnapshotCheck(sx, sy, sz, firstDifference, legacyLength, fastLength) {
+          this.captures++;
+          if (firstDifference < 0) return;
+          this.mismatches++;
+          if (this.samples.length < this.sampleLimit) this.samples.push({section: {x: sx, y: sy, z: sz},
+            firstDifference, legacyLength, fastLength});
+        }},
+      recordSnapshotTiming(fast, nanos) {
+        if (fast) { captureFastNanos += nanos; captureFastCount++; }
+        else { captureLegacyNanos += nanos; captureLegacyCount++; }
+      },
+      stop() { this.enabled = false; cancelAnimationFrame(raf); clearInterval(timer); observers.forEach(o => o.disconnect());
+        if (priorEveryFrame === undefined) delete global.__gaiusChunkPipelineTelemetryEveryFrame;
+        else global.__gaiusChunkPipelineTelemetryEveryFrame = priorEveryFrame; },
+      snapshot() { return JSON.parse(JSON.stringify(this)); }
+    };
+    let lastFrame = 0, bucketAt = now(), raf = 0, observers = [];
+    let lastUploadTotal = 0, observed = new WeakMap();
+    let lastFrameUpload = 0, lastFrameCapture = 0, lastFrameInstall = 0;
+    const appendFrame = t => {
+      if (!trace.enabled) return;
+      if (lastFrame) {
+        const duration = t - lastFrame;
+        if (duration > 33) {
+          const causal = global.__gaiusChunkPipelineTelemetry?.causal;
+          const uploadTotal = Number(global.__gaiusChunkPipelineTelemetry?.totalUploadPassMillis) || 0;
+          const captureCount = Number(causal?.snapshotCompleteCount) || 0;
+          const installCount = Number(causal?.installCompleteCount) || 0;
+          const uploaded = uploadTotal > lastFrameUpload;
+          const captured = captureCount > lastFrameCapture;
+          const installed = installCount > lastFrameInstall;
+          lastFrameUpload = uploadTotal; lastFrameCapture = captureCount; lastFrameInstall = installCount;
+          if (trace.frames.length === 10000) { trace.frames.shift(); trace.droppedFrames++; }
+          trace.frames.push({at: Date.now(), durationMs: duration,
+            cause: trace.gcPauses.some(g => g.end >= performance.timeOrigin + t - duration && g.start <= performance.timeOrigin + t)
+              ? "gc" : uploaded ? "upload" : captured ? "capture" : "other",
+            installCompleted: installed,
+            attribution: "counter overlap is approximate; rAF delta includes scheduling and missed frames"});
+        }
+      }
+      lastFrame = t; raf = requestAnimationFrame(appendFrame);
+    };
+    if (global.PerformanceObserver) {
+      try {
+        for (const type of ["gc", "longtask"]) if (PerformanceObserver.supportedEntryTypes?.includes(type)) {
+          const observer = new PerformanceObserver(list => list.getEntries().forEach(e => {
+            if (trace.gcPauses.length === 1000) { trace.gcPauses.shift(); trace.droppedGcPauses++; }
+            trace.gcPauses.push({start: e.startTime + performance.timeOrigin, end: e.startTime + e.duration + performance.timeOrigin, durationMs: e.duration, source: type});
+          }));
+          observer.observe({type, buffered: false}); observers.push(observer);
+        }
+      } catch (_) { observers.forEach(o => o.disconnect()); observers = []; }
+    }
+    const timer = setInterval(() => {
+      const at = now(), seconds = Math.max(0.001, (at - bucketAt) / 1000); bucketAt = at;
+      const causal = global.__gaiusChunkPipelineTelemetry?.causal;
+      const sections = causal?.sections || [];
+      const stages = {captureMs: 0, captureFastMs: captureFastNanos / 1e6,
+        captureFastCount, captureLegacyMs: captureLegacyNanos / 1e6, captureLegacyCount,
+        bridgeSubmitMs: 0, submitToResultMs: 0,
+        installQueueToCompleteMs: 0, installExecutionMs: 0,
+        uploadPassMs: 0, uploadProxyCount: 0};
+      captureFastNanos = 0; captureLegacyNanos = 0; captureFastCount = 0; captureLegacyCount = 0;
+      for (const s of sections) {
+        let mask = observed.get(s) || 0;
+        if (!(mask & 1) && s.snapshotStartAt != null && s.snapshotEndAt != null) { stages.captureMs += Math.max(0, s.snapshotEndAt - s.snapshotStartAt); mask |= 1; }
+        if (!(mask & 2) && s.workerSubmitAt != null && s.workerResultAt != null) { stages.submitToResultMs += Math.max(0, s.workerResultAt - s.workerSubmitAt); mask |= 2; }
+        if (!(mask & 4) && s.installQueueAt != null && s.installCompleteAt != null) { stages.installQueueToCompleteMs += Math.max(0, s.installCompleteAt - s.installQueueAt); mask |= 4; }
+        if (!(mask & 8) && s.installDurationMs != null) { stages.installExecutionMs += Math.max(0, s.installDurationMs); mask |= 8; }
+        if (!(mask & 16) && s.gpuUploadProxyAt != null) { stages.uploadProxyCount++; mask |= 16; }
+        if (!(mask & 32) && s.bridgeSubmitMs != null) { stages.bridgeSubmitMs += Math.max(0, s.bridgeSubmitMs); mask |= 32; }
+        if (mask) observed.set(s, mask);
+      }
+      const pipe = global.__gaiusChunkPipelineTelemetry || {};
+      const uploadTotal = Number(pipe.totalUploadPassMillis) || 0;
+      stages.uploadPassMs = Math.max(0, uploadTotal - lastUploadTotal); lastUploadTotal = uploadTotal;
+      const networkStats = global.__gaiusNetworkStats || {};
+      const sample = {at: new Date().toISOString(), windowMs: seconds * 1000,
+        stages, queues: {compile: pipe.compileBacklog ?? null, upload: pipe.uploadBacklog ?? null,
+          installReady: pipe.meshInstallReady ?? null, installPending: pipe.meshInstallPending ?? null,
+          installReadyBytes: pipe.meshInstallReadyBytes ?? null,
+          clientDecodedPackets: Number.isFinite(Number(networkStats.decodedPacketQueue))
+            ? Math.max(0, Number(networkStats.decodedPacketQueue)) : null,
+          kernel: null, generation: null, decode: null},
+        generationMs: null, decodeMs: null,
+        allocations: {bytesPerSecond: null, topSites: null},
+        liveSetBytes: {total: null, chunkData: null, cpuMeshCopies: null, gpuBuffers: null, staging: null},
+        unavailable: {
+          generationMs: "remote server has no telemetry protocol field",
+          decodeMs: "client packet handler starts after packet decode",
+          queuesKernel: "worker-global queue depth is not published to page",
+          queuesGenerationDecode: "remote server queue counters are not sent to client",
+          allocations: "requires DevTools Protocol allocation sampling outside page runtime",
+          liveSetChunkData: "chunk storage manager exposes no byte counter",
+          liveSetCpuMeshCopies: "mesh snapshot arrays have no retained-live byte counter",
+          liveSetGpuBuffers: "terrain allocation manager does not aggregate live GPU bytes",
+          liveSetStaging: "staging pool has no complete cross-version live-byte counter"
+        }};
+      if (trace.samples.length === 3600) { trace.samples.shift(); trace.droppedSamples++; }
+      trace.samples.push(sample);
+      if (performance.measureUserAgentSpecificMemory) performance.measureUserAgentSpecificMemory().then(m => { sample.liveSetBytes.total = m.bytes; }).catch(() => {});
+    }, 1000);
+    global.__gaiusRd32TraceGet = () => trace.snapshot();
+    raf = requestAnimationFrame(appendFrame);
+  }
+
   // Opt-in bounded timeline for release investigations.  Normal boots do not allocate an
   // observer, timer, or sample buffer.  The portable artifact can therefore be profiled with
   // ?gaiusDiag=1 without changing its default frame path.

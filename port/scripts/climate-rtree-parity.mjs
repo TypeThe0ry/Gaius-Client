@@ -7,8 +7,8 @@
 //
 // Without --patched the real patch chain runs first (patchkit check, wasmgc target, kept scratch
 // directory) and its patched client.jar is used. The patched Climate$RTree, Climate$RTree$SubTree
-// and Climate$ParameterList, the helpers GaiusClimateIndex and GaiusClimateSubTree compiled from
-// the profile's sources, and the JVM pulse shim of worldgen-seed-parity are put in front of the
+// and Climate$ParameterList, GaiusClimateIndex and GaiusClimateSubTree emitted by BrowserBridges,
+// and the JVM pulse shim of worldgen-seed-parity are put in front of the
 // vanilla jar; climate-rtree-parity/ClimateRTreeParity.java then runs the same seeded lookups in
 // an isolated vanilla class loader and in the patched one and requires every lookup to return the
 // same list entry (per leaf, including ties decided by the per-thread lastResult history). It
@@ -24,9 +24,9 @@
 import {spawnSync} from "node:child_process";
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
-import {delimiter, dirname, join, resolve} from "node:path";
+import {delimiter, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
-import {sourceFile} from "../tools/sourcesets/sourcesets.mjs";
+import {generateBrowserBridges} from "./browser-bridge-classes.mjs";
 import {RENDERPEARL_PROFILE} from "./verification-profiles.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -62,8 +62,8 @@ const PATCHED_CLASSES = [
   "net/minecraft/world/level/biome/Climate$ParameterList",
 ];
 const HELPERS = [
-  "net/minecraft/world/level/biome/GaiusClimateIndex.java",
-  "net/minecraft/world/level/biome/GaiusClimateSubTree.java",
+  "net/minecraft/world/level/biome/GaiusClimateIndex",
+  "net/minecraft/world/level/biome/GaiusClimateSubTree",
 ];
 
 const workRoot = join(repositoryRoot, "port", "work", options.profile);
@@ -105,23 +105,13 @@ try {
     if (!existsSync(join(overlay, `${owner}.class`))) usage(`${patchedJar} has no ${owner}.class`);
   }
 
-  const helperSources = join(scratch, "helper-sources");
   const helpers = join(scratch, "helper-classes");
-  mkdirSync(helpers, {recursive: true});
-  const sources = [];
-  for (const helper of HELPERS) {
-    const source = sourceFile(options.profile, "src", helper, {target: "wasmgc"});
-    if (source == null) usage(`profile ${options.profile} has no ${helper}`);
-    const target = join(helperSources, helper);
-    mkdirSync(dirname(target), {recursive: true});
-    writeFileSync(target, source.text);
-    sources.push(target);
-  }
+  generateBrowserBridges({root: repositoryRoot, profile: options.profile, role: "src", scratch,
+    out: helpers, owners: HELPERS});
   // The patched SubTree keeps vanilla's search (the fallback) with its deep pulse.
-  sources.push(join(repositoryRoot,
-    "port/scripts/worldgen-seed-parity/shims/dev/gaius/browser/BrowserWorldgenDeepCheckpoint.java"));
   run("javac", ["-J-Duser.language=en", "--release", "25", "-proc:none", "-nowarn",
-    "-cp", vanillaPath.join(delimiter), "-d", helpers, ...sources], "compile helpers");
+    "-cp", vanillaPath.join(delimiter), "-d", helpers, join(repositoryRoot,
+      "port/scripts/worldgen-seed-parity/shims/dev/gaius/browser/BrowserWorldgenDeepCheckpoint.java")], "compile pulse shim");
 
   const harness = join(scratch, "harness-classes");
   mkdirSync(harness, {recursive: true});

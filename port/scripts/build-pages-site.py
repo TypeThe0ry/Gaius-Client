@@ -657,8 +657,21 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
         staged = (wasm_dist.resolve() if wasm_dist is not None else dist) / "kernels" / path.name
         if not staged.is_file():
             staged = dist / "kernels" / path.name
-        site.add(f"kernels/{path.name}", require(staged) if path.name == "kernel-mirror.js" and staged.is_file()
-                 else path.read_bytes())
+        if path.name == "kernel-mirror.js" and staged.is_file():
+            source = require(staged)
+            if wasm_dist is not None and not source.startswith(b"globalThis.__gaiusKernelSemantics = "):
+                semantics_path = wasm_dist.resolve() / "kernels/kernel-semantics.json"
+                if not semantics_path.is_file():
+                    raise RuntimeError("Wasm kernel mirror has no profile semantics table")
+                semantics = json.loads(require(semantics_path).decode("utf-8"))
+                if semantics.get("profile") != profile:
+                    raise RuntimeError("kernel semantics profile mismatch")
+                prefix = ("globalThis.__gaiusKernelSemantics = "
+                          + json.dumps(semantics, sort_keys=True, separators=(",", ":")) + ";\n")
+                source = prefix.encode("utf-8") + source
+        else:
+            source = path.read_bytes()
+        site.add(f"kernels/{path.name}", source)
         if path.name.endswith("-job.js"):
             modules.append(f"kernels/{path.name}")
     semantics_dist = wasm_dist.resolve() if (no_js_fallback or frozen_js) and wasm_dist is not None else dist
@@ -686,6 +699,7 @@ def build(dist: Path, output: Path, archive: Path | None, split_sounds: bool,
                            require(RELOAD_RELAY_SCRIPT).decode("utf-8") + "  </script>\n")
 
     site_globals: dict[str, object] = {}
+    site_globals["__gaiusRd32TraceSupported"] = profile_config.get("rd32TraceSupported") is True
     if relay_nodes is not None:
         site_globals["__gaiusBridgeUrls"] = relay_nodes
     if wasm_dist is not None:

@@ -3,7 +3,7 @@
 //! dump-corpus.sh --mc PROFILE; point GAIUS_SHADERXLAT_VANILLA_ROOT at the parent containing
 //! 26.2-frontend/ and 1.21.11-frontend/. GAIUS_SHADERXLAT_REQUIRE_FIXTURES=1 makes
 //! missing inputs fatal. Golden fingerprints were generated from before_base_vertex,
-//! using the pipeline before the base_vertex pass was added.
+//! after checking that only the base-vertex pass changed in this pipeline.
 use gaius_shaderxlat::{
     frontend::{self, Attribute, BaseType, Layout, Mode, Uniform},
     passes,
@@ -19,7 +19,7 @@ fn fingerprint(text: &str) -> u64 {
     })
 }
 
-// Translation pipeline before the base_vertex pass.
+// Reference translation pipeline before the base-vertex pass.
 fn before_base_vertex(bytes: &[u8], options: &Options) -> String {
     let mut module = Module::parse(&words_from_bytes(bytes).unwrap()).unwrap();
     passes::strip::run(&mut module);

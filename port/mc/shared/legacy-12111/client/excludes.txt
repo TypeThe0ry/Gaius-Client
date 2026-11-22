@@ -4,4 +4,3 @@
 # overrides are in java/ here.
 dev/gaius/browser/BrowserDeviceTracker.java
 net/minecraft/client/resources/model/sprite/TextureSlots.java
-net/minecraft/world/level/levelgen/BrowserNoiseGraphMapper.java

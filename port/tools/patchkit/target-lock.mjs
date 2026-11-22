@@ -58,15 +58,20 @@ export function targetChanges(before, after, manifest, acknowledgements = []) {
   const sensitive = (row) => row.vanillaPresent;
   const needsAcknowledgement = bodyChanged
     && [...(before.methodTargets ?? []), ...(after.methodTargets ?? [])].some(sensitive);
-  const acknowledged = needsAcknowledgement && acknowledgements.some((entry) =>
+  const matchingEntry = needsAcknowledgement && acknowledgements.find((entry) =>
     entry.profile === manifest.profile && entry.target === manifest.target && entry.id === after.id
     && entry.previousTargetDigest === previousTargetDigest
     && entry.currentTargetDigest === currentTargetDigest);
+  const pendingAudit = matchingEntry && (matchingEntry.reviewer.normalize("NFKC").trim().toLowerCase()
+    .replace(/\s+/gu, " ") === "pending independent audit" ||
+    /^pending independent audit\b/iu.test(matchingEntry.reason.normalize("NFKC").trim()));
+  const acknowledged = Boolean(matchingEntry && !pendingAudit);
   return {changed: bodyChanged || staticWritesChanged, bodyChanged, staticWritesChanged,
-    needsAcknowledgement, acknowledged, previousTargetDigest, currentTargetDigest,
+    needsAcknowledgement, acknowledged, pendingAudit: Boolean(pendingAudit), previousTargetDigest, currentTargetDigest,
     description: [bodyChanged ? `targetHash ${previousTargetDigest} -> ${currentTargetDigest}` : null,
       staticWritesChanged ? "<clinit> static-write set changed (hard gate)" : null,
-      acknowledged ? "reviewed acknowledgement matches" : null].filter(Boolean).join("; ")};
+      pendingAudit ? "implementer self-attestation matches (pending independent audit)"
+        : acknowledged ? "reviewed acknowledgement matches" : null].filter(Boolean).join("; ")};
 }
 
 export function validateTargets(manifest) {

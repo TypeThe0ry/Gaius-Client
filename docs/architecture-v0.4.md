@@ -10,7 +10,7 @@ The browser launcher in `port/web/boot/gaius-boot.js` checks the required WasmGC
 
 A release site is published per profile (`Gaius-<profile>.html` at the Pages root redirects to the profile's multi-file site), ships the WasmGC modules gzip-only, and each profile also has a single-file portable page `Gaius-<profile>.html` as a release asset.
 
-The integrated server follows the WasmGC client automatically. `?runtime=wasm`, `?serverRuntime=wasm` and `?gpu=webgpu|webgl2` are diagnostic assertions. WebGPU is attempted only with an available adapter and shader assets; a missing or rejected adapter keeps the WasmGC client on WebGL2. A client startup failure is terminal.
+The integrated server follows the WasmGC client automatically. `?runtime=wasm`, `?serverRuntime=wasm` and `?gpu=webgpu|webgl2` are diagnostic assertions. WebGPU is attempted only with an available adapter and shader assets; a missing or rejected adapter keeps the WasmGC client on WebGL2. A client startup failure is terminal. The WasmGC module URLs identify immutable gzip artifacts.
 
 ## Vanilla render SPIs and generations
 
@@ -60,4 +60,4 @@ Patch IDs remain stable keys for manifests, bring-up lists and acknowledgements.
 5. Build the selected overlays and Wasm kernels with the repository scripts, stage profile-scoped output, and run the release metadata and lifecycle checks.
 6. Complete browser acceptance for the profile: WasmGC capability gating, WebGPU then WebGL2 fallback, singleplayer Worker startup, world entry/reload, rendering, input, sound and multiplayer transport. Record browser-only items as explicit release acceptance results.
 
-Useful references: [`port/mc/README.md`](../port/mc/README.md) and [`port/mc/shared/README.md`](../port/mc/shared/README.md).
+Useful references: the native kernel and golden test sources under `port/native/`, the [profile build guide](../port/mc/README.md), and the [shared source sets](../port/mc/shared/README.md).

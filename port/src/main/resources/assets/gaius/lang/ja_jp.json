@@ -1,5 +1,13 @@
 {
   "gaius.about.title": "Gaius について",
+  "gaius.connection.badge": "通信方式: %s",
+  "gaius.connection.connecting_via": "%s 経由で接続中",
+  "gaius.server.protocol": "接続プロトコル",
+  "gaius.server.protocol.relay": "リレー（既定）",
+  "gaius.server.protocol.plugin": "プラグイン",
+  "gaius.server.protocol.eagler": "Eagler",
+  "gaius.server.protocol.wsproxy": "WebSocket プロキシ",
+  "gaius.server.protocol.websocket_hint": "WebSocket アドレス（ws:// または wss://）",
   "gaius.about.disclaimer": "Gaius は Minecraft の公式製品ではありません。Mojang または Microsoft の承認を受けたものではなく、両社との関係もありません。正規の Minecraft: Java Edition を所有している必要があります。",
   "gaius.about.license": "Gaius のライセンス",
   "gaius.about.third_party": "サードパーティーに関する表示",

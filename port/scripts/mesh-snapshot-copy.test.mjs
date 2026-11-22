@@ -100,12 +100,14 @@ test("light snapshot reads published light before and after a queued layer is pu
     getLightValue(pos) { return (published + (sky ? 5 : 0) + (pos.x & 3) + (pos.y & 3) + (pos.z & 3)) & 15; },
   });
   const block = listener(false), sky = listener(true);
-  const context = vm.createContext({LightLayer: {BLOCK: 0, SKY: 1},
-    BlockPos: {MutableBlockPos: class {set(x, y, z) {Object.assign(this, {x, y, z});}}},
+  const MutablePosition = class {set(x, y, z) {Object.assign(this, {x, y, z});}};
+  const context = vm.createContext({LightLayer: {BLOCK: 0, SKY: 1}, CaptureScratch: {POSITION: new MutablePosition()},
+    BlockPos: {MutableBlockPos: MutablePosition},
     MeshJobBuffers: {regionIndex: (x, y, z) => ((y + 2) * 20 + z + 2) * 20 + x + 2},
   });
   vm.runInContext(body, context);
-  const buffer = {light: new Uint8Array(8000)};
+  const buffer = {light: new Uint8Array(8000),
+    positionScratch: new context.BlockPos.MutableBlockPos()};
   const engine = {getLayerListener: kind => kind === 0 ? block : sky};
   const verify = () => {
     let differences = 0;
@@ -186,15 +188,17 @@ test("fast light snapshot reads visible block and sky nibbles with vanilla fallb
     return (published + pos.x + 2 * pos.y + 3 * pos.z) & 15;
   }};
   const engine = {blockEngine: {}, skyEngine: {}, getLayerListener: kind => kind === 0 ? block : sky};
-  const context = vm.createContext({LightLayer: {BLOCK: 0, SKY: 1},
-    BlockPos: {MutableBlockPos: class {set(x, y, z) {Object.assign(this, {x, y, z});}}},
+  const MutablePosition = class {set(x, y, z) {Object.assign(this, {x, y, z});}};
+  const context = vm.createContext({LightLayer: {BLOCK: 0, SKY: 1}, CaptureScratch: {POSITION: new MutablePosition()},
+    BlockPos: {MutableBlockPos: MutablePosition},
     SectionPos: {asLong: (x, y, z) => key(x, y, z)},
     GaiusLightColumnAccess: {engine: (e, kind) => kind === 0 ? e.blockEngine : e.skyEngine,
       visibleLayer: (lightEngine, section) => lightEngine === engine.blockEngine
         ? visible.get(section) : visibleSky.get(section)},
     MeshJobBuffers: {regionIndex: (x, y, z) => ((y + 2) * 20 + z + 2) * 20 + x + 2}});
   vm.runInContext(body, context);
-  const buffer = {light: new Uint8Array(8000)};
+  const buffer = {light: new Uint8Array(8000),
+    positionScratch: new context.BlockPos.MutableBlockPos()};
   const expected = () => {
     const out = new Uint8Array(8000);
     for (let y = -1; y <= 16; y++) for (let z = -1; z <= 16; z++) for (let x = -1; x <= 16; x++) {
@@ -216,6 +220,92 @@ test("fast light snapshot reads visible block and sky nibbles with vanilla fallb
   assert.deepEqual(buffer.light, expected(), "published block and vanilla sky updates are visible on recapture");
   assert.equal(updatedSkyFallbacks, 1, "sky listener remains limited to missing visible data");
   assert.notDeepEqual(buffer.light, before);
+});
+
+test("fast light snapshot updates mutable positions only for listener fallbacks", () => {
+  const source = readFileSync(new URL("../mc/shared/canonical/src/java/dev/gaius/browser/kernel/mesh/SectionSnapshot.java",
+    import.meta.url), "utf8");
+  const start = source.indexOf("    private static void captureLight(");
+  const end = source.indexOf("    private static void captureVanillaLight(", start);
+  const body = source.slice(start, end)
+    .replace(/private static void captureLight\([^)]*\)/, "function captureLight(b, engine, sx, sy, sz, fast)")
+    .replace(/LightEngine<\?, \?> /g, "const ")
+    .replace(/LayerLightEventListener /g, "const ")
+    .replace(/DataLayer /g, "const ")
+    .replace(/byte\[\] /g, "const ")
+    .replace(/BlockPos\.MutableBlockPos cursor/, "const cursor")
+    .replace(/\bboolean /g, "let ")
+    .replace(/\bint /g, "let ")
+    .replace(/\(byte\) /g, "");
+  let cursorWrites = 0;
+  class Position { set(x, y, z) { cursorWrites++; Object.assign(this, {x, y, z}); } }
+  const emptyLayer = {isDefinitelyHomogenous: () => true, get: () => 4};
+  const sky = {getLightValue: () => 9};
+  const block = {getLightValue: () => 3};
+  const context = vm.createContext({LightLayer: {BLOCK: 0, SKY: 1}, Position, CaptureScratch: {POSITION: new Position()},
+    BlockPos: {MutableBlockPos: Position}, SectionPos: {asLong: (...v) => v.join(",")},
+    GaiusLightColumnAccess: {engine: (e, kind) => kind === 0 ? e.blockEngine : e.skyEngine,
+      visibleLayer: (lightEngine, key) => lightEngine === "block" ? emptyLayer : key === "-4,-5,1" ? null : emptyLayer},
+    MeshJobBuffers: {regionIndex: (x, y, z) => ((y + 2) * 20 + z + 2) * 20 + x + 2}});
+  vm.runInContext(body, context);
+  const buffer = {light: new Uint8Array(8000), positionScratch: new Position()};
+  context.captureLight(buffer, {blockEngine: "block", skyEngine: "sky",
+    getLayerListener: kind => kind === 0 ? block : sky}, -3, -4, 2, true);
+  assert.equal(cursorWrites, 1, "only the one missing sky sample needs a mutable-position listener fallback");
+});
+
+test("fast block-entity map filtering matches vanilla section lookup and sort order", () => {
+  const source = readFileSync(new URL("../mc/shared/canonical/src/java/dev/gaius/browser/kernel/mesh/SectionSnapshot.java",
+    import.meta.url), "utf8");
+  const start = source.indexOf("    private static void collectBlockEntities(");
+  const end = source.indexOf("\n    }\n}", start) + 6;
+  assert(start >= 0 && end > start);
+  const body = source.slice(start, end)
+    .replace(/private static void collectBlockEntities\([^)]*\)/, "function collectBlockEntities(b, region, sx, sy, sz, table, out, fast)")
+    .replace(/MeshKernelAccess\.Region access = \(MeshKernelAccess\.Region\) \(Object\) region;/, "const access = region;")
+    .replace(/SectionCopy center = /, "const center = ")
+    .replace(/MeshKernelAccess\.Copy copy = \(MeshKernelAccess\.Copy\) \(Object\) center;/, "const copy = center;")
+    .replace(/Map<BlockPos, BlockEntity> entities = /, "const entities = ")
+    .replace(/for \(Map\.Entry<BlockPos, BlockEntity> entry : entities\.entrySet\(\)\)/, "for (const entry of entities.entrySet())")
+    .replace(/BlockPos p = /, "const p = ")
+    .replace(/BlockEntity entity = /, "const entity = ")
+    .replace(/BlockPos\.MutableBlockPos pos = /, "const pos = ")
+    .replace(/\bint /g, "let ")
+    .replace(/for \(let (\w+) = ([^;]+); ([^;]+); ([^)]+)\)/g, "for (let $1 = $2; $3; $4)");
+  const index = (x, y, z) => ((y + 2) * 20 + z + 2) * 20 + x + 2;
+  const keys = (x, y, z) => `${x},${y},${z}`;
+  class Pos { constructor(x, y, z) { Object.assign(this, {x, y, z}); }
+    getX() { return this.x; } getY() { return this.y; } getZ() { return this.z; }
+    set(x, y, z) { Object.assign(this, {x, y, z}); return this; } }
+  const entityA = {name: "A"}, entityB = {name: "B"}, ignored = {name: "ignored"}, outside = {name: "outside"};
+  const entityMap = new Map([[new Pos(37, 49, -14), entityB], [new Pos(33, 50, -13), entityA],
+    [new Pos(36, 52, -12), ignored], [new Pos(48, 49, -14), outside]]);
+  const entities = {isEmpty: () => entityMap.size === 0,
+    entrySet: () => [...entityMap].map(([key, value]) => ({getKey: () => key, getValue: () => value}))};
+  const stateIds = new Map([[index(5, 1, 2), 202], [index(1, 2, 3), 201], [index(4, 4, 4), 0]]);
+  const region = {gaius$sections: () => Array.from({length: 27}, (_, i) => i === 13 ? {
+    gaius$blockEntities: () => entities,
+  } : null), gaius$minSectionX: () => 1, gaius$minSectionY: () => 2, gaius$minSectionZ: () => -2,
+  getBlockEntity: pos => [...entityMap].find(([key]) => keys(key.x, key.y, key.z) === keys(pos.x, pos.y, pos.z))?.[1] || null};
+  const table = {hasBlockEntity: id => id === 201 || id === 202};
+  const buffer = {id: at => stateIds.get(at) || 0,
+    positionScratch: new Pos(0, 0, 0)};
+  const context = vm.createContext({CaptureScratch: {POSITION: new Pos(0, 0, 0)}, MeshKernelAccess: {Region: {}}, RenderSectionRegion: {index: () => 13},
+    MeshJobBuffers: {regionIndex: index}, BLOCK_ENTITY_ORDER: (a, b) => {
+      const pa = [...entityMap].find(([, entity]) => entity === a)[0];
+      const pb = [...entityMap].find(([, entity]) => entity === b)[0];
+      return pa.z - pb.z || pa.y - pb.y || pa.x - pb.x;
+    }, Pos, BlockPos: {MutableBlockPos: Pos}});
+  vm.runInContext(body, context);
+  const javaList = () => ({items: [], size() { return this.items.length; }, add(item) { this.items.push(item); },
+    subList(from, to) { return {owner: this, sort(compare) {
+      this.owner.items.splice(from, to - from, ...this.owner.items.slice(from, to).sort(compare));
+    }}; }});
+  const fast = javaList(), legacy = javaList();
+  context.collectBlockEntities(buffer, region, 2, 3, -1, table, fast, true);
+  context.collectBlockEntities(buffer, region, 2, 3, -1, table, legacy, false);
+  assert.deepEqual(fast.items.map(e => e.name), ["B", "A"]);
+  assert.deepEqual(legacy.items.map(e => e.name), ["B", "A"]);
 });
 
 test("opt-in zero-copy facade frames the reusable bridge views before they are reused", async () => {

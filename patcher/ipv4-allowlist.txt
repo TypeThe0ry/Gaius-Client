@@ -3,3 +3,5 @@
 # version numbers (jdk-25.0.4.1, Chrome/141.0.0.0) are recognised without an
 # entry, as in tools/check-public-network-secrets.mjs, which also scans this
 # file: an entry here must be a literal that check accepts too.
+# Windows assemblyIdentity version in the Win32 application manifest (not a host address).
+patcher/gui/gaius-builder.manifest 1.0.0.0

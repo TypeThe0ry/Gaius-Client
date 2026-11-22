@@ -85,6 +85,8 @@ def translator_module(explicit: Path | None) -> Path | None:
         if not explicit.is_file():
             raise FileNotFoundError(f"--shaderxlat {explicit} is not a file")
         return explicit
+    if os.environ.get("GAIUS_SKIP_KERNELS") == "1":
+        return None
     configured = os.environ.get("GAIUS_SHADERXLAT_WASM", "").strip()
     if configured:
         path = Path(configured)
@@ -105,6 +107,8 @@ def stage_webgpu(dist: Path, translator: Path | None) -> list[str]:
     if module is not None:
         copy(module, dist / WEBGPU_TRANSLATOR)
         staged.append(WEBGPU_TRANSLATOR)
+    elif os.environ.get("GAIUS_SKIP_KERNELS") == "1":
+        (dist / WEBGPU_TRANSLATOR).unlink(missing_ok=True)
     return staged
 
 

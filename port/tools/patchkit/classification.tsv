@@ -321,3 +321,9 @@ MinecraftClientPatcher.patchPackSelectionScreenBrowserNoFolderButton	FEATURE	-	s
 MinecraftClientPatcher.patchTitleScreenBrowserNoRealms	FEATURE	feature	same	no Realms button or Realms notifications on the title screen (no signed-in account in the browser); vanilla stays correct
 MinecraftClientPatcher.patchTitleScreenBrowserAboutLink	FEATURE	feature	same	the title version text names the Gaius release and port author and opens the About Gaius screen (licenses, notices, disclaimer, EULA); vanilla stays correct
 MinecraftClientPatcher.patchSweptBlockIntersectionTraversal	PERF	-	same	Inline swept slice iterator into primitive locals; preserve distinct mutable cursor per slice, exact visits, callback arguments and early exit
+MinecraftClientPatcher.patchServerAddressWebSocketScheme	FEATURE	bugfix	same	Add Server accepts ws:// and wss:// addresses instead of leaving Done disabled
+MinecraftClientPatcher.patchServerDataTransportProtocol	FEATURE	bugfix	same	Persist an opt-in browser transport per server; old and unknown values default to relay
+MinecraftClientPatcher.patchEaglerConnectionInitializer	FEATURE	bugfix	same	Run Eagler binary login before the existing Minecraft protocol pipeline on raw WebSockets
+MinecraftClientPatcher.patchConnectionTransportMetadata	FEATURE	ui	same	Expose the normalized transport on each active Connection through a read-only getter
+MinecraftClientPatcher.patchEaglerServerProtocolUi	FEATURE	feature	same	Add an opt-in protocol selector and WebSocket address hint to Add/Edit Server
+MinecraftClientPatcher.patchEaglerConnectionStatusUi	FEATURE	feature	same	Show the selected transport badge and Connecting via label without changing connection state

@@ -4,6 +4,7 @@ port/mc/profiles/1.21.11/kernel-mirror.lock 439cc4f59254588430904f977f1f4c167535
 port/mc/profiles/26.2/kernel-mirror.lock 5ee10d65233bae54ea91f9670b80e078b608a2ef020c0c3fafb5c212a0209f87
 port/mc/profiles/26.3/kernel-mirror.lock 204b2b3441a8a9d8a6df23196f3d5e0c713aa13dfd57484beaaee5e13acd3d76
 port/native/kernel-mirror.toml 95c23973ba696e3687be24d68ba50cc8f16e19c497aa17e7ca3013dca3d26c65
+port/native/crates/gaius-shaderxlat/tests/frontend/base_vertex.vert.spv f79fd358f3d840ecceb420336bca76dac9d801d45ab37d6a119b51557fa5d193
 port/native/crates/gaius-shaderxlat/tests/frontend/legacy.frag.spv e2f0621e6ee896520d21065725a5359d2ac05bf6e582b27f492687597f5e35cf
 port/native/crates/gaius-shaderxlat/tests/frontend/legacy.vert.spv 963af15b03718aed41c4060bc62aa06e8fffb6fb1f1727d2be662c894c8d9fea
 port/native/crates/gaius-shaderxlat/tests/frontend/link.frag.spv 45e7a239522effe48a33efe922f3857630ebe3209e5a88b29049fcd37da6bae4

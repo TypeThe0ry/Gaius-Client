@@ -1,7 +1,14 @@
 package dev.gaius.browser;
 
+import dev.gaius.browser.transport.TransportKind;
+import io.netty.bootstrap.Bootstrap;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.browser.BrowserWebSocketChannel;
+import io.netty.util.AttributeKey;
+import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.Button;
@@ -12,7 +19,15 @@ import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.layouts.HeaderAndFooterLayout;
 import net.minecraft.client.gui.layouts.LinearLayout;
 import net.minecraft.client.gui.screens.ConfirmScreen;
+import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
+import net.minecraft.client.gui.screens.multiplayer.ServerSelectionList;
+import net.minecraft.client.gui.screens.multiplayer.ServerSelectionList.OnlineServerEntry;
+import net.minecraft.client.multiplayer.ServerData;
+import net.minecraft.client.multiplayer.ServerList;
+import net.minecraft.client.multiplayer.TransferState;
+import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
@@ -28,6 +43,19 @@ import net.minecraft.network.chat.MutableComponent;
 public final class BrowserRelaysScreen extends Screen {
     private static final int ROW_WIDTH = 310;
     private static final int CONTENT_SPACING = 4;
+
+    // Shared with BrowserWebSocketChannel. Bootstrap attaches it before the channel is registered.
+    private static final AttributeKey<Integer> RELAY_WARMUP_ATTEMPT = AttributeKey.valueOf("gaius.relayWarmupAttempt");
+    private static final ThreadLocal<PendingJoin> PENDING_JOIN = new ThreadLocal<>();
+    private static JoinMultiplayerScreen activeList;
+    private static boolean resumingList;
+    private static boolean checkedList;
+    private static boolean warmedList;
+    private static String targetHost;
+    private static int targetPort;
+    private static int nextAttempt;
+
+    private record PendingJoin(Screen parent, ServerAddress address, ServerData server, int id) {}
 
     private final Screen parent;
     private HeaderAndFooterLayout layout = new HeaderAndFooterLayout(this);
@@ -50,6 +78,145 @@ public final class BrowserRelaysScreen extends Screen {
         button.setTooltip(Tooltip.create(BrowserI18n.text("relay.tooltip")));
         button.visible = BrowserRelays.available();
         return button;
+    }
+
+    // These three activation hooks run on the client UI thread. added() precedes either the
+    // first init() or repositionElements() after a return to the same initialized screen.
+    public static void serverListAdded(JoinMultiplayerScreen screen) {
+        if (activeList != null && activeList != screen) {
+            serverListRemoved(activeList);
+        }
+        activeList = screen;
+        resumingList = screen.getServers() != null;
+        checkedList = false;
+        warmedList = false;
+    }
+
+    public static void serverListInitialized(JoinMultiplayerScreen screen) {
+        if (activeList != screen || checkedList) {
+            return;
+        }
+        checkedList = true;
+        ServerList servers = screen.getServers();
+        for (int index = 0; index < servers.size(); index++) {
+            if (isPublicTarget(servers.get(index))) {
+                BrowserWebSocketChannel.warmServerList(true);
+                warmedList = true;
+                return;
+            }
+        }
+    }
+
+    public static void serverListRepositioned(JoinMultiplayerScreen screen) {
+        if (resumingList) {
+            serverListInitialized(screen);
+        }
+    }
+
+    public static void serverListRemoved(JoinMultiplayerScreen screen) {
+        if (activeList == screen) {
+            activeList = null;
+            targetHost = null;
+            targetPort = 0;
+            BrowserWebSocketChannel.warmServerList(false);
+        }
+    }
+
+    public static void serverListTargetChanged(Minecraft minecraft, JoinMultiplayerScreen screen,
+            ServerSelectionList list) {
+        if (screen != activeList || minecraft.gaius$getScreen() != screen || !warmedList || list == null) {
+            return;
+        }
+        if (list.getSelected() instanceof OnlineServerEntry online) {
+            ServerData server = online.getServerData();
+            if (isSavedPublicTarget(screen, server)) {
+                ServerAddress address = ServerAddress.parseString(server.ip);
+                String host = address.getHost();
+                int port = address.getPort();
+                if (!host.isEmpty() && port > 0) {
+                    setServerListTarget(host, port);
+                    return;
+                }
+            }
+        }
+        setServerListTarget(null, 0);
+    }
+
+    private static void setServerListTarget(String host, int port) {
+        if (targetPort != port || !Objects.equals(targetHost, host)) {
+            BrowserWebSocketChannel.serverListTarget(host, port);
+            targetHost = host;
+            targetPort = port;
+        }
+    }
+
+    /** Carries the list's warm socket across the vanilla transition for one saved-server join. */
+    public static void startConnecting(Screen parent, Minecraft minecraft, ServerAddress address,
+            ServerData server, boolean quickPlay, TransferState transfer) {
+        if (activeList == null || activeList != parent || minecraft.gaius$getScreen() != parent
+                || !isSavedPublicTarget(activeList, server) || address.getPort() <= 0) {
+            ConnectScreen.startConnecting(parent, minecraft, address, server, quickPlay, transfer);
+            return;
+        }
+
+        // ConnectScreen.connect binds this scope before it starts the asynchronous connector.
+        int id = ++nextAttempt;
+        if (id == 0) {
+            id = ++nextAttempt;
+        }
+        PendingJoin previous = PENDING_JOIN.get();
+        PENDING_JOIN.set(new PendingJoin(parent, address, server, id));
+        boolean transitioned = false;
+        try {
+            BrowserWebSocketChannel.reserveServerListWarmup(address.getHost(), address.getPort(), id);
+            ConnectScreen.startConnecting(parent, minecraft, address, server, quickPlay, transfer);
+            transitioned = minecraft.gaius$getScreen() instanceof ConnectScreen;
+        } finally {
+            if (previous == null) {
+                PENDING_JOIN.remove();
+            } else {
+                PENDING_JOIN.set(previous);
+            }
+            if (!transitioned) {
+                releaseRelayWarmup(id);
+            }
+        }
+    }
+
+    private static boolean isSavedPublicTarget(JoinMultiplayerScreen screen, ServerData server) {
+        ServerList servers = screen.getServers();
+        for (int index = 0; index < servers.size(); index++) {
+            if (servers.get(index) == server) {
+                return isPublicTarget(server);
+            }
+        }
+        return false;
+    }
+
+    private static boolean isPublicTarget(ServerData server) {
+        TransportKind transport = TransportKind.fromProtocol(server.gaiusProtocol);
+        return (transport == TransportKind.RELAY || transport == TransportKind.PLUGIN)
+                && server.ip != null && BrowserWebSocketChannel.isPublicServerAddress(server.ip)
+                && ServerAddress.isValidAddress(server.ip);
+    }
+
+    public static int connectingAttempt(Screen parent, ServerAddress address, ServerData server) {
+        PendingJoin join = PENDING_JOIN.get();
+        return join != null && join.parent() == parent && join.address() == address && join.server() == server
+                ? join.id() : 0;
+    }
+
+    public static ChannelFuture connectChannel(Bootstrap bootstrap, SocketAddress address, int attempt) {
+        if (attempt != 0) {
+            bootstrap.attr(RELAY_WARMUP_ATTEMPT, attempt);
+        }
+        return bootstrap.connect(address);
+    }
+
+    public static void releaseRelayWarmup(int attempt) {
+        if (attempt != 0) {
+            BrowserWebSocketChannel.cancelServerListWarmup(attempt);
+        }
     }
 
     @Override

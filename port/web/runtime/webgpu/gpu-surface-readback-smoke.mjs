@@ -19,7 +19,7 @@ const canvasContext = {configure() {}, getCurrentTexture() {
 }};
 const canvas = {width: 2, height: 2, getContext(kind) { return kind === "webgpu" ? canvasContext : null; }};
 
-let pendingCopy = null;
+let vertexBufferBinds = 0;
 const device = {
   limits: {maxBufferSize: 1 << 20},
   features: new Set(),
@@ -45,12 +45,20 @@ const device = {
   createSampler(descriptor) { return descriptor; },
   createBindGroup(descriptor) { return descriptor; },
   createCommandEncoder() {
+    let pendingCopy = null;
+    let passOpen = false;
     return {
       copyTextureToBuffer(source, destination, extent) { pendingCopy = {source, destination, extent}; },
       beginRenderPass() {
-        return {setPipeline() {}, setBindGroup() {}, draw() {}, end() {}};
+        assert.equal(passOpen, false);
+        passOpen = true;
+        return {
+          setPipeline() {}, setBindGroup() {}, draw() {},
+          setVertexBuffer() { assert.equal(passOpen, true); vertexBufferBinds++; },
+          end() { passOpen = false; },
+        };
       },
-      finish() { return {copy: pendingCopy}; },
+      finish() { assert.equal(passOpen, false); return {copy: pendingCopy}; },
     };
   },
 };
@@ -89,4 +97,17 @@ assert.deepEqual([...rgba], [9, 10, 11, 255, 12, 13, 14, 255, 1, 2, 3, 255, 4, 5
 const png = encodeRgbaPng(frame.width, frame.height, rgba);
 const decoded = decodePng(png);
 assert.deepEqual([...decoded.rgba], [...rgba], "PNG encoding preserves GPU readback bytes");
-console.log("WebGPU surface readback smoke passed: source texture bytes, row order, PNG output");
+// Start a new logical pass and pause it like a yielding Wasm caller. A host screenshot
+// must leave the game encoder intact and fall back to the last submitted frame.
+gpu.passColor(0, view, false, 0, 0, 0, 1);
+gpu.passBegin(1);
+const submitCount = gpu.submitCount;
+assert.deepEqual(await gpu.captureSurfaceReadback(), frame);
+assert.equal(gpu.submitCount, submitCount, "diagnostic must not submit an open game encoder");
+await assert.rejects(gpu.textureLevelDigests("surface"), /closed render pass/);
+const vertexBuffer = gpu.createBuffer(16, 0x20, "vertex-buffer");
+gpu.setVertexBuffer(0, vertexBuffer, 0, 16);
+assert.equal(vertexBufferBinds, 1, "game pass still accepts commands after diagnostic readback");
+gpu.passEnd(true);
+gpu.submit();
+console.log("WebGPU surface readback smoke passed: pixels, PNG and open-pass isolation");

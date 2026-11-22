@@ -73,6 +73,18 @@ public final class BrowserChunkPipelineTelemetry {
         }
     }
 
+    public static void installDuration(int ticket, long durationNanos) {
+        if (enabled() && ticket != 0) {
+            installDurationJs(ticket, Math.max(0L, durationNanos) / 1_000_000.0);
+        }
+    }
+
+    public static void bridgeSubmitDuration(int ticket, long durationNanos) {
+        if (enabled() && ticket != 0) {
+            bridgeSubmitDurationJs(ticket, Math.max(0L, durationNanos) / 1_000_000.0);
+        }
+    }
+
     public static void discard(int ticket, int reason) {
         if (enabled() && ticket != 0) {
             discardJs(ticket, reason, nowMillis());
@@ -92,6 +104,10 @@ public final class BrowserChunkPipelineTelemetry {
     }
 
     static boolean enabled() {
+        return ENABLED;
+    }
+
+    public static boolean isEnabled() {
         return ENABLED;
     }
 
@@ -236,6 +252,7 @@ public final class BrowserChunkPipelineTelemetry {
             const causal=root&&root.causal;
             const section=causal&&causal.byTicket?causal.byTicket.get(Number(ticket)|0):null;if(!section)return;
             section.snapshotEndAt=Number(atMillis);causal.mark(section,'snapshotEnd',atMillis);
+            causal.snapshotCompleteCount=(Number(causal.snapshotCompleteCount)||0)+1;
             if(!succeeded){section.discardAt=section.snapshotEndAt;section.discardReason='snapshot-fallback';causal.mark(section,'discard',atMillis);}
             """)
     private static native void snapshotEndJs(int ticket, boolean succeeded, double atMillis);
@@ -270,9 +287,24 @@ public final class BrowserChunkPipelineTelemetry {
             const causal=root&&root.causal;
             const section=causal&&causal.byTicket?causal.byTicket.get(Number(ticket)|0):null;if(!section)return;
             section.installCompleteAt=Number(atMillis);section.installSucceeded=succeeded===true;causal.mark(section,'installComplete',atMillis);
+            causal.installCompleteCount=(Number(causal.installCompleteCount)||0)+1;
             if(!section.installSucceeded){section.discardAt=section.installCompleteAt;section.discardReason='install-failed';causal.mark(section,'discard',atMillis);}
             """)
     private static native void installCompleteJs(int ticket, boolean succeeded, double atMillis);
+
+    @JSBody(params = {"ticket", "durationMillis"}, script = """
+            const causal=globalThis.__gaiusChunkPipelineTelemetry&&globalThis.__gaiusChunkPipelineTelemetry.causal;
+            const section=causal&&causal.byTicket?causal.byTicket.get(Number(ticket)|0):null;
+            if(section)section.installDurationMs=Number(durationMillis)||0;
+            """)
+    private static native void installDurationJs(int ticket, double durationMillis);
+
+    @JSBody(params = {"ticket", "durationMillis"}, script = """
+            const causal=globalThis.__gaiusChunkPipelineTelemetry&&globalThis.__gaiusChunkPipelineTelemetry.causal;
+            const section=causal&&causal.byTicket?causal.byTicket.get(Number(ticket)|0):null;
+            if(section)section.bridgeSubmitMs=Number(durationMillis)||0;
+            """)
+    private static native void bridgeSubmitDurationJs(int ticket, double durationMillis);
 
     @JSBody(params = {"ticket", "atMillis"}, script = """
             const root=globalThis.__gaiusChunkPipelineTelemetry;

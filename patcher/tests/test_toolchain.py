@@ -1,4 +1,9 @@
-"""Synthetic checks for toolchain lock integrity and patcher self-tests."""
+"""Public CI checks for toolchain lock integrity and patcher self-tests.
+
+Maintainer-only checks that require the excluded checkout shader loader live in
+patcher/tests/maintainer_test_toolchain.py and can be run with:
+  python3 -m unittest discover -s patcher/tests -p 'maintainer_test_*.py' -v
+"""
 
 import hashlib
 import json

@@ -7,8 +7,8 @@ public_tree_check.py before anything else happens. The script only writes to
 --out; it does not commit, push or contact any remote.
 
 Files under patcher/public-root/ are exported to the root of the public tree
-(README, disclaimer, issue rules and templates); every other file keeps its
-path.
+(disclaimer, issue rules and templates). The canonical READMEs and icon under
+public/ take precedence at their mapped destinations.
 
 Allowlist syntax, one pattern per line, relative to the repository root:
   patcher/**              every tracked file under patcher/
@@ -28,6 +28,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import public_tree_check  # noqa: E402
+from public_readme import CANONICAL, PathTree, render, versions  # noqa: E402
 
 
 def pattern_regex(pattern: str) -> re.Pattern[str]:
@@ -53,7 +54,7 @@ PUBLIC_ROOT = "patcher/public-root/"
 
 
 def export_path(path: str) -> str:
-    return path[len(PUBLIC_ROOT):] if path.startswith(PUBLIC_ROOT) else path
+    return CANONICAL.get(path, path.removeprefix(PUBLIC_ROOT))
 
 
 def selected_files(repo: Path, allowlist: Path) -> list[str]:
@@ -91,10 +92,15 @@ def main(argv: list[str]) -> int:
     targets: dict[str, str] = {}
     for path in files:
         target = export_path(path)
+        if target in CANONICAL.values() and path not in CANONICAL:
+            continue
         if target in targets:
             print(f"{path} and {targets[target]} would both be exported as {target}", file=sys.stderr)
             return 2
         targets[target] = path
+    if not CANONICAL.keys() <= set(targets.values()):
+        print("missing allowlisted canonical public README files", file=sys.stderr)
+        return 2
     if known.list:
         print("\n".join(f"{path} -> {target}" if target != path else path for target, path in targets.items()))
         return 0
@@ -106,10 +112,19 @@ def main(argv: list[str]) -> int:
     if out == repo or repo in out.parents:
         print("refusing to export inside the private repository", file=sys.stderr)
         return 2
+    source = PathTree(repo)
+    try:
+        rendered = render(source, *versions(source))
+    except (ValueError, OSError) as exc:
+        print(f"cannot render canonical public README files: {exc}", file=sys.stderr)
+        return 2
     for target_path, path in targets.items():
         target = out / target_path
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(repo / path, target)
+        if target_path in rendered:
+            target.write_bytes(rendered[target_path])
+        else:
+            shutil.copy2(repo / path, target)
     print(f"exported {len(files)} files to {out}")
     return public_tree_check.main([str(out), *rest])
 

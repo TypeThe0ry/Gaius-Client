@@ -59,6 +59,7 @@ class FetchOfflineTest(unittest.TestCase):
         index = json.dumps({"objects": objects}).encode()
         (self.game / "assets" / "indexes").mkdir(parents=True)
         (self.game / "assets" / "indexes" / "7.json").write_bytes(index)
+        self.unselected_data = other
         self.unselected = sha1(other)
 
         metadata = {
@@ -102,6 +103,128 @@ class FetchOfflineTest(unittest.TestCase):
              "--minecraft-dir", str(self.game),
              "--work-root", str(self.root / "work")],
             capture_output=True, text=True, stdin=subprocess.DEVNULL)
+
+    def verify(self, *args, ok):
+        result = self.patcher("doctor", "9.9", "--verify-files", "--json", *args, accept=False)
+        self.assertEqual(result.returncode, 0 if ok else 1, result.stdout + result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertNotIn(str(self.root), result.stdout)
+        groups = {}
+        progress = {}
+        for line in result.stdout.splitlines():
+            record = json.loads(line)
+            self.assertEqual(record["schema"], "gaius-patcher-verify-v1")
+            group = record["group"]
+            self.assertNotIn(group, groups, "no events after a terminal record")
+            count = record["checked"]
+            total = record["total"]
+            previous_count, previous_total = progress.get(group, (0, total))
+            self.assertEqual(total, previous_total)
+            self.assertLessEqual(previous_count, count)
+            self.assertLessEqual(count, total)
+            if record["event"] == "progress":
+                self.assertNotIn("failed", record)
+                progress[group] = (count, total)
+            else:
+                self.assertEqual(record["event"], "group")
+                self.assertIsInstance(record["failed"], list)
+                groups[group] = record
+        self.assertEqual(set(groups), {"client", "libraries", "asset-index", "asset-objects"})
+        self.assertEqual(all(not record["failed"] for record in groups.values()), ok)
+        if ok:
+            self.assertEqual(set(progress), set(groups))
+            self.assertTrue(all(record["checked"] == record["total"] for record in groups.values()))
+        return groups
+
+    def install_unselected_object(self):
+        target = self.game / "assets" / "objects" / self.unselected[:2] / self.unselected
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(self.unselected_data)
+
+    def test_verify_is_read_only_and_checks_every_asset_object(self):
+        groups = self.verify(ok=False)
+        self.assertEqual(groups["asset-objects"]["checked"], 3)
+        self.assertEqual(groups["asset-objects"]["failed"], [{
+            "path": f"assets/objects/{self.unselected[:2]}/{self.unselected}",
+            "expected": self.unselected, "actual": None, "reason": "missing",
+        }])
+        self.install_unselected_object()
+        groups = self.verify(ok=True)
+        self.assertEqual({group: rec["checked"] for group, rec in groups.items()}, {
+            "client": 1, "libraries": 1, "asset-index": 1, "asset-objects": 3,
+        })
+        self.assertFalse((self.root / "work").exists())
+
+    def test_verify_requires_json_mode(self):
+        result = self.patcher("doctor", "9.9", "--verify-files", accept=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("requires --json", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_verify_rejects_same_size_bad_index_even_with_valid_work_copy(self):
+        self.install_unselected_object()
+        index = self.game / "assets" / "indexes" / "7.json"
+        original = index.read_bytes()
+        staged = self.root / "work" / "9.9" / "assets" / "indexes" / "7.json"
+        staged.parent.mkdir(parents=True)
+        staged.write_bytes(original)
+        tampered = original.replace(b"/music/y.ogg", b"/music/z.ogg")
+        self.assertEqual(len(original), len(tampered))
+        self.assertNotEqual(original, tampered)
+        index.write_bytes(tampered)
+        groups = self.verify(ok=False)
+        self.assertEqual(groups["asset-index"]["checked"], 1)
+        self.assertEqual(groups["asset-index"]["failed"], [{
+            "path": "assets/indexes/7.json", "expected": sha1(original),
+            "actual": sha1(tampered), "reason": "sha1-mismatch",
+        }])
+        self.assertEqual(groups["asset-objects"]["checked"], 0)
+        self.assertEqual(groups["asset-objects"]["failed"][0]["reason"], "prerequisite-failed")
+        self.assertEqual(staged.read_bytes(), original)
+
+    def test_verify_reports_multiple_bad_files_and_does_not_short_circuit(self):
+        self.install_unselected_object()
+        jar = self.game / "versions" / "9.9" / "9.9.jar"
+        jar.unlink()
+        library = self.game / "libraries" / "org/example/lib/1.0/lib-1.0.jar"
+        lib_original = library.read_bytes()
+        library.write_bytes(b"x")
+        asset = self.game / "assets" / "objects" / self.unselected[:2] / self.unselected
+        asset.write_bytes(b"y")
+        groups = self.verify(ok=False)
+        self.assertEqual(groups["client"]["failed"], [{
+            "path": "versions/9.9/9.9.jar", "expected": self.jar_sha1, "actual": None, "reason": "missing",
+        }])
+        self.assertEqual(groups["libraries"]["failed"], [{
+            "path": "libraries/org/example/lib/1.0/lib-1.0.jar", "expected": sha1(lib_original),
+            "actual": sha1(b"x"), "reason": "sha1-mismatch",
+        }])
+        self.assertEqual(groups["asset-index"]["failed"], [])
+        self.assertEqual(groups["asset-objects"]["checked"], 3)
+        self.assertEqual(groups["asset-objects"]["failed"][0]["actual"], sha1(b"y"))
+
+    def test_verify_does_not_trust_an_index_hash_from_launcher_metadata_alone(self):
+        index = self.game / "assets" / "indexes" / "7.json"
+        content = index.read_bytes() + b"\n"
+        index.write_bytes(content)
+        path = self.game / "versions" / "9.9" / "9.9.json"
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        metadata["assetIndex"]["sha1"] = sha1(content)
+        path.write_text(json.dumps(metadata), encoding="utf-8")
+        groups = self.verify("--allow-new-asset-index", ok=False)
+        self.assertEqual(groups["asset-index"]["checked"], 0)
+        self.assertEqual(groups["asset-index"]["failed"][0]["reason"], "asset-index-metadata-invalid")
+        self.assertEqual(groups["asset-objects"]["failed"][0]["reason"], "prerequisite-failed")
+
+    def test_verify_fails_closed_when_launcher_metadata_is_missing(self):
+        (self.game / "versions" / "9.9" / "9.9.json").unlink()
+        groups = self.verify(ok=False)
+        for record in groups.values():
+            self.assertEqual((record["checked"], record["total"]), (0, 0))
+            self.assertEqual(record["failed"], [{
+                "path": "versions/9.9/9.9.json", "expected": None, "actual": None,
+                "reason": "version-metadata-invalid",
+            }])
 
     def test_fetch_needs_the_terms_accepted_first(self):
         refused = self.patcher("fetch", "9.9", "--offline", accept=False)
@@ -163,6 +286,8 @@ class FetchOfflineTest(unittest.TestCase):
         result = self.patcher("fetch", "9.9", "--offline")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("natives-1.0.jar", (self.root / "work" / "9.9" / "classpath.txt").read_text(encoding="utf-8"))
+        self.install_unselected_object()
+        self.assertEqual(self.verify(ok=True)["libraries"]["checked"], 1)
 
     def test_mappings_can_come_from_a_local_file(self):
         mappings = b"# mappings\n"
@@ -177,12 +302,19 @@ class FetchOfflineTest(unittest.TestCase):
         profile["clientDistribution"] = "obfuscated-with-mappings"
         profile["official"]["clientMappingsSha1"] = sha1(mappings)
         profile_path.write_text(json.dumps(profile), encoding="utf-8")
+        self.install_unselected_object()
+        self.assertEqual(self.verify(ok=False)["client"]["failed"], [{
+            "path": "client-mappings.txt", "expected": sha1(mappings), "actual": None, "reason": "missing",
+        }])
+        self.assertEqual(self.verify("--mappings", str(mapping_file), ok=True)["client"]["checked"], 2)
+        self.assertFalse((self.root / "work").exists())
         offline = self.patcher("fetch", "9.9", "--offline")
         self.assertNotEqual(offline.returncode, 0)
         self.assertIn("--mappings", offline.stderr)
         result = self.patcher("fetch", "9.9", "--offline", "--mappings", str(mapping_file))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.root / "work" / "9.9" / "client-mappings.txt").read_bytes(), mappings)
+        self.assertEqual(self.verify(ok=True)["client"]["checked"], 2)
 
     def test_build_json_progress_is_one_object_per_line_and_errors(self):
         result = subprocess.run(
@@ -237,8 +369,7 @@ class FetchOfflineTest(unittest.TestCase):
         archive = json.loads((PATCHER.parent / "toolchain.lock").read_text())["wasm"]["shader"]["prebuiltArchive"]
         environment = os.environ.copy()
         environment.pop("GAIUS_SHADER_TOOLCHAIN_PREBUILT", None)
-        for mode, reason in (([], "No download URL is configured."),
-                             (["--offline"], "Offline mode cannot download it.")):
+        for mode in ([], ["--offline"]):
             with self.subTest(mode=mode):
                 result = subprocess.run(
                     ["java", f"-Djava.io.tmpdir={os.environ.get('TMPDIR', str(self.root))}", str(PATCHER),
@@ -252,7 +383,8 @@ class FetchOfflineTest(unittest.TestCase):
                 records = [json.loads(line) for line in result.stdout.splitlines()]
                 self.assertEqual(len(records), 1)
                 self.assertEqual(records[0]["phase"], "error")
-                for text in ("prebuilt shader toolchain", reason, archive["sha256"],
+                for text in ("prebuilt shader toolchain", "The Gaius release process prepares this package.",
+                             "This tool cannot download it.", archive["sha256"],
                              str(work_root / "tools" / archive["file"]), "--toolchain-dir <dir>",
                              "--shader-toolchain <dir>"):
                     self.assertIn(text, records[0]["error"])

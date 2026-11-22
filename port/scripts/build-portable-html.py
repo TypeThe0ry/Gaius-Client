@@ -2538,6 +2538,9 @@ def main() -> int:
         # the site bootstrap owns runtime selection and the embedded Wasm payloads below.
         index = drop_site_boot_preloads((site / "index.html").read_text(encoding="utf-8").replace("\r\n", "\n"))
         index = re.sub(r'\s*<script[^>]*data-gaius-site="v1"[^>]*>.*?</script>\s*', "\n", index, flags=re.DOTALL)
+        profile_config = json.loads((root / "port/versions" / f"{profile}.json").read_text(encoding="utf-8"))
+        trace_support = profile_config.get("rd32TraceSupported") is True
+        trace_global = f"<script>window.__gaiusRd32TraceSupported={json.dumps(trace_support)};</script>\n"
         boot_url = re.search(r'src="([^"]*gaius-boot[^\"]*)"', index)
         if boot_url is None:
             raise RuntimeError(f"Wasm-only site has no boot script: {site}")
@@ -2559,7 +2562,7 @@ def main() -> int:
             'return Promise.resolve(body).then((blob) => global.URL.createObjectURL(new global.Blob([blob], {type})));',
             'return Promise.resolve(body).then((blob) => { const url = global.URL.createObjectURL(new global.Blob([blob], {type})); (global.__gaiusPortablePayloadUrls || (global.__gaiusPortablePayloadUrls = {}))[name] = url; return url; });')
         # A single file embeds its payloads on any origin (https://gaius.fun/...): the payload table and
-        # the embedded translator must not be gated on file:// (an older boot gates them and fetches siblings such as
+        # the embedded translator must not be gated on file:// (older boot code gated them and fetched siblings such as
         # singleplayer-server-worker.js that a host serving one file does not have).
         boot = boot.replace(
             'return isFile && (isPortable() || !site) && payloads',
@@ -2583,7 +2586,7 @@ def main() -> int:
         runtime_module_tags = "".join(
             f'<script data-gaius-boot-module="{name}">\n{source}</script>\n' for name, source in runtime_modules)
         index = index.replace(f'<script data-gaius-boot="v1" src="{boot_url.group(1)}"></script>',
-                              runtime_module_tags + f'<script data-gaius-boot="v1">{boot}</script>')
+                              trace_global + runtime_module_tags + f'<script data-gaius-boot="v1">{boot}</script>')
         index = index.replace('loading classes.js...', 'loading WebAssembly GC client...')
         index = index.replace('classes.js loaded; calling', 'WebAssembly GC client loaded; calling')
         index = re.sub(r'const classesUrl = window\.__gaiusClassesUrl \|\|\s*\("classes\.js\?v=" \+ encodeURIComponent\(buildToken\)\);',

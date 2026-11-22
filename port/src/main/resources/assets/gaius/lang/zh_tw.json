@@ -1,5 +1,13 @@
 {
   "gaius.about.title": "關於 Gaius",
+  "gaius.connection.badge": "傳輸方式：%s",
+  "gaius.connection.connecting_via": "正在透過 %s 連線",
+  "gaius.server.protocol": "連線協定",
+  "gaius.server.protocol.relay": "中繼（預設）",
+  "gaius.server.protocol.plugin": "外掛",
+  "gaius.server.protocol.eagler": "Eagler",
+  "gaius.server.protocol.wsproxy": "WebSocket 代理",
+  "gaius.server.protocol.websocket_hint": "WebSocket 位址（ws:// 或 wss://）",
   "gaius.about.disclaimer": "Gaius 並非 Minecraft 官方產品，未經 Mojang 或 Microsoft 認可，亦與其無關。你必須擁有正版 Minecraft：Java 版。",
   "gaius.about.license": "Gaius 授權條款",
   "gaius.about.third_party": "第三方聲明",

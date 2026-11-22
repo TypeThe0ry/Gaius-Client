@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {loadBridgeSmokeSource} from "./browser-bridge-smoke-source.mjs";
 import {readFile} from "node:fs/promises";
 import {MessageChannel} from "node:worker_threads";
 import vm from "node:vm";
@@ -19,8 +20,7 @@ function extractJsBody(marker) {
   return source.slice(scriptOffset, scriptEnd).replaceAll("\\\\", "\\");
 }
 
-const bridgeScript = "{\n" + extractJsBody("private static native void initBridge();") + "\n}\n{\n" +
-  extractJsBody("private static native void initBridgeTail();") + "\n}";
+const {bridgeScript} = await loadBridgeSmokeSource();
 const outboundSchedulerScript = extractJsBody("private static native void initOutboundScheduler();");
 const inboundSchedulerScript = extractJsBody("private static native void initInboundScheduler();");
 

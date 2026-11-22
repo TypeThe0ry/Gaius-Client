@@ -26,6 +26,77 @@ def digest(path):
 
 args = sys.argv[1:]
 scenario = os.environ.get("GAIUS_FAKE_PATCHER_SCENARIO", "success")
+if scenario == "tool-paths":
+    if args == ["doctor"]:
+        sys.exit(0)
+    for flag, value in [("--toolchain-dir", "fixture shared tools"),
+                        ("--shader-toolchain", "fixture shader modules")]:
+        assert args.count(flag) == 1 and args[args.index(flag) + 1] == value, args
+    if args[:2] == ["tools", "install"]:
+        assert args[args.index("--only") + 1] == "maven-repository", args
+    else:
+        assert "--offline" in args, args
+if args[:2] == ["tools", "status"]:
+    print(json.dumps({
+        "schema": "gaius-patcher-tools-v1", "id": "maven", "displayName": "Maven",
+        "required": True, "requiredReason": "required-default",
+        "requiredFor": ["26.3", "26.2", "1.21.11"],
+        "state": "missing" if scenario == "missing-tools" else "present", "bytes": 2,
+        "sourceHost": "fixture.invalid", "destinationPath": "", "expectedSha256": ""
+    }))
+    if scenario == "missing-kernel-tools":
+        strict = "--strict-kernel" in args
+        for tool in ("rust-cargo", "wasm32-target", "cargo-cache"):
+            print(json.dumps({
+                "schema": "gaius-patcher-tools-v1", "id": tool, "displayName": tool,
+                "required": strict,
+                "requiredReason": "required-strict-kernel" if strict else "optional",
+                "requiredFor": ["26.3", "26.2", "1.21.11"] if strict else [],
+                "state": "missing", "bytes": 0, "sourceHost": "",
+                "destinationPath": "", "expectedSha256": "",
+            }))
+    sys.exit(0)
+if args[:2] == ["tools", "install"]:
+    print(json.dumps({"schema": "gaius-patcher-tools-progress-v1", "id": "maven",
+                      "step": "download", "pct": 50, "bytes": 1, "totalBytes": 2, "error": None}), flush=True)
+    if scenario == "slow-tools":
+        time.sleep(60)
+    sys.exit(0)
+if args == ["doctor"] and scenario == "encoding":
+    sys.stdout.buffer.write("Game dir: C:\\Users\\张三\\工作\n".encode("gbk"))
+    sys.stderr.buffer.write("日志 C:\\Users\\张三\\文件\n".encode("utf-8"))
+    sys.exit(0)
+if args[:1] == ["doctor"] and "--verify-files" in args:
+    expected = ["doctor", "26.3", "--minecraft-dir", "fixture launcher"]
+    if scenario == "verify-failed":
+        expected = ["doctor", "1.21.11", "--minecraft-dir", "fixture launcher",
+                    "--mappings", "fixture mappings.txt"]
+    assert args == expected + ["--verify-files", "--json"], args
+
+    def verify_event(event, group, checked, total, **details):
+        print(json.dumps({"schema": "gaius-patcher-verify-v1", "event": event,
+                          "group": group, "checked": checked, "total": total,
+                          **details}), flush=True)
+
+    verify_event("progress", "client", 0, 1)
+    verify_event("group", "client", 1, 1, failed=[])
+    verify_event("group", "libraries", 2, 2, failed=[])
+    if scenario == "verify-failed":
+        path = "assets/indexes/34.json"
+        verify_event("group", "asset-index", 1, 1, failed=[{
+            "path": path, "expected": "1" * 40, "actual": "2" * 40,
+            "reason": "sha1-mismatch",
+        }])
+        verify_event("group", "asset-objects", 0, 0, failed=[{
+            "path": path, "expected": None, "actual": None,
+            "reason": "prerequisite-failed",
+        }], failureCount=2)
+        sys.exit(1)
+    verify_event("group", "asset-index", 1, 1, failed=[])
+    verify_event("group", "asset-objects", 5, 5, failed=[])
+    if scenario == "verify-wait":
+        time.sleep(60)
+    sys.exit(0)
 version = args[args.index("build") + 1]
 out = Path(args[args.index("--out") + 1])
 print("non-json stdout noise", flush=True)
