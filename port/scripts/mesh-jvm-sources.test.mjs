@@ -13,12 +13,17 @@ const profiles = loadProfiles(root).filter((profile) => profile.kernelMirror?.en
   && profile.kernelSemantics.code !== 0);
 assert(profiles.length > 0, "no modern mesher profiles");
 for (const profile of profiles) {
-  test(`${profile.id}: JVM mesh sources use bound canonical staging and selected ops`, () => {
+  test(`${profile.id}: JVM mesh inputs use bound canonical sources and the generated block bridge`, () => {
     const out = mkdtempSync(join(tmpdir(), "gaius-mesh-sources-"));
     try {
       const staged = stageMeshJvmSources(profile, out, root);
       const resolved = resolveSources(profile, "src", "js", root);
-      assert.equal(staged.javaFiles.length, 7);
+      assert.equal(staged.javaFiles.length, 6);
+      const bridge = "net/minecraft/world/level/block/state/GaiusMeshBlockAccess";
+      assert(!staged.javaFiles.some((file) => file.endsWith("GaiusMeshBlockAccess.java")));
+      const classBytes = readFileSync(join(staged.bridgeDirectory, `${bridge}.class`));
+      assert.equal(classBytes.readUInt32BE(0), 0xcafebabe);
+      assert.deepEqual(staged.compiledBridges, {[`${bridge}.class`]: createHash("sha256").update(classBytes).digest("hex")});
       for (const [path, digest] of Object.entries(staged.compiledSources)) {
         const text = readFileSync(join(out, path), "utf8");
         assert.equal(text, compiledText(resolved.files.get(path)));

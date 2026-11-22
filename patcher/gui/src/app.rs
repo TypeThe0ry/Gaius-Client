@@ -1,25 +1,29 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs;
-use std::io::{Read, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{
     self, Align, Button, CollapsingHeader, ComboBox, CornerRadius, Frame, Layout, Rect, RichText,
     ScrollArea, Stroke, TextStyle, Theme, Ui, UiBuilder, Vec2,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::desktop::{self, Desktop};
 use crate::i18n::Language;
 use crate::icons::{self, Icon};
 use crate::patcher_client::{
     BuildLogLine, BuildProgress, BuildRequest, BuildSettings, BuildTask, CheckState, DoctorReport,
     DoctorTask, HashComparison, HashState, MockBackend, PatcherBackend, PatcherClient,
-    ProcessControl, VersionBuildResult,
+    ProcessControl, ToolInstallTask, ToolPaths, ToolStatus, VerifyGroup, VerifyGroupResult,
+    VerifyProgress, VerifyReport, VerifyTask, VersionBuildResult, mock_tool_statuses,
 };
+use crate::terms_acceptance;
 use crate::theme::{self, Palette, ThemeMode};
+use crate::ui_scale::{self, UiScale};
 
 const STEP_KEYS: [&str; 6] = [
     "step.select",
@@ -77,6 +81,12 @@ enum BuildState {
 enum ScreenshotState {
     Normal,
     TermsAccepted,
+    TermsPreAccepted,
+    VerifyOk,
+    VerifyRunning,
+    VerifyFailedIndex,
+    ResourceConfig,
+    ModConfig,
     DetectFail,
     HashError,
     BuildFail,
@@ -88,8 +98,26 @@ enum ScreenshotState {
     BadgeGreen,
     BadgeYellow,
     BadgeRed,
+    BuildSuccessThree,
     ToolchainField,
     PreflightError,
+    ToolsMissing,
+    ToolsOptional,
+    ToolsStrict,
+    ToolsPythonExe,
+    ToolsDownloading,
+    ToolsFailed,
+    ToolsReady,
+    HostToolsMissing,
+    HostToolsMismatch,
+    HostToolsReady,
+    ShaderVerified,
+    ShaderMissing,
+    ShaderMissingScrolled,
+    ShaderTampered,
+    MavenPartial,
+    MavenReady,
+    DiagnosticsChinese,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -129,6 +157,9 @@ struct LayoutRects {
     completion_values: [Option<Rect>; 4],
     completion_copy: Option<Rect>,
     completion_artifacts: Option<Rect>,
+    completion_artifact_labels: [Option<Rect>; 3],
+    completion_artifact_paths: [Option<Rect>; 3],
+    completion_artifact_open_buttons: [Option<Rect>; 3],
     action_row: Rect,
     action_widgets: [Option<Rect>; 5],
     action_widget_count: usize,
@@ -168,6 +199,9 @@ impl Default for LayoutRects {
             completion_values: [None; 4],
             completion_copy: None,
             completion_artifacts: None,
+            completion_artifact_labels: [None; 3],
+            completion_artifact_paths: [None; 3],
+            completion_artifact_open_buttons: [None; 3],
             action_row: Rect::NOTHING,
             action_widgets: [None; 5],
             action_widget_count: 0,
@@ -214,8 +248,9 @@ struct BuilderConfig {
     mods: Vec<ModRow>,
     mod_path: String,
     mappings_path: String,
-    scale: f32,
+    ui_scale: UiScale,
     reduce_motion: bool,
+    strict_kernel: bool,
 }
 
 impl Default for BuilderConfig {
@@ -233,10 +268,70 @@ impl Default for BuilderConfig {
             mods: Vec::new(),
             mod_path: String::new(),
             mappings_path: String::new(),
-            scale: 1.0,
+            ui_scale: UiScale::Auto,
             reduce_motion: system_reduce_motion(),
+            strict_kernel: false,
         }
     }
+}
+
+type DpiResult = Arc<OnceLock<Result<(), String>>>;
+
+#[derive(Debug, Default)]
+pub struct DisplayOptions {
+    pub work: Option<PathBuf>,
+    pub scale: Option<f32>,
+}
+
+impl DisplayOptions {
+    fn work_dir(&self) -> PathBuf {
+        self.work.clone().unwrap_or_else(work_dir)
+    }
+
+    fn zoom(&self, settings: &desktop::Settings) -> StartupZoom {
+        if let Some(factor) = self.scale {
+            let choice = UiScale::for_factor(factor);
+            StartupZoom {
+                choice: choice.unwrap_or(UiScale::P100),
+                custom: choice.is_none().then_some(factor),
+                source: "cli",
+            }
+        } else {
+            StartupZoom {
+                choice: settings.zoom.unwrap_or_default(),
+                custom: None,
+                source: if settings.zoom.is_some() {
+                    "settings"
+                } else {
+                    "default"
+                },
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StartupZoom {
+    choice: UiScale,
+    custom: Option<f32>,
+    source: &'static str,
+}
+
+impl StartupZoom {
+    fn factor(self) -> f32 {
+        self.custom.unwrap_or_else(|| self.choice.factor())
+    }
+}
+
+/// Mock, read-only preview using the native WGPU window, not the test harness.
+pub struct DpiPreview {
+    pub path: PathBuf,
+    pub hold: bool,
+    pub completion: DpiResult,
+    pub page: usize,
+    pub theme: ScreenTheme,
+    pub language: Language,
+    pub state: String,
 }
 
 pub struct BuilderApp {
@@ -249,10 +344,21 @@ pub struct BuilderApp {
     doctor_cancelled: bool,
     doctor_receiver: Option<DoctorTask>,
     doctor_control: Option<ProcessControl>,
+    live_verification: bool,
+    verification: Option<VerificationRun>,
+    verification_input_focused: bool,
+    show_official_check: bool,
+    tools_task: Option<ToolInstallTask>,
+    tools_confirm: bool,
+    tools_error: Option<String>,
+    tools_progress_pct: u8,
+    tools_simulated_downloading: bool,
     terms_scrolled: bool,
     terms_checked: bool,
     terms_hash: String,
-    persist_acceptance: bool,
+    terms_record_path: Option<PathBuf>,
+    terms_accepted_at: Option<u64>,
+    terms_error: Option<&'static str>,
     config_confirmed: bool,
     config_tab: usize,
     config: BuilderConfig,
@@ -268,7 +374,10 @@ pub struct BuilderApp {
     build_elapsed: Option<Duration>,
     build_generation: u64,
     output_dir: String,
-    shader_toolchain_path: String,
+    tool_path_settings: ToolPathSettings,
+    tool_settings_file: Option<PathBuf>,
+    tool_settings_save_failed: bool,
+    tool_check_at: Option<Instant>,
     minecraft_dir: String,
     output_bytes: u64,
     repro_status: ReproStatus,
@@ -277,11 +386,122 @@ pub struct BuilderApp {
     cleanup_candidates: Vec<PathBuf>,
     mod_settings_open: Option<usize>,
     about_open: bool,
-    theme_applied: Option<(ThemeMode, Option<Theme>)>,
+    theme_applied: Option<(ThemeMode, Option<Theme>, f32)>,
+    effective_zoom: f32,
+    custom_zoom: Option<f32>,
+    zoom_source: &'static str,
+    work_dir: PathBuf,
+    compact_rail: bool,
+    font_sources: Vec<String>,
+    desktop: Option<Desktop>,
+    dpi_preview: Option<DpiPreview>,
+    read_only_preview: bool,
+    dpi_watch: Option<(Instant, DpiResult)>,
     layout_rects: LayoutRects,
     content_has_focus: bool,
     page_scroll_offset: f32,
     scroll_page: usize,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+struct ToolPathSettings {
+    toolchain_dir: String,
+    shader_toolchain: String,
+}
+
+impl ToolPathSettings {
+    fn paths(&self) -> ToolPaths {
+        let path = |text: &str| (!text.trim().is_empty()).then(|| PathBuf::from(text.trim()));
+        ToolPaths {
+            toolchain_dir: path(&self.toolchain_dir),
+            shader_toolchain: path(&self.shader_toolchain),
+        }
+    }
+
+    fn load(file: &Path) -> Self {
+        fs::read(file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self, file: &Path) -> io::Result<()> {
+        desktop::write_json(file, self)
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct VerificationInputs {
+    versions: Vec<String>,
+    minecraft_dir: Option<PathBuf>,
+    mappings: Option<PathBuf>,
+}
+
+struct VerificationRun {
+    inputs: VerificationInputs,
+    reports: Vec<VerifyReport>,
+    active_groups: Vec<VerifyGroupResult>,
+    progress: Option<VerifyProgress>,
+    task: Option<VerifyTask>,
+    error: bool,
+    simulated_running: bool,
+}
+
+impl VerificationRun {
+    fn new(inputs: VerificationInputs) -> Self {
+        Self {
+            inputs,
+            reports: Vec::new(),
+            active_groups: Vec::new(),
+            progress: None,
+            task: None,
+            error: false,
+            simulated_running: false,
+        }
+    }
+
+    fn start_next(&mut self) {
+        self.active_groups.clear();
+        self.progress = None;
+        if let Some(version) = self.inputs.versions.get(self.reports.len()) {
+            self.task = Some(
+                PatcherClient.start_verify(
+                    version.clone(),
+                    self.inputs.minecraft_dir.clone(),
+                    self.inputs
+                        .mappings
+                        .clone()
+                        .filter(|_| version == "1.21.11"),
+                ),
+            );
+        }
+    }
+
+    fn running(&self) -> bool {
+        self.task.is_some() || self.simulated_running
+    }
+
+    fn passed(&self) -> bool {
+        !self.error
+            && !self.running()
+            && self.reports.len() == self.inputs.versions.len()
+            && !self.reports.is_empty()
+            && self.reports.iter().all(VerifyReport::passed)
+    }
+
+    fn has_failures(&self) -> bool {
+        self.reports.iter().any(|report| !report.passed())
+            || self.active_groups.iter().any(|group| !group.passed())
+    }
+}
+
+impl Drop for VerificationRun {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.control.cancel();
+        }
+    }
 }
 
 impl BuilderApp {
@@ -315,7 +535,7 @@ impl BuilderApp {
             language,
             theme_mode,
             page,
-            run_live_doctor,
+            run_live_doctor.then(work_dir),
             screenshot_state,
             true,
         )
@@ -334,7 +554,7 @@ impl BuilderApp {
             language,
             theme_mode,
             page,
-            false,
+            None,
             screenshot_state,
             false,
         )
@@ -345,11 +565,14 @@ impl BuilderApp {
         language: Language,
         theme_mode: ThemeMode,
         page: usize,
-        run_live_doctor: bool,
+        live_work_dir: Option<PathBuf>,
         screenshot_state: ScreenshotState,
         use_system_fonts: bool,
     ) -> Self {
-        install_cjk_font(context, use_system_fonts);
+        let run_live_doctor = live_work_dir.is_some();
+        let font_sources = install_cjk_font(context, use_system_fonts);
+        ui_scale::configure_input(context);
+        theme::configure_text(context);
         theme::apply(context, theme_mode);
         let terms_hash = terms_text(language).sha256();
         let mut app = Self {
@@ -362,15 +585,35 @@ impl BuilderApp {
             doctor_cancelled: false,
             doctor_receiver: None,
             doctor_control: None,
+            live_verification: run_live_doctor,
+            verification: None,
+            verification_input_focused: false,
+            show_official_check: run_live_doctor
+                || matches!(
+                    screenshot_state,
+                    ScreenshotState::VerifyOk
+                        | ScreenshotState::VerifyRunning
+                        | ScreenshotState::VerifyFailedIndex
+                ),
+            tools_task: None,
+            tools_confirm: false,
+            tools_error: None,
+            tools_progress_pct: 0,
+            tools_simulated_downloading: false,
             terms_scrolled: false,
             terms_checked: false,
             terms_hash,
-            persist_acceptance: false,
+            terms_record_path: None,
+            terms_accepted_at: None,
+            terms_error: None,
             config_confirmed: false,
-            config_tab: usize::from(matches!(
-                screenshot_state,
-                ScreenshotState::UnsupportedMod | ScreenshotState::ModsScrolled
-            )) * 2,
+            config_tab: match screenshot_state {
+                ScreenshotState::ResourceConfig => 1,
+                ScreenshotState::ModConfig
+                | ScreenshotState::UnsupportedMod
+                | ScreenshotState::ModsScrolled => 2,
+                _ => 0,
+            },
             config: BuilderConfig::default(),
             build_state: BuildState::Idle,
             build_task: None,
@@ -384,7 +627,10 @@ impl BuilderApp {
             build_elapsed: None,
             build_generation: 0,
             output_dir: String::new(),
-            shader_toolchain_path: String::new(),
+            tool_path_settings: ToolPathSettings::default(),
+            tool_settings_file: None,
+            tool_settings_save_failed: false,
+            tool_check_at: None,
             minecraft_dir: String::new(),
             output_bytes: 0,
             repro_status: ReproStatus::Unverified,
@@ -394,15 +640,127 @@ impl BuilderApp {
             mod_settings_open: None,
             about_open: false,
             theme_applied: None,
+            effective_zoom: 1.0,
+            custom_zoom: None,
+            zoom_source: "default",
+            work_dir: live_work_dir.unwrap_or_else(work_dir),
+            compact_rail: false,
+            font_sources,
+            desktop: None,
+            dpi_preview: None,
+            read_only_preview: false,
+            dpi_watch: None,
             layout_rects: LayoutRects::default(),
             content_has_focus: false,
             page_scroll_offset: 0.0,
             scroll_page: page,
         };
+        if screenshot_state == ScreenshotState::TermsPreAccepted {
+            app.restore_terms_acceptance(Some(1_795_000_000));
+        }
         if run_live_doctor {
+            let file = app.work_dir.join("tool-paths.json");
+            app.tool_path_settings = ToolPathSettings::load(&file);
+            app.tool_settings_file = Some(file);
             app.start_doctor();
         } else if let Ok(report) = MockBackend.doctor() {
             app.doctor_report = Some(report);
+        }
+        if matches!(
+            screenshot_state,
+            ScreenshotState::MavenPartial | ScreenshotState::MavenReady
+        ) {
+            app.selected_versions = vec!["26.2".to_owned()];
+        }
+        if !run_live_doctor {
+            app.mock_verification(screenshot_state);
+        }
+        if let Some(report) = app.doctor_report.as_mut() {
+            if matches!(
+                screenshot_state,
+                ScreenshotState::ToolsOptional | ScreenshotState::ToolsStrict
+            ) {
+                app.config.strict_kernel = screenshot_state == ScreenshotState::ToolsStrict;
+                report.tools = mock_tool_statuses(app.config.strict_kernel);
+                for tool in &mut report.tools {
+                    if matches!(
+                        tool.id.as_str(),
+                        "rust-cargo" | "wasm32-target" | "cargo-cache"
+                    ) {
+                        tool.state = "missing".to_owned();
+                    }
+                }
+            } else if screenshot_state == ScreenshotState::ToolsPythonExe {
+                report.tools.sort_by_key(|tool| tool.id != "python");
+                if let Some(python) = report.tools.first_mut() {
+                    python.resolved_command = Some("python.exe".to_owned());
+                }
+            }
+            let tool_state = match screenshot_state {
+                ScreenshotState::ToolsMissing => Some("missing"),
+                ScreenshotState::ToolsDownloading => Some("missing"),
+                ScreenshotState::ToolsFailed => Some("hash-mismatch"),
+                ScreenshotState::ToolsReady => Some("present"),
+                _ => None,
+            };
+            if let Some(state) = tool_state {
+                for tool in report.tools.iter_mut().filter(|tool| tool.can_install()) {
+                    tool.state = state.to_owned();
+                }
+            }
+            if matches!(
+                screenshot_state,
+                ScreenshotState::HostToolsMissing
+                    | ScreenshotState::HostToolsMismatch
+                    | ScreenshotState::HostToolsReady
+                    | ScreenshotState::ShaderVerified
+                    | ScreenshotState::ShaderMissing
+                    | ScreenshotState::ShaderMissingScrolled
+                    | ScreenshotState::ShaderTampered
+                    | ScreenshotState::MavenPartial
+                    | ScreenshotState::MavenReady
+            ) {
+                report
+                    .tools
+                    .retain(|tool| tool.id != "remapper" && !tool.id.starts_with("teavm-"));
+            }
+            for tool in &mut report.tools {
+                match (screenshot_state, tool.id.as_str()) {
+                    (ScreenshotState::HostToolsMissing, "llvm" | "binaryen") => {
+                        tool.state = "missing".to_owned();
+                    }
+                    (ScreenshotState::HostToolsMismatch, "llvm" | "binaryen") => {
+                        tool.state = "hash-mismatch".to_owned();
+                    }
+                    (
+                        ScreenshotState::ShaderMissing | ScreenshotState::ShaderMissingScrolled,
+                        "shader-toolchain",
+                    ) => {
+                        tool.state = "missing-offline".to_owned();
+                    }
+                    (ScreenshotState::ShaderTampered, "shader-toolchain") => {
+                        tool.state = "tampered".to_owned();
+                        tool.inventory.differing_files =
+                            vec!["gaius-shaderc.wasm".to_owned(), "gaius-spvc.js".to_owned()];
+                    }
+                    (ScreenshotState::MavenPartial, "maven-repository") => {
+                        tool.state = "partial".to_owned();
+                        tool.inventory.checked_files = tool
+                            .inventory
+                            .total_files
+                            .map(|total| total.saturating_sub(2));
+                        tool.inventory.first_failed_path =
+                            Some("org/teavm/teavm-core/0.15.0/teavm-core-0.15.0.jar".to_owned());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if screenshot_state == ScreenshotState::ToolsDownloading {
+            app.tools_simulated_downloading = true;
+            app.tools_progress_pct = 43;
+        } else if screenshot_state == ScreenshotState::ToolsFailed {
+            app.tools_error = Some(app.language.text("doctor.tools.mock_failure").to_owned());
         }
         if screenshot_state == ScreenshotState::DetectFail {
             app.doctor_error = Some(app.language.text("doctor.mock.java_missing").to_owned());
@@ -430,9 +788,14 @@ impl BuilderApp {
         }
         if matches!(
             screenshot_state,
-            ScreenshotState::BadgeGreen | ScreenshotState::BuildSuccess
+            ScreenshotState::BadgeGreen
+                | ScreenshotState::BuildSuccess
+                | ScreenshotState::BuildSuccessThree
         ) {
             app.mock_completed(ReproStatus::Identical);
+            if screenshot_state == ScreenshotState::BuildSuccessThree {
+                app.build_results = Self::mock_three_version_results();
+            }
         } else if screenshot_state == ScreenshotState::BadgeYellow {
             app.mock_completed(ReproStatus::Custom);
         } else if screenshot_state == ScreenshotState::BadgeRed {
@@ -441,6 +804,11 @@ impl BuilderApp {
             app.mock_failed(
                 app.language.text("build.stage.compile"),
                 app.language.text("build.mock.compile_failed"),
+            );
+        } else if screenshot_state == ScreenshotState::DiagnosticsChinese {
+            app.mock_failed(
+                "stage: prepare",
+                "Failure in C:\\Users\\张三\\桌面\\gaius-work\\26.3",
             );
         } else if screenshot_state == ScreenshotState::PreflightError {
             app.mock_failed(
@@ -474,23 +842,205 @@ impl BuilderApp {
         app
     }
 
-    pub fn native(context: &eframe::CreationContext<'_>) -> Self {
+    pub fn native(context: &eframe::CreationContext<'_>, display: &DisplayOptions) -> Self {
         let language = std::env::var("GAIUS_BUILDER_LANG")
             .ok()
             .and_then(|value| Language::parse(&value))
             .unwrap_or(Language::Chinese);
-        let mut app = Self::new(&context.egui_ctx, language, ThemeMode::Dark, 1, true);
-        app.persist_acceptance = true;
+        let mut app = Self::with_state_font_mode(
+            &context.egui_ctx,
+            language,
+            ThemeMode::Dark,
+            1,
+            Some(display.work_dir()),
+            ScreenshotState::Normal,
+            true,
+        );
+        app.init_desktop(context, display, false);
+        app.terms_record_path = Some(app.work_dir.join("terms-acceptance.json"));
+        app.reload_terms_acceptance();
         app
     }
 
-    fn start_doctor(&mut self) {
-        let task = PatcherClient.start_doctor();
-        self.doctor_control = Some(task.control.clone());
-        self.doctor_receiver = Some(task);
+    pub fn native_preview(
+        context: &eframe::CreationContext<'_>,
+        preview: DpiPreview,
+        display: &DisplayOptions,
+    ) -> Self {
+        let state = match preview.state.as_str() {
+            "config-mods" => ScreenshotState::ModConfig,
+            "build-success" => ScreenshotState::BuildSuccess,
+            _ => ScreenshotState::Normal,
+        };
+        let mut app = Self::with_state(
+            &context.egui_ctx,
+            preview.language,
+            preview.theme.mode(),
+            preview.page,
+            false,
+            state,
+        );
+        app.config.reduce_motion = true;
+        app.work_dir = display.work_dir();
+        app.init_desktop(context, display, true);
+        app.dpi_preview = Some(preview);
+        app.read_only_preview = true;
+        app
+    }
+
+    fn init_desktop(
+        &mut self,
+        context: &eframe::CreationContext<'_>,
+        display: &DisplayOptions,
+        read_only: bool,
+    ) {
+        let path = self.work_dir.join("ui-settings.json");
+        let settings = desktop::Settings::load(&path);
+        self.apply_startup_zoom(display.zoom(&settings));
+        let desktop = Desktop::new(context, settings, (!read_only).then_some(path));
+        if let Some(size) = desktop.native_size() {
+            context.egui_ctx.options_mut(|options| {
+                options.zoom_factor = ui_scale::fit_zoom(self.requested_zoom(), size)
+            });
+        }
+        self.desktop = Some(desktop);
+    }
+
+    fn apply_startup_zoom(&mut self, zoom: StartupZoom) {
+        self.config.ui_scale = zoom.choice;
+        self.custom_zoom = zoom.custom;
+        self.zoom_source = zoom.source;
+    }
+
+    fn requested_zoom(&self) -> f32 {
+        self.custom_zoom
+            .unwrap_or_else(|| self.config.ui_scale.factor())
+    }
+
+    fn change_zoom(&mut self, zoom: UiScale) {
+        self.config.ui_scale = zoom;
+        self.custom_zoom = None;
+        if let Some(desktop) = &mut self.desktop {
+            desktop.update_zoom(zoom);
+        }
+    }
+
+    fn add_zoom_report(&self, report: &mut serde_json::Value) {
+        report["requested_zoom"] = self.requested_zoom().into();
+        report["requested_zoom_auto"] = (self.config.ui_scale == UiScale::Auto).into();
+        report["effective_zoom"] = self.effective_zoom.into();
+        report["zoom_source"] = self.zoom_source.into();
+    }
+
+    fn display_diagnostics(&self) -> String {
+        self.desktop
+            .as_ref()
+            .map(|desktop| {
+                format!(
+                    "{}UI zoom: {:.2} (requested: {:.2})\n",
+                    desktop.diagnostics(),
+                    self.effective_zoom,
+                    self.requested_zoom()
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    fn fonts_report(&self, ctx: &egui::Context) -> serde_json::Value {
+        ctx.fonts_mut(|fonts| {
+            let mut installed: Vec<_> = fonts.definitions().font_data.keys().cloned().collect();
+            installed.sort_unstable();
+            let body = egui::FontId::proportional(14.0);
+            let chinese = fonts.has_glyphs(&body, "高分辨率界面自动缩放构建验证配置条款完成");
+            let symbols = fonts.has_glyphs(&body, "→…·⚙");
+            let mut discovered: Vec<_> = fonts
+                .discovered_fonts()
+                .iter()
+                .map(|font| &font.name)
+                .collect();
+            discovered.sort_unstable();
+            serde_json::json!({
+                "configured_faces": installed,
+                "runtime_fallback_sources": self.font_sources,
+                "discovered_faces": discovered,
+                "cjk_probe_has_glyphs": chinese,
+                "symbol_probe_has_glyphs": symbols,
+            })
+        })
+    }
+
+    fn request_dpi_report(&mut self, ctx: &egui::Context, window: crate::dpi::WindowSnapshot) {
+        let Some(preview) = self.dpi_preview.take() else {
+            return;
+        };
+        let mut report = desktop::window_json(window);
+        report["schema"] = "gaius-builder-dpi-v1".into();
+        report["zoom_factor"] = self.effective_zoom.into();
+        self.add_zoom_report(&mut report);
+        report["effective_pixels_per_point"] = ctx.pixels_per_point().into();
+        report["egui_native_pixels_per_point"] = serde_json::json!(ctx.native_pixels_per_point());
+        report["fonts_used"] = self.fonts_report(ctx);
+        report["page"] = preview.page.into();
+        report["state"] = preview.state.clone().into();
+        report["read_only_preview"] = true.into();
+        self.dpi_watch = Some((
+            Instant::now() + Duration::from_secs(10),
+            preview.completion.clone(),
+        ));
+        let context = ctx.clone();
+        ctx.request_screenshot(move |image| {
+            report["framebuffer_size_physical_px"] = serde_json::json!(image.size);
+            let result = desktop::write_json(&preview.path, &report).map_err(|error| {
+                format!(
+                    "could not write DPI report {}: {error}",
+                    preview.path.display()
+                )
+            });
+            let close = !preview.hold || result.is_err();
+            let delivered = preview.completion.set(result).is_ok();
+            if close && delivered {
+                context.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
+    }
+
+    fn invalidate_tool_check(&mut self) {
+        if let Some(control) = self.doctor_control.take() {
+            control.cancel();
+        }
+        self.doctor_receiver = None;
         self.doctor_report = None;
         self.doctor_error = None;
         self.doctor_cancelled = false;
+        self.tools_confirm = false;
+    }
+
+    fn start_doctor(&mut self) {
+        if self.tools_task.is_some() {
+            return;
+        }
+        self.invalidate_tool_check();
+        self.tool_check_at = None;
+        let task =
+            PatcherClient.start_doctor(self.tool_path_settings.paths(), self.config.strict_kernel);
+        self.doctor_control = Some(task.control.clone());
+        self.doctor_receiver = Some(task);
+    }
+
+    fn set_tool_path_settings(&mut self, settings: ToolPathSettings) {
+        if self.tools_task.is_some() || settings == self.tool_path_settings {
+            return;
+        }
+        self.tool_path_settings = settings;
+        self.tool_settings_save_failed = self
+            .tool_settings_file
+            .as_deref()
+            .is_some_and(|file| self.tool_path_settings.save(file).is_err());
+        self.invalidate_tool_check();
+        self.tools_error = None;
+        if self.live_verification {
+            self.tool_check_at = Some(Instant::now() + Duration::from_millis(400));
+        }
     }
 
     fn poll_doctor(&mut self) {
@@ -512,6 +1062,148 @@ impl BuilderApp {
             match result {
                 Ok(report) => self.doctor_report = Some(report),
                 Err(error) => self.doctor_error = Some(error.to_string()),
+            }
+        }
+    }
+
+    fn verification_inputs(&self) -> VerificationInputs {
+        let path = |text: &str| (!text.trim().is_empty()).then(|| PathBuf::from(text.trim()));
+        VerificationInputs {
+            versions: self.selected_versions.clone(),
+            minecraft_dir: path(&self.minecraft_dir),
+            mappings: self
+                .selected_versions
+                .iter()
+                .any(|version| version == "1.21.11")
+                .then(|| path(&self.config.mappings_path))
+                .flatten(),
+        }
+    }
+
+    fn mock_verification(&mut self, state: ScreenshotState) {
+        let inputs = self.verification_inputs();
+        let mut run = VerificationRun::new(inputs);
+        if state == ScreenshotState::VerifyRunning {
+            run.active_groups = VerifyReport::mock_ok().groups.into_iter().take(3).collect();
+            run.progress = Some(VerifyProgress::mock_running());
+            run.simulated_running = true;
+        } else {
+            run.reports = run
+                .inputs
+                .versions
+                .iter()
+                .map(|_| {
+                    if state == ScreenshotState::VerifyFailedIndex {
+                        VerifyReport::mock_failed_index()
+                    } else {
+                        VerifyReport::mock_ok()
+                    }
+                })
+                .collect();
+        }
+        self.verification = Some(run);
+    }
+
+    fn start_verification(&mut self) {
+        self.verification = None;
+        if self.live_verification {
+            let mut run = VerificationRun::new(self.verification_inputs());
+            run.start_next();
+            self.verification = Some(run);
+        } else {
+            self.mock_verification(ScreenshotState::VerifyOk);
+        }
+    }
+
+    fn poll_verification(&mut self) {
+        if self.current_verification().is_none() {
+            self.verification = None;
+        }
+        if self.live_verification
+            && self.page == 2
+            && !self.verification_input_focused
+            && self.current_verification().is_none()
+        {
+            self.start_verification();
+        }
+        let Some(run) = &mut self.verification else {
+            return;
+        };
+        let Some(task) = &run.task else {
+            return;
+        };
+        if let Some(progress) = task.progress.try_iter().last() {
+            run.progress = Some(progress);
+        }
+        run.active_groups.extend(task.completions.try_iter());
+        match task.receiver.try_recv() {
+            Ok(Ok(report)) => {
+                run.task = None;
+                run.reports.push(report);
+                run.start_next();
+            }
+            Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                run.task = None;
+                run.error = true;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    fn current_verification(&self) -> Option<&VerificationRun> {
+        self.verification
+            .as_ref()
+            .filter(|run| run.inputs == self.verification_inputs())
+    }
+
+    fn verification_passed(&self) -> bool {
+        self.current_verification()
+            .is_some_and(VerificationRun::passed)
+    }
+
+    fn start_tools_install(&mut self, ids: Vec<String>) {
+        let ids: BTreeSet<_> = ids.into_iter().collect();
+        if ids.is_empty() || self.tools_task.is_some() {
+            return;
+        }
+        self.tools_error = None;
+        self.tools_progress_pct = 0;
+        self.tools_confirm = false;
+        self.tools_task = Some(PatcherClient.start_tools_install(
+            ids.into_iter().collect(),
+            self.tool_path_settings.paths(),
+            self.config.strict_kernel,
+        ));
+    }
+
+    fn poll_tools_install(&mut self) {
+        let mut terminal = None;
+        if let Some(task) = &self.tools_task {
+            while let Ok(progress) = task.progress.try_recv() {
+                self.tools_progress_pct = progress.pct;
+                if let Some(error) = progress.error {
+                    self.tools_error = Some(error);
+                }
+            }
+            match task.receiver.try_recv() {
+                Ok(result) => terminal = Some(result),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    terminal = Some(Err(crate::patcher_client::PatcherError(
+                        "tool installer stopped unexpectedly".to_owned(),
+                    )))
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(result) = terminal {
+            self.tools_task = None;
+            match result {
+                Ok(tools) => {
+                    if let Some(report) = self.doctor_report.as_mut() {
+                        report.tools = tools;
+                    }
+                }
+                Err(error) => self.tools_error = Some(error.to_string()),
             }
         }
     }
@@ -710,7 +1402,7 @@ impl BuilderApp {
 
     fn render_top_bar(&mut self, ui: &mut Ui, palette: Palette) -> (Rect, Rect) {
         let width = ui.available_width();
-        let compact = self.config.scale >= 1.5 || width < 660.0;
+        let compact = self.effective_zoom >= 1.5 || width < 660.0;
         let overflow = width < 460.0;
         let margin = egui::Margin::symmetric(if compact { 8 } else { 16 }, 6);
         let stroke_width = 1.0;
@@ -735,20 +1427,22 @@ impl BuilderApp {
                         ui.set_width(available.x);
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                             let logo = ui.label(
-                                RichText::new("G").strong().color(palette.accent).size(20.0),
+                                RichText::new("G")
+                                    .strong()
+                                    .color(palette.accent)
+                                    .size(theme::snap(ui, 20.0)),
                             );
                             let mut content = logo.rect;
                             if width >= 180.0 {
-                                let name =
-                                    ui.label(
-                                        RichText::new(self.language.text(if compact {
-                                            "app.short_name"
-                                        } else {
-                                            "app.name"
-                                        }))
-                                        .strong()
-                                        .size(if compact { 14.0 } else { 16.0 }),
-                                    );
+                                let name = ui.label(
+                                    RichText::new(self.language.text(if compact {
+                                        "app.short_name"
+                                    } else {
+                                        "app.name"
+                                    }))
+                                    .strong()
+                                    .size(theme::snap(ui, if compact { 14.0 } else { 16.0 })),
+                                );
                                 content = content.union(name.rect);
                             }
                             let controls =
@@ -786,18 +1480,7 @@ impl BuilderApp {
                                             }
                                             ui.separator();
                                             ui.label(self.language.text("scale.label"));
-                                            for (scale, key) in [
-                                                (1.0, "scale.100"),
-                                                (1.25, "scale.125"),
-                                                (1.5, "scale.150"),
-                                                (2.0, "scale.200"),
-                                            ] {
-                                                ui.selectable_value(
-                                                    &mut self.config.scale,
-                                                    scale,
-                                                    self.language.text(key),
-                                                );
-                                            }
+                                            self.scale_choices(ui);
                                             ui.separator();
                                             if ui.button(self.language.text("app.about")).clicked()
                                             {
@@ -906,24 +1589,16 @@ impl BuilderApp {
             })
             .response
             .on_hover_text(self.language.text("language.label"));
+        if self.language != current_language {
+            self.reload_terms_acceptance();
+        }
         let scale = ComboBox::from_id_salt("ui-scale")
-            .selected_text(self.language.text(match self.config.scale {
-                scale if scale >= 1.9 => "scale.200",
-                scale if scale >= 1.45 => "scale.150",
-                scale if scale >= 1.2 => "scale.125",
-                _ => "scale.100",
-            }))
-            .width(if compact { 50.0 } else { 64.0 })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.config.scale, 1.0, self.language.text("scale.100"));
-                ui.selectable_value(
-                    &mut self.config.scale,
-                    1.25,
-                    self.language.text("scale.125"),
-                );
-                ui.selectable_value(&mut self.config.scale, 1.5, self.language.text("scale.150"));
-                ui.selectable_value(&mut self.config.scale, 2.0, self.language.text("scale.200"));
+            .selected_text(match self.custom_zoom {
+                Some(zoom) => format!("{}%", zoom * 100.0),
+                None => self.language.text(self.config.ui_scale.label()).to_owned(),
             })
+            .width(if compact { 58.0 } else { 70.0 })
+            .show_ui(ui, |ui| self.scale_choices(ui))
             .response
             .on_hover_text(self.language.text("scale.tip"));
         let mut controls = theme.rect.union(language.rect).union(scale.rect);
@@ -933,13 +1608,34 @@ impl BuilderApp {
         controls
     }
 
+    fn scale_choices(&mut self, ui: &mut Ui) {
+        for scale in UiScale::VALUES {
+            if ui
+                .selectable_label(
+                    self.custom_zoom.is_none() && self.config.ui_scale == scale,
+                    self.language.text(scale.label()),
+                )
+                .clicked()
+            {
+                self.change_zoom(scale);
+                ui.close();
+            }
+        }
+    }
+
     fn render_steps(&mut self, ui: &mut Ui, palette: Palette) -> Rect {
-        let row_height = if self.config.scale >= 1.45 {
+        let row_height = if self.compact_rail {
+            28.0
+        } else if self.effective_zoom >= 1.45 {
             26.0
         } else {
             38.0
         };
-        let row_gap = if self.config.scale >= 1.45 { 2.0 } else { 4.0 };
+        let row_gap = if self.effective_zoom >= 1.45 {
+            2.0
+        } else {
+            4.0
+        };
         Frame::new()
             .fill(palette.panel)
             .stroke(Stroke::new(1.0, palette.stroke))
@@ -957,18 +1653,20 @@ impl BuilderApp {
                         egui::containers::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
                     )
                     .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(self.language.text("step.header"))
-                                .size(12.0)
-                                .color(palette.secondary),
-                        );
-                        ui.add_space(8.0);
+                        if !self.compact_rail {
+                            ui.label(
+                                RichText::new(self.language.text("step.header"))
+                                    .size(theme::snap(ui, 12.0))
+                                    .color(palette.secondary),
+                            );
+                            ui.add_space(8.0);
+                        }
                         for (index, key) in STEP_KEYS.iter().enumerate() {
                             let step = index + 1;
                             let current = self.page == step;
                             let done = self.step_complete(step);
                             let visited = step <= self.page;
-                            let step_label = if self.config.scale >= 1.5 {
+                            let step_label = if !self.compact_rail && self.effective_zoom >= 1.5 {
                                 self.language.text(STEP_SHORT_KEYS[index])
                             } else {
                                 self.language.text(key)
@@ -1011,29 +1709,60 @@ impl BuilderApp {
                                 palette.secondary
                             };
                             let text_pos = response.rect;
-                            icons::paint(
-                                ui.painter(),
-                                Rect::from_center_size(
-                                    egui::pos2(text_pos.left() + 18.0, text_pos.center().y),
-                                    Vec2::splat(14.0),
-                                ),
-                                icon,
-                                icon_color,
-                            );
-                            ui.painter().text(
-                                egui::pos2(text_pos.left() + 34.0, text_pos.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                format!("{step:02}"),
-                                egui::FontId::monospace(14.0),
-                                text_color,
-                            );
-                            ui.painter().text(
-                                egui::pos2(text_pos.left() + 62.0, text_pos.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                step_label,
-                                egui::FontId::proportional(14.0),
-                                text_color,
-                            );
+                            if self.compact_rail {
+                                let label_x = if done {
+                                    text_pos.center().x - 5.0
+                                } else {
+                                    text_pos.center().x
+                                };
+                                if done {
+                                    icons::paint(
+                                        ui.painter(),
+                                        Rect::from_center_size(
+                                            egui::pos2(text_pos.right() - 8.0, text_pos.center().y),
+                                            Vec2::splat(10.0),
+                                        ),
+                                        icon,
+                                        icon_color,
+                                    );
+                                }
+                                ui.painter().text(
+                                    egui::pos2(label_x, text_pos.center().y),
+                                    egui::Align2::CENTER_CENTER,
+                                    format!("{step:02}"),
+                                    egui::FontId::monospace(theme::snap(ui, 14.0)),
+                                    text_color,
+                                );
+                            } else {
+                                icons::paint(
+                                    ui.painter(),
+                                    Rect::from_center_size(
+                                        egui::pos2(text_pos.left() + 18.0, text_pos.center().y),
+                                        Vec2::splat(14.0),
+                                    ),
+                                    icon,
+                                    icon_color,
+                                );
+                                ui.painter().text(
+                                    egui::pos2(text_pos.left() + 34.0, text_pos.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    format!("{step:02}"),
+                                    egui::FontId::monospace(theme::snap(ui, 14.0)),
+                                    text_color,
+                                );
+                                ui.painter().text(
+                                    egui::pos2(text_pos.left() + 62.0, text_pos.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    step_label,
+                                    egui::FontId::proportional(theme::snap(ui, 14.0)),
+                                    text_color,
+                                );
+                            }
+                            theme::focus_ring(ui, &response, palette.accent);
+                            let response = response.on_hover_text(&label);
+                            if response.gained_focus() {
+                                response.scroll_to_me(Some(Align::Center));
+                            }
                             if visited {
                                 response.widget_info(|| {
                                     egui::WidgetInfo::selected(
@@ -1049,6 +1778,7 @@ impl BuilderApp {
                             }
                             ui.add_space(row_gap);
                         }
+                        theme::scroll_end_padding(ui);
                     });
             })
             .response
@@ -1058,7 +1788,7 @@ impl BuilderApp {
     fn step_complete(&self, step: usize) -> bool {
         match step {
             1 => !self.selected_versions.is_empty(),
-            2 => self.doctor_report.is_some(),
+            2 => self.check_page_ready(),
             3 => self.terms_checked,
             4 => self.config_confirmed,
             5 => {
@@ -1068,6 +1798,33 @@ impl BuilderApp {
             }
             _ => false,
         }
+    }
+
+    fn check_page_ready(&self) -> bool {
+        self.tools_ready_for_selection() && self.verification_passed()
+    }
+
+    fn build_gate(&self) -> Option<&'static str> {
+        if !self.tools_ready_for_selection() {
+            Some("doctor.tools.blocked")
+        } else if !self.verification_passed() {
+            Some("verify.blocked")
+        } else if !self.terms_checked {
+            Some("build.accept_terms")
+        } else {
+            None
+        }
+    }
+
+    fn tools_ready_for_selection(&self) -> bool {
+        self.tools_task.is_none()
+            && self.doctor_report.as_ref().is_some_and(|report| {
+                !report.tools.is_empty()
+                    && report
+                        .tools
+                        .iter()
+                        .all(|tool| !tool.blocks(&self.selected_versions))
+            })
     }
 
     fn render_content(&mut self, ui: &mut Ui, palette: Palette) {
@@ -1144,7 +1901,7 @@ impl BuilderApp {
                     }
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(*id).strong().size(16.0));
+                            ui.label(RichText::new(*id).strong().size(theme::snap(ui, 16.0)));
                             let (icon, key, color) = if installed {
                                 (Icon::Check, "version.detected", palette.accent)
                             } else {
@@ -1160,7 +1917,7 @@ impl BuilderApp {
                                         icons::show(ui, icon, color, 14.0);
                                         ui.label(
                                             RichText::new(self.language.text(key))
-                                                .size(12.0)
+                                                .size(theme::snap(ui, 12.0))
                                                 .color(color),
                                         );
                                     });
@@ -1172,7 +1929,7 @@ impl BuilderApp {
                             } else {
                                 "version.estimate.modern"
                             }))
-                            .size(12.0)
+                            .size(theme::snap(ui, 12.0))
                             .color(palette.secondary),
                         );
                     });
@@ -1195,6 +1952,7 @@ impl BuilderApp {
                     egui::Sense::click(),
                 ),
             );
+            theme::focus_ring(ui, &response, palette.accent);
             response.widget_info(|| {
                 egui::WidgetInfo::selected(egui::Role::Button, true, selected, label.clone())
             });
@@ -1228,228 +1986,814 @@ impl BuilderApp {
             });
     }
 
-    fn render_detect(&mut self, ui: &mut Ui, palette: Palette) {
-        self.audited_label(
-            ui,
-            "doctor.title",
-            egui::Label::new(egui::RichText::new(self.language.text("doctor.title")).heading()),
-        );
-        self.audited_label(
-            ui,
-            "doctor.subtitle",
-            egui::Label::new(
-                RichText::new(self.language.text("doctor.subtitle")).color(palette.secondary),
-            )
-            .wrap(),
-        );
-        ui.add_space(4.0);
-        ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if self.doctor_cancelled {
-                    ui.label(self.language.text("doctor.cancelled"));
-                } else if let Some(error) = &self.doctor_error {
-                    let error = error.clone();
-                    let title = self.language.text("doctor.failed").to_owned();
-                    let fix = self.language.text("doctor.fix.java").to_owned();
-                    self.error_banner(ui, palette, &title, &error, &fix);
-                } else if let Some(report) = &self.doctor_report {
-                    let java = report.java.as_ref();
-                    render_check(
-                        ui,
-                        self.language.text("doctor.java"),
-                        &java
-                            .map(|item| display_doctor_value(self.language, &item.value))
-                            .unwrap_or_else(|| {
-                                self.language.text("doctor.value.java_missing").to_owned()
-                            }),
-                        java.map(|item| item.state.clone())
-                            .unwrap_or(CheckState::Missing),
-                        palette,
-                        self.language,
-                    );
-                    let memory = report.memory.as_ref();
-                    render_check(
-                        ui,
-                        self.language.text("doctor.memory"),
-                        &memory
-                            .map(|item| display_doctor_value(self.language, &item.value))
-                            .unwrap_or_else(|| {
-                                self.language.text("doctor.value.unknown").to_owned()
-                            }),
-                        memory
-                            .map(|item| item.state.clone())
-                            .unwrap_or(CheckState::Warning),
-                        palette,
-                        self.language,
-                    );
-                    let disk = report.work_dir.as_ref();
-                    render_check(
-                        ui,
-                        self.language.text("doctor.disk"),
-                        &disk
-                            .map(|item| display_doctor_value(self.language, &item.value))
-                            .unwrap_or_else(|| {
-                                self.language.text("doctor.value.unknown").to_owned()
-                            }),
-                        disk.map(|item| item.state.clone())
-                            .unwrap_or(CheckState::Warning),
-                        palette,
-                        self.language,
-                    );
-                    let launcher = report.game_dir.as_ref();
-                    render_check(
-                        ui,
-                        self.language.text("doctor.game_dir"),
-                        &launcher
-                            .map(|item| display_doctor_value(self.language, &item.value))
-                            .unwrap_or_else(|| {
-                                self.language.text("doctor.value.not_found").to_owned()
-                            }),
-                        launcher
-                            .map(|item| item.state.clone())
-                            .unwrap_or(CheckState::Missing),
-                        palette,
-                        self.language,
-                    );
-                    for version in &report.versions {
-                        let state = if version.verified {
-                            CheckState::Ready
-                        } else if version.installed {
-                            CheckState::Warning
-                        } else {
-                            CheckState::Missing
-                        };
-                        let value = version
-                            .reason
-                            .as_deref()
-                            .map(|reason| display_doctor_reason(self.language, &version.id, reason))
-                            .unwrap_or_else(|| self.language.text("version.verified").to_owned());
-                        render_check(
-                            ui,
-                            &format!("{} · {}", self.language.text("doctor.hash"), version.id),
-                            &value,
-                            state,
-                            palette,
-                            self.language,
-                        );
-                    }
-                    let raw = CollapsingHeader::new(self.language.text("doctor.raw"))
-                        .id_salt("doctor-output")
-                        .show(ui, |ui| {
-                            ui.label(report.raw_output.as_str());
-                            if !report.stderr.is_empty() {
-                                ui.label(report.stderr.as_str());
-                            }
-                        });
-                    keep_focused_visible(&mut self.content_has_focus, raw.header_response);
-                } else if self.doctor_receiver.is_some() {
-                    ui.spinner();
-                    ui.label(self.language.text("doctor.checking"));
-                    if let Some(pid) = self.doctor_control.as_ref().and_then(ProcessControl::pid) {
-                        ui.label(format!("PID {pid}"));
-                    }
-                } else {
-                    ui.label(self.language.text("doctor.no_data"));
+    fn render_build_tools(&mut self, ui: &mut Ui, palette: Palette) {
+        let Some(report) = &self.doctor_report else {
+            return;
+        };
+        let previous_row_spacing = ui.spacing().item_spacing.y;
+        ui.spacing_mut().item_spacing.y = 3.0;
+        let tools = report.tools.clone();
+        let mut seen = BTreeSet::new();
+        let missing: Vec<_> = tools
+            .iter()
+            .filter(|tool| tool.can_install() && tool.blocks(&self.selected_versions))
+            .filter(|tool| seen.insert(tool.id.as_str()))
+            .collect();
+        ui.label(RichText::new(self.language.text("doctor.tools")).strong());
+        if self.config.strict_kernel {
+            ui.label(RichText::new(self.language.text("config.strict_kernel")).strong());
+        }
+        if self.tools_task.is_some() || self.tools_simulated_downloading {
+            ui.add(
+                egui::ProgressBar::new(f32::from(self.tools_progress_pct) / 100.0)
+                    .text(format!("{}%", self.tools_progress_pct)),
+            );
+            ui.horizontal_wrapped(|ui| {
+                ui.label(self.language.text("doctor.tools.downloading"));
+                if let Some(pid) = self.tools_task.as_ref().and_then(|task| task.control.pid()) {
+                    ui.label(format!("PID {pid}"));
                 }
-                if self
-                    .selected_versions
-                    .iter()
-                    .any(|version| version == "1.21.11")
-                {
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.label(RichText::new(self.language.text("doctor.mapping")).strong());
+                let cancel = ui.button(self.language.text("doctor.tools.cancel"));
+                keep_focused_visible(&mut self.content_has_focus, cancel.clone());
+                if cancel.clicked() {
+                    if let Some(task) = &self.tools_task {
+                        task.control.cancel();
+                    }
+                    self.tools_simulated_downloading = false;
+                }
+            });
+        } else if !missing.is_empty() && self.tools_confirm {
+            ui.label(self.language.text("doctor.tools.confirm"));
+            for tool in &missing {
+                let name = if tool.id == "maven-repository" {
+                    self.language.text("doctor.maven")
+                } else {
+                    &tool.display_name
+                };
+                let size = human_bytes(tool.bytes);
+                let source = if tool.source_host.is_empty() {
+                    String::new()
+                } else {
+                    self.language
+                        .text("doctor.tools.source")
+                        .replace("{value}", &tool.source_host)
+                };
+                ui.label(
+                    [name, &size, &source]
+                        .into_iter()
+                        .filter(|text| !text.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · "),
+                );
+            }
+            ui.horizontal_wrapped(|ui| {
+                let confirm = ui.button(self.language.text("doctor.tools.confirm_download"));
+                keep_focused_visible(&mut self.content_has_focus, confirm.clone());
+                if confirm.clicked() {
+                    self.start_tools_install(missing.iter().map(|tool| tool.id.clone()).collect());
+                }
+                let dismiss = ui.button(self.language.text("doctor.tools.dismiss"));
+                keep_focused_visible(&mut self.content_has_focus, dismiss.clone());
+                if dismiss.clicked() {
+                    self.tools_confirm = false;
+                }
+            });
+        } else if !missing.is_empty() {
+            let key = if self.tools_error.is_some() {
+                "doctor.tools.retry"
+            } else {
+                "doctor.tools.download"
+            };
+            let download = ui
+                .add(Button::new(self.language.text(key)).stroke(Stroke::new(1.0, palette.accent)));
+            keep_focused_visible(&mut self.content_has_focus, download.clone());
+            if download.clicked() {
+                self.tools_confirm = true;
+            }
+        }
+        if let Some(error) = &self.tools_error {
+            CollapsingHeader::new(self.language.text("doctor.tools.failure"))
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.label(RichText::new(error).color(palette.error));
+                    ui.label(self.language.text("doctor.tools.failure_hint"));
+                });
+        }
+        // Keep the two Wasm host tools together above the longer prerequisite list.
+        for tool in tools
+            .iter()
+            .filter(|tool| matches!(tool.id.as_str(), "llvm" | "binaryen"))
+        {
+            self.render_tool_row(ui, palette, tool);
+        }
+        for present in [false, true] {
+            for tool in tools
+                .iter()
+                .filter(|tool| {
+                    !matches!(
+                        tool.id.as_str(),
+                        "llvm" | "binaryen" | "shader-toolchain" | "maven-repository"
+                    )
+                })
+                .filter(|tool| tool.ready() == present)
+            {
+                self.render_tool_row(ui, palette, tool);
+            }
+        }
+        ui.spacing_mut().item_spacing.y = previous_row_spacing;
+    }
+
+    fn render_tool_row(&self, ui: &mut Ui, palette: Palette, tool: &ToolStatus) {
+        if tool.id == "emscripten-sdk" {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!(
+                    "{} · {}",
+                    self.language.text("doctor.emscripten"),
+                    self.language.text("doctor.tools.optional"),
+                ));
+                if !tool.inventory.sdk_platforms.is_empty() {
                     ui.label(
-                        RichText::new(self.language.text("doctor.mapping.hint"))
-                            .size(12.0)
+                        RichText::new(tool.inventory.sdk_platforms.join(", "))
                             .color(palette.secondary),
                     );
-                    ui.horizontal(|ui| {
-                        let field_width = (ui.available_width() - 92.0).max(120.0);
-                        let field = ui.add_sized(
-                            [field_width, 32.0],
-                            egui::TextEdit::singleline(&mut self.config.mappings_path)
-                                .hint_text(self.language.text("doctor.mapping.placeholder")),
+                }
+                if let Some(command) = &tool.resolved_command {
+                    ui.label(RichText::new(command).monospace().color(palette.secondary));
+                }
+            });
+            return;
+        }
+        let (icon, color, state_key) = match tool.state.as_str() {
+            "present" => (Icon::Check, palette.accent, "item.ok"),
+            "hash-mismatch" => (Icon::Cross, palette.error, "doctor.tools.hash_mismatch"),
+            "unsupported" => (Icon::Ring, palette.warning, "doctor.tools.unsupported"),
+            _ => (Icon::Cross, palette.warning, "doctor.tools.missing"),
+        };
+        let status = self.language.text(state_key);
+        let mut label = RichText::new(format!("{} · {status}", tool.display_name)).strong();
+        if !tool.required {
+            label = label.size(theme::snap(ui, 12.0));
+        }
+        ui.horizontal_wrapped(|ui| {
+            icons::show(ui, icon, color, 14.0);
+            if !tool.required {
+                Frame::new()
+                    .fill(palette.panel)
+                    .stroke(Stroke::new(1.0, palette.stroke))
+                    .corner_radius(CornerRadius::same(4))
+                    .inner_margin(egui::Margin::symmetric(5, 1))
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(self.language.text("doctor.tools.optional"))
+                                    .size(theme::snap(ui, 12.0))
+                                    .color(palette.secondary),
+                            )
+                            .extend(),
                         );
-                        keep_focused_visible(&mut self.content_has_focus, field);
-                        let browse = ui.button(self.language.text("path.browse"));
-                        keep_focused_visible(&mut self.content_has_focus, browse.clone());
-                        if browse.clicked()
-                            && let Some(path) = rfd::FileDialog::new().pick_file()
-                        {
-                            self.config.mappings_path = path.display().to_string();
+                    });
+            }
+            if tool.hint.is_empty() {
+                ui.label(label);
+            } else {
+                CollapsingHeader::new(label)
+                    .id_salt(&tool.id)
+                    .show(ui, |ui| {
+                        ui.label(self.language.text(if tool.installable {
+                            "doctor.tools.lock_hint"
+                        } else {
+                            "doctor.tools.manual_hint"
+                        }));
+                        ui.label(&tool.hint);
+                        if !tool.source_url.is_empty() {
+                            ui.label(&tool.source_url);
                         }
                     });
+            }
+            if let Some(command) = &tool.resolved_command {
+                ui.label(RichText::new(command).monospace().color(palette.text));
+            }
+            if tool.bytes > 0 {
+                ui.label(RichText::new(human_bytes(tool.bytes)).color(palette.secondary));
+            }
+            if tool.installable && !tool.source_host.is_empty() {
+                ui.label(RichText::new(&tool.source_host).color(palette.secondary));
+            }
+        });
+    }
+
+    fn render_local_tool_reports(&mut self, ui: &mut Ui, palette: Palette) {
+        let Some(report) = &self.doctor_report else {
+            return;
+        };
+        let mut local_tools: Vec<_> = report
+            .tools
+            .iter()
+            .filter(|tool| {
+                (tool.id == "maven-repository"
+                    && tool
+                        .required_for
+                        .iter()
+                        .any(|v| self.selected_versions.contains(v)))
+                    || (tool.id == "shader-toolchain"
+                        && self.selected_versions.iter().any(|v| v == "26.3"))
+            })
+            .cloned()
+            .collect();
+        local_tools.sort_by_key(|tool| (tool.ready(), tool.id != "shader-toolchain"));
+        for tool in local_tools {
+            let (title, state) = match (tool.id.as_str(), tool.state.as_str()) {
+                ("maven-repository", "present") => ("doctor.maven", "doctor.tools.verified"),
+                ("maven-repository", "partial") => ("doctor.maven", "doctor.tools.partial"),
+                ("maven-repository", "missing") => ("doctor.maven", "doctor.tools.missing"),
+                ("maven-repository", "hash-mismatch") => {
+                    ("doctor.maven", "doctor.tools.hash_mismatch")
                 }
+                ("maven-repository", _) => ("doctor.maven", "doctor.tools.unknown"),
+                (_, "verified") => ("doctor.shader", "doctor.tools.verified"),
+                (_, "missing-offline") => ("doctor.shader", "doctor.tools.missing_offline"),
+                (_, "tampered") => ("doctor.shader", "doctor.tools.tampered"),
+                _ => ("doctor.shader", "doctor.tools.unknown"),
+            };
+            let mut title = self.language.text(title).to_owned();
+            if tool.id == "maven-repository" && tool.required_for.len() == 1 {
+                title.push_str(" · ");
+                title.push_str(&tool.required_for[0]);
+            }
+            let color = match tool.state.as_str() {
+                _ if tool.ready() => palette.accent,
+                "tampered" | "hash-mismatch" => palette.error,
+                _ => palette.warning,
+            };
+            ui.horizontal_wrapped(|ui| {
+                icons::show(
+                    ui,
+                    if tool.ready() {
+                        Icon::Check
+                    } else {
+                        Icon::Cross
+                    },
+                    color,
+                    14.0,
+                );
+                ui.label(
+                    RichText::new(format!("{title} · {}", self.language.text(state))).strong(),
+                );
+            });
+            let detail = |ui: &mut Ui, key: &str, value: &str| {
+                let text = self.language.text(key).replace("{value}", value);
+                ui.label(
+                    RichText::new(text)
+                        .size(theme::snap(ui, 12.0))
+                        .color(palette.secondary),
+                );
+            };
+            if tool.id == "maven-repository" {
+                let inventory = &tool.inventory;
+                if let (Some(checked), Some(total)) =
+                    (inventory.checked_files, inventory.total_files)
+                {
+                    let mut summary = self
+                        .language
+                        .text("doctor.maven.summary")
+                        .replace("{checked}", &checked.to_string())
+                        .replace("{total}", &total.to_string());
+                    if let Some(bytes) = inventory.total_bytes {
+                        let size = if bytes == 0 {
+                            "0 B".to_owned()
+                        } else {
+                            human_bytes(bytes)
+                        };
+                        summary.push_str(" · ");
+                        summary.push_str(&size);
+                    }
+                    ui.label(
+                        RichText::new(summary)
+                            .size(theme::snap(ui, 12.0))
+                            .color(palette.secondary),
+                    );
+                }
+                if let Some(path) = inventory
+                    .first_failed_path
+                    .as_deref()
+                    .filter(|path| !path.is_empty())
+                {
+                    detail(ui, "doctor.maven.first_failed", path);
+                }
+                if !tool.source_host.is_empty() {
+                    detail(ui, "doctor.tools.source", &tool.source_host);
+                }
+            } else {
+                if tool.state == "missing-offline" {
+                    ui.label(self.language.text("doctor.shader.supplied_by_release"));
+                }
+                if !tool.destination_path.is_empty() {
+                    detail(
+                        ui,
+                        if tool.state == "missing-offline" {
+                            "doctor.shader.placement"
+                        } else {
+                            "doctor.shader.path"
+                        },
+                        &tool.destination_path,
+                    );
+                }
+                if tool.state == "missing-offline" && !tool.inventory.expected_files.is_empty() {
+                    detail(
+                        ui,
+                        "doctor.shader.expected",
+                        &tool.inventory.expected_files.join(" · "),
+                    );
+                } else if tool.state == "tampered" && !tool.inventory.differing_files.is_empty() {
+                    detail(
+                        ui,
+                        "doctor.shader.differing",
+                        &tool.inventory.differing_files.join(" · "),
+                    );
+                }
+                if matches!(tool.state.as_str(), "missing-offline" | "tampered") {
+                    let choose = ui.add_enabled(
+                        self.tools_task.is_none(),
+                        Button::new(self.language.text("doctor.shader.choose")),
+                    );
+                    keep_focused_visible(&mut self.content_has_focus, choose.clone());
+                    if choose.clicked()
+                        && let Some(path) = rfd::FileDialog::new().pick_folder()
+                    {
+                        let mut settings = self.tool_path_settings.clone();
+                        settings.shader_toolchain = path.display().to_string();
+                        self.set_tool_path_settings(settings);
+                        ui.ctx().request_repaint();
+                        return;
+                    }
+                }
+            }
+            ui.add_space(3.0);
+        }
+    }
+
+    fn render_tool_path_settings(&mut self, ui: &mut Ui, palette: Palette) {
+        let mut settings = self.tool_path_settings.clone();
+        let folders = CollapsingHeader::new(self.language.text("doctor.paths"))
+            .id_salt("build-tool-paths")
+            .show(ui, |ui| {
+                ui.add_enabled_ui(self.tools_task.is_none(), |ui| {
+                    for (key, path) in [
+                        ("doctor.cache_dir", &mut settings.toolchain_dir),
+                        ("doctor.toolchain", &mut settings.shader_toolchain),
+                    ] {
+                        ui.push_id(key, |ui| {
+                            let label = self.language.text(key);
+                            let title = ui.label(RichText::new(label).strong());
+                            ui.horizontal_wrapped(|ui| {
+                                let width = (ui.available_width() - 122.0)
+                                    .max(96.0)
+                                    .min(ui.available_width());
+                                let field = ui.add_sized(
+                                    [width, 28.0],
+                                    egui::TextEdit::singleline(path)
+                                        .hint_text(self.language.text("doctor.paths.default")),
+                                );
+                                keep_focused_visible(
+                                    &mut self.content_has_focus,
+                                    field.labelled_by(title.id),
+                                );
+                                let browse = ui.button(self.language.text("path.browse"));
+                                keep_focused_visible(&mut self.content_has_focus, browse.clone());
+                                if browse.clicked()
+                                    && let Some(selection) = rfd::FileDialog::new().pick_folder()
+                                {
+                                    *path = selection.display().to_string();
+                                }
+                                let clear = ui.add_enabled(
+                                    !path.is_empty(),
+                                    Button::new(self.language.text("path.clear")),
+                                );
+                                keep_focused_visible(&mut self.content_has_focus, clear.clone());
+                                if clear.clicked() {
+                                    path.clear();
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+        keep_focused_visible(&mut self.content_has_focus, folders.header_response);
+        if settings != self.tool_path_settings {
+            ui.ctx().request_repaint();
+        }
+        self.set_tool_path_settings(settings);
+        if self.tool_settings_save_failed {
+            ui.colored_label(
+                palette.error,
+                self.language.text("doctor.paths.save_failed"),
+            );
+        }
+    }
+
+    fn render_verification(&mut self, ui: &mut Ui, palette: Palette) {
+        const DISPLAY_FAILURES: usize = 3;
+
+        let run = self.current_verification();
+        let lang = self.language;
+        ui.push_id("official-file-check", |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            if self.doctor_error.is_some() {
+                ui.colored_label(palette.warning, lang.text("verify.process_error"));
+                return;
+            }
+            let Some(run) = run else {
+                ui.label(lang.text("verify.pending"));
+                return;
+            };
+            if run.running() {
+                let width = ui.available_width().min(420.0);
+                if let Some(progress) = &run.progress {
+                    let fraction = if progress.total > 0 {
+                        progress.checked as f32 / progress.total as f32
+                    } else {
+                        0.0
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .desired_width(width)
+                            .text(format!("{} / {}", progress.checked, progress.total)),
+                    );
+                } else {
+                    ui.add(
+                        egui::ProgressBar::new(0.0)
+                            .desired_width(width)
+                            .text(lang.text("verify.running")),
+                    );
+                }
+            }
+            if run.error {
+                ui.colored_label(palette.error, lang.text("verify.process_error"));
+            }
+            if run.has_failures() {
+                Frame::new()
+                    .fill(palette.tint(palette.error, 0.08))
+                    .stroke(Stroke::new(1.0, palette.error))
+                    .corner_radius(CornerRadius::same(5))
+                    .inner_margin(4.0)
+                    .show(ui, |ui| {
+                        ui.label(palette.verification_caption(ui, lang.text("verify.repair")));
+                    });
+            }
+            for (index, version) in run.inputs.versions.iter().enumerate() {
+                ui.push_id(version, |ui| {
+                    if run.inputs.versions.len() > 1 {
+                        ui.label(palette.verification_caption(ui, version).strong());
+                    }
+                    let groups = if let Some(report) = run.reports.get(index) {
+                        report.groups.as_slice()
+                    } else if index == run.reports.len() {
+                        run.active_groups.as_slice()
+                    } else {
+                        &[]
+                    };
+                    let mut failures = Vec::new();
+                    ui.columns_const(|columns: &mut [Ui; 2]| {
+                        for (column_index, group) in VerifyGroup::ALL.into_iter().enumerate() {
+                            let label_key = format!("verify.{}", group.as_str());
+                            let label = lang.text(&label_key);
+                            let result = groups.iter().find(|result| result.group == group);
+                            let (icon, color, status) = match result {
+                                Some(result) if result.passed() => {
+                                    (Icon::Check, palette.accent, "verify.pass")
+                                }
+                                Some(result)
+                                    if result
+                                        .failed
+                                        .iter()
+                                        .any(|item| item.reason == "prerequisite-failed") =>
+                                {
+                                    (Icon::Ring, palette.warning, "verify.skipped")
+                                }
+                                Some(_) => (Icon::Cross, palette.error, "verify.fail"),
+                                None if index == run.reports.len()
+                                    && run.running()
+                                    && run.progress.as_ref().is_some_and(|p| p.group == group) =>
+                                {
+                                    (Icon::Ring, palette.info, "verify.running")
+                                }
+                                None => (Icon::Ring, palette.secondary, "verify.waiting"),
+                            };
+                            let text = format!("{label}: {}", lang.text(status));
+                            if let Some(result) = result.filter(|result| {
+                                !result.passed()
+                                    && !result
+                                        .failed
+                                        .iter()
+                                        .all(|item| item.reason == "prerequisite-failed")
+                            }) {
+                                failures.push((group, text.clone(), result));
+                            }
+                            columns[column_index % 2].horizontal(|ui| {
+                                icons::show(ui, icon, color, 13.0);
+                                ui.add(
+                                    egui::Label::new(palette.verification_caption(ui, text)).wrap(),
+                                );
+                            });
+                        }
+                    });
+                    for (group, text, result) in failures {
+                        let caption = egui::WidgetText::from(
+                            palette.verification_caption(ui, text).color(palette.error),
+                        );
+                        let caption_width = ui.available_width()
+                            - ui.spacing().indent
+                            - ui.spacing().button_padding.x;
+                        let caption = caption.into_galley(
+                            ui,
+                            Some(egui::TextWrapMode::Wrap),
+                            caption_width.max(0.0),
+                            TextStyle::Button,
+                        );
+                        CollapsingHeader::new(caption)
+                            .id_salt(group.as_str())
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for file in result.failed.iter().take(DISPLAY_FAILURES) {
+                                    let path = &file.path;
+                                    let reason_key = format!("verify.reason.{}", file.reason);
+                                    let reason = lang.text(&reason_key);
+                                    let reason = if reason == reason_key {
+                                        lang.text("verify.reason.other")
+                                    } else {
+                                        reason
+                                    };
+                                    ui.add(
+                                        egui::Label::new(palette.verification_caption(
+                                            ui,
+                                            format!("{path} ({reason})"),
+                                        ))
+                                        .wrap(),
+                                    );
+                                    if file.reason.starts_with("mappings-")
+                                        || path == "client-mappings.txt"
+                                    {
+                                        ui.label(palette.verification_caption(
+                                            ui,
+                                            lang.text("doctor.mapping.hint"),
+                                        ));
+                                    }
+                                }
+                                if result.failure_count > DISPLAY_FAILURES as u64 {
+                                    ui.label(
+                                        palette.verification_caption(
+                                            ui,
+                                            lang.text("verify.more").replace(
+                                                "{count}",
+                                                &(result.failure_count - DISPLAY_FAILURES as u64)
+                                                    .to_string(),
+                                            ),
+                                        ),
+                                    );
+                                }
+                            });
+                    }
+                });
+            }
+        });
+    }
+
+    fn render_detect(&mut self, ui: &mut Ui, palette: Palette) {
+        self.verification_input_focused = false;
+        let title = if self.show_official_check {
+            "verify.title"
+        } else {
+            "doctor.title"
+        };
+        ui.horizontal_wrapped(|ui| {
+            self.audited_label(
+                ui,
+                title,
+                egui::Label::new(egui::RichText::new(self.language.text(title)).heading()),
+            );
+            let key = if self.show_official_check {
+                "verify.environment"
+            } else {
+                "verify.jump"
+            };
+            let jump = ui
+                .scope(|ui| {
+                    ui.spacing_mut().button_padding = Vec2::new(4.0, 2.0);
+                    ui.add(
+                        Button::new(
+                            RichText::new(self.language.text(key))
+                                .color(palette.accent)
+                                .underline(),
+                        )
+                        .frame(false)
+                        .min_size(Vec2::splat(24.0)),
+                    )
+                })
+                .inner;
+            theme::focus_ring(ui, &jump, palette.accent);
+            if jump.clicked() {
+                self.show_official_check = !self.show_official_check;
+                self.page_scroll_offset = 0.0;
+                ui.scroll_to_cursor(Some(Align::Min));
+                ui.ctx().request_repaint();
+            }
+        });
+        if self.show_official_check {
+            self.render_verification(ui, palette);
+            return;
+        }
+        if self.doctor_error.is_none() || ui.ctx().content_rect().height() >= 300.0 {
+            self.audited_label(
+                ui,
+                "doctor.subtitle",
+                egui::Label::new(
+                    RichText::new(self.language.text("doctor.subtitle")).color(palette.secondary),
+                )
+                .wrap(),
+            );
+            ui.add_space(4.0);
+        }
+        // The wizard page already scrolls. A second vertical viewport under the
+        // header can collapse to only a few points in the compact layout.
+        ui.scope(|ui| {
+            if self.doctor_cancelled {
+                ui.label(self.language.text("doctor.cancelled"));
+            } else if let Some(error) = self.doctor_error.clone() {
+                let title = self.language.text("doctor.failed");
+                let fix = self.language.text("doctor.fix.java");
+                self.error_banner(ui, palette, title, &error, fix);
+            }
+            self.render_tool_path_settings(ui, palette);
+            if self.doctor_cancelled || self.doctor_error.is_some() {
+                return;
+            }
+            if self.tool_check_at.is_some() {
+                ui.label(self.language.text("doctor.paths.checking"));
+            }
+            self.render_local_tool_reports(ui, palette);
+            if self
+                .doctor_report
+                .as_ref()
+                .is_some_and(|report| !report.tools.is_empty())
+            {
+                self.render_build_tools(ui, palette);
+                ui.add_space(8.0);
+                ui.separator();
+            }
+            if let Some(report) = &self.doctor_report {
+                let java = report.java.as_ref();
+                render_check(
+                    ui,
+                    self.language.text("doctor.java"),
+                    &java
+                        .map(|item| display_doctor_value(self.language, &item.value))
+                        .unwrap_or_else(|| {
+                            self.language.text("doctor.value.java_missing").to_owned()
+                        }),
+                    java.map(|item| item.state.clone())
+                        .unwrap_or(CheckState::Missing),
+                    palette,
+                    self.language,
+                );
+                let memory = report.memory.as_ref();
+                render_check(
+                    ui,
+                    self.language.text("doctor.memory"),
+                    &memory
+                        .map(|item| display_doctor_value(self.language, &item.value))
+                        .unwrap_or_else(|| self.language.text("doctor.value.unknown").to_owned()),
+                    memory
+                        .map(|item| item.state.clone())
+                        .unwrap_or(CheckState::Warning),
+                    palette,
+                    self.language,
+                );
+                let disk = report.work_dir.as_ref();
+                render_check(
+                    ui,
+                    self.language.text("doctor.disk"),
+                    &disk
+                        .map(|item| display_doctor_value(self.language, &item.value))
+                        .unwrap_or_else(|| self.language.text("doctor.value.unknown").to_owned()),
+                    disk.map(|item| item.state.clone())
+                        .unwrap_or(CheckState::Warning),
+                    palette,
+                    self.language,
+                );
+                let launcher = report.game_dir.as_ref();
+                render_check(
+                    ui,
+                    self.language.text("doctor.game_dir"),
+                    &launcher
+                        .map(|item| display_doctor_value(self.language, &item.value))
+                        .unwrap_or_else(|| self.language.text("doctor.value.not_found").to_owned()),
+                    launcher
+                        .map(|item| item.state.clone())
+                        .unwrap_or(CheckState::Missing),
+                    palette,
+                    self.language,
+                );
+                for version in &report.versions {
+                    let state = if version.verified {
+                        CheckState::Ready
+                    } else if version.installed {
+                        CheckState::Warning
+                    } else {
+                        CheckState::Missing
+                    };
+                    let value = version
+                        .reason
+                        .as_deref()
+                        .map(|reason| display_doctor_reason(self.language, &version.id, reason))
+                        .unwrap_or_else(|| self.language.text("verify.client_match").to_owned());
+                    render_check(
+                        ui,
+                        &format!("{} · {}", self.language.text("doctor.hash"), version.id),
+                        &value,
+                        state,
+                        palette,
+                        self.language,
+                    );
+                }
+                let raw = CollapsingHeader::new(self.language.text("doctor.raw"))
+                    .id_salt("doctor-output")
+                    .show(ui, |ui| {
+                        ui.label(report.raw_output.as_str());
+                        if !report.stderr.is_empty() {
+                            ui.label(report.stderr.as_str());
+                        }
+                    });
+                keep_focused_visible(&mut self.content_has_focus, raw.header_response);
+            } else if self.doctor_receiver.is_some() {
+                ui.spinner();
+                ui.label(self.language.text("doctor.checking"));
+                if let Some(pid) = self.doctor_control.as_ref().and_then(ProcessControl::pid) {
+                    ui.label(format!("PID {pid}"));
+                }
+            } else {
+                ui.label(self.language.text("doctor.no_data"));
+            }
+            if self
+                .selected_versions
+                .iter()
+                .any(|version| version == "1.21.11")
+            {
                 ui.add_space(12.0);
                 ui.separator();
-                ui.label(RichText::new(self.language.text("doctor.minecraft_dir")).strong());
+                ui.label(RichText::new(self.language.text("doctor.mapping")).strong());
                 ui.label(
-                    RichText::new(self.language.text("doctor.minecraft_dir.hint"))
-                        .size(12.0)
+                    RichText::new(self.language.text("doctor.mapping.hint"))
+                        .size(theme::snap(ui, 12.0))
                         .color(palette.secondary),
                 );
                 ui.horizontal(|ui| {
                     let field_width = (ui.available_width() - 92.0).max(120.0);
                     let field = ui.add_sized(
                         [field_width, 32.0],
-                        egui::TextEdit::singleline(&mut self.minecraft_dir)
-                            .hint_text(self.language.text("doctor.minecraft_dir.placeholder")),
+                        egui::TextEdit::singleline(&mut self.config.mappings_path)
+                            .hint_text(self.language.text("doctor.mapping.placeholder")),
                     );
+                    self.verification_input_focused |= field.has_focus();
                     keep_focused_visible(&mut self.content_has_focus, field);
                     let browse = ui.button(self.language.text("path.browse"));
                     keep_focused_visible(&mut self.content_has_focus, browse.clone());
                     if browse.clicked()
-                        && let Some(path) = rfd::FileDialog::new().pick_folder()
+                        && let Some(path) = rfd::FileDialog::new().pick_file()
                     {
-                        self.minecraft_dir = path.display().to_string();
+                        self.config.mappings_path = path.display().to_string();
                     }
                 });
-                if self
-                    .selected_versions
-                    .iter()
-                    .any(|version| version == "26.3")
+            }
+            ui.add_space(12.0);
+            ui.separator();
+            ui.label(RichText::new(self.language.text("doctor.minecraft_dir")).strong());
+            ui.label(
+                RichText::new(self.language.text("doctor.minecraft_dir.hint"))
+                    .size(theme::snap(ui, 12.0))
+                    .color(palette.secondary),
+            );
+            ui.horizontal(|ui| {
+                let field_width = (ui.available_width() - 92.0).max(120.0);
+                let field = ui.add_sized(
+                    [field_width, 32.0],
+                    egui::TextEdit::singleline(&mut self.minecraft_dir)
+                        .hint_text(self.language.text("doctor.minecraft_dir.placeholder")),
+                );
+                self.verification_input_focused |= field.has_focus();
+                keep_focused_visible(&mut self.content_has_focus, field);
+                let browse = ui.button(self.language.text("path.browse"));
+                keep_focused_visible(&mut self.content_has_focus, browse.clone());
+                if browse.clicked()
+                    && let Some(path) = rfd::FileDialog::new().pick_folder()
                 {
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.label(RichText::new(self.language.text("doctor.toolchain")).strong());
-                    ui.label(
-                        RichText::new(self.language.text("doctor.toolchain.hint"))
-                            .size(12.0)
-                            .color(palette.secondary),
-                    );
-                    ui.horizontal(|ui| {
-                        let field_width = (ui.available_width() - 92.0).max(120.0);
-                        let field = ui.add_sized(
-                            [field_width, 32.0],
-                            egui::TextEdit::singleline(&mut self.shader_toolchain_path)
-                                .hint_text(self.language.text("doctor.toolchain.placeholder")),
-                        );
-                        keep_focused_visible(&mut self.content_has_focus, field);
-                        let browse = ui.button(self.language.text("path.browse"));
-                        keep_focused_visible(&mut self.content_has_focus, browse.clone());
-                        if browse.clicked()
-                            && let Some(path) = rfd::FileDialog::new().pick_folder()
-                        {
-                            self.shader_toolchain_path = path.display().to_string();
-                        }
-                    });
-                    if !self.shader_toolchain_path.trim().is_empty()
-                        && let Err(_) =
-                            validate_shader_toolchain(Path::new(self.shader_toolchain_path.trim()))
-                    {
-                        ui.label(
-                            RichText::new(self.language.text("doctor.toolchain.invalid"))
-                                .color(palette.error),
-                        );
-                    }
+                    self.minecraft_dir = path.display().to_string();
                 }
             });
+        });
     }
 
     fn error_banner(&mut self, ui: &mut Ui, palette: Palette, title: &str, cause: &str, fix: &str) {
-        let compact = self.config.scale >= 1.4;
+        let compact = self.effective_zoom >= 1.4;
         Frame::new()
             .fill(palette.tint(palette.error, 0.05))
             .stroke(Stroke::new(1.0, palette.error))
@@ -1513,19 +2857,36 @@ impl BuilderApp {
             "terms.title",
             egui::Label::new(egui::RichText::new(self.language.text("terms.title")).heading()),
         );
-        self.audited_label(
-            ui,
-            "terms.subtitle",
-            egui::Label::new(
-                RichText::new(self.language.text("terms.subtitle")).color(palette.secondary),
-            )
-            .wrap(),
-        );
+        if let Some(timestamp) = self.terms_accepted_at {
+            ui.horizontal_wrapped(|ui| {
+                let note = self
+                    .language
+                    .text("terms.accepted_on")
+                    .replace("{time}", &terms_acceptance::display_time(timestamp));
+                ui.label(RichText::new(note).small().color(palette.secondary));
+                let revoke = ui.button(self.language.text("terms.revoke"));
+                keep_focused_visible(&mut self.content_has_focus, revoke.clone());
+                if revoke.clicked() {
+                    self.revoke_terms_acceptance();
+                }
+            });
+        } else {
+            self.audited_label(
+                ui,
+                "terms.subtitle",
+                egui::Label::new(
+                    RichText::new(self.language.text("terms.subtitle")).color(palette.secondary),
+                )
+                .wrap(),
+            );
+        }
+        if let Some(error) = self.terms_error {
+            ui.colored_label(palette.error, self.language.text(error));
+        }
         ui.add_space(8.0);
         let content = terms_text(self.language);
-        self.terms_hash = content.sha256();
         let output = ScrollArea::vertical()
-            .id_salt("terms-scroll")
+            .id_salt(("terms-scroll", self.language.code()))
             .auto_shrink([false, false])
             .scroll_bar_visibility(
                 egui::containers::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
@@ -1533,9 +2894,10 @@ impl BuilderApp {
             .show(ui, |ui| {
                 ui.add_space(8.0);
                 for paragraph in content.split("\n\n") {
-                    ui.label(RichText::new(paragraph).size(14.0));
+                    ui.label(RichText::new(paragraph).size(theme::snap(ui, 14.0)));
                     ui.add_space(12.0);
                 }
+                theme::scroll_end_padding(ui);
             });
         let max_scroll = (output.content_size.y - output.inner_rect.height()).max(0.0);
         if output.state.clamped_offset().y >= max_scroll - 2.0 || max_scroll <= 2.0 {
@@ -1543,37 +2905,48 @@ impl BuilderApp {
         }
     }
 
-    fn persist_terms_acceptance(&self) -> bool {
-        if !self.persist_acceptance {
-            return true;
+    fn reload_terms_acceptance(&mut self) {
+        self.terms_hash = terms_text(self.language).sha256();
+        let accepted_at = self.terms_record_path.as_deref().and_then(|path| {
+            terms_acceptance::load(path, &self.terms_hash, terms_acceptance::now())
+        });
+        self.restore_terms_acceptance(accepted_at);
+    }
+
+    fn restore_terms_acceptance(&mut self, accepted_at: Option<u64>) {
+        self.terms_accepted_at = accepted_at;
+        self.terms_checked = accepted_at.is_some();
+        self.terms_scrolled = self.terms_checked;
+        self.terms_error = None;
+    }
+
+    fn accept_terms(&mut self) {
+        let timestamp = terms_acceptance::now();
+        if let Some(path) = &self.terms_record_path {
+            if terms_acceptance::save(path, &self.terms_hash, timestamp).is_err() {
+                self.terms_error = Some("terms.save_failed");
+                return;
+            }
+            self.terms_accepted_at = Some(timestamp);
         }
-        #[derive(Serialize)]
-        struct Record<'a> {
-            terms_sha256: &'a str,
-            accepted_at_unix: u64,
-        }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or_default();
-        let record = Record {
-            terms_sha256: &self.terms_hash,
-            accepted_at_unix: now,
-        };
-        let path = work_dir().join("terms-acceptance.json");
-        if let Some(parent) = path.parent()
-            && fs::create_dir_all(parent).is_err()
+        self.terms_error = None;
+        self.terms_checked = true;
+    }
+
+    fn revoke_terms_acceptance(&mut self) {
+        if let Some(path) = &self.terms_record_path
+            && terms_acceptance::revoke(path).is_err()
         {
-            return false;
+            self.terms_error = Some("terms.revoke_failed");
+            return;
         }
-        fs::write(path, serde_json::to_vec_pretty(&record).unwrap_or_default()).is_ok()
+        self.restore_terms_acceptance(None);
     }
 
     fn render_config(&mut self, ui: &mut Ui, palette: Palette) {
         let viewport = ui.clip_rect();
         let content_width = ui.available_width().min(viewport.width()).max(0.0);
         let panel_inner_width = (content_width - 24.0).max(0.0);
-        let compact = content_width < 360.0;
         ui.set_width(content_width);
         ui.set_max_width(content_width);
         ui.horizontal_wrapped(|ui| {
@@ -1582,25 +2955,6 @@ impl BuilderApp {
                 "config.title",
                 egui::Label::new(egui::RichText::new(self.language.text("config.title")).heading()),
             );
-            if !compact {
-                ui.add_space(8.0);
-            }
-            Frame::new()
-                .fill(palette.tint(palette.info, 0.05))
-                .stroke(Stroke::new(1.0, palette.info))
-                .corner_radius(CornerRadius::same(6))
-                .inner_margin(egui::Margin::symmetric(9, 5))
-                .show(ui, |ui| {
-                    self.audited_label(
-                        ui,
-                        "config.not_applied_chip",
-                        egui::Label::new(
-                            RichText::new(self.language.text("config.not_applied_chip"))
-                                .color(palette.info),
-                        )
-                        .wrap(),
-                    );
-                });
         });
         let panel = Frame::new()
             .fill(palette.panel)
@@ -1650,7 +3004,14 @@ impl BuilderApp {
             .num_columns(columns)
             .spacing(Vec2::new(16.0, 10.0))
             .show(ui, |ui| {
-                let backend_label = ui.label(self.language.text("config.backend"));
+                let backend_label = config_field_label(
+                    ui,
+                    self.language,
+                    palette,
+                    cell_width,
+                    self.language.text("config.backend"),
+                    true,
+                );
                 if columns == 1 {
                     ui.end_row();
                 }
@@ -1677,19 +3038,28 @@ impl BuilderApp {
                 keep_focused_visible(&mut self.content_has_focus, backend);
                 ui.end_row();
 
-                let quality_label = ui.label(self.language.text("config.quality"));
+                let quality_label = config_field_label(
+                    ui,
+                    self.language,
+                    palette,
+                    cell_width,
+                    self.language.text("config.quality"),
+                    true,
+                );
                 if columns == 1 {
                     ui.end_row();
                 }
                 let quality = ComboBox::from_id_salt("config-quality")
                     .selected_text(self.language.text(
-                        ["config.low", "config.balanced", "config.high"][self.config.quality],
+                        ["config.low", "config.mid", "config.high", "config.ultra"]
+                            [self.config.quality.min(3)],
                     ))
                     .width((cell_width * 0.72).clamp(64.0, 240.0))
                     .show_ui(ui, |ui| {
-                        for (index, key) in ["config.low", "config.balanced", "config.high"]
-                            .iter()
-                            .enumerate()
+                        for (index, key) in
+                            ["config.low", "config.mid", "config.high", "config.ultra"]
+                                .iter()
+                                .enumerate()
                         {
                             ui.selectable_value(
                                 &mut self.config.quality,
@@ -1703,56 +3073,75 @@ impl BuilderApp {
                 keep_focused_visible(&mut self.content_has_focus, quality);
                 ui.end_row();
 
-                let distance_label = ui.label(self.language.text("config.distance"));
+                self.config.distance = self.config.distance.clamp(2, 32);
+                let distance_label = config_field_label(
+                    ui,
+                    self.language,
+                    palette,
+                    cell_width,
+                    self.language.text("config.distance"),
+                    true,
+                );
                 if columns == 1 {
                     ui.end_row();
                 }
-                ui.horizontal(|ui| {
-                    let value_width = cell_width.min(68.0);
-                    let slider_width =
-                        (cell_width - value_width - ui.spacing().item_spacing.x).max(0.0);
-                    let response = keep_focused_visible(
-                        &mut self.content_has_focus,
-                        ui.add_sized(
-                            [slider_width, 28.0],
-                            egui::Slider::new(&mut self.config.distance, 2..=32).show_value(false),
-                        ),
-                    );
-                    response.clone().labelled_by(distance_label.id);
-                    let track = response.rect.shrink2(Vec2::new(9.0, 0.0));
-                    let center_y = track.center().y;
-                    let fraction = (self.config.distance - 2) as f32 / 30.0;
-                    let thumb_x = egui::lerp(track.left()..=track.right(), fraction);
-                    let painter = ui.painter();
-                    painter.line_segment(
-                        [track.left_center(), track.right_center()],
-                        Stroke::new(4.0, palette.stroke),
-                    );
-                    painter.line_segment(
-                        [track.left_center(), egui::pos2(thumb_x, center_y)],
-                        Stroke::new(4.0, palette.accent),
-                    );
-                    if response.has_focus() {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        let value_width = cell_width.min(68.0);
+                        let slider_width =
+                            (cell_width - value_width - ui.spacing().item_spacing.x).max(0.0);
+                        let response = keep_focused_visible(
+                            &mut self.content_has_focus,
+                            ui.add_sized(
+                                [slider_width, 28.0],
+                                egui::Slider::new(&mut self.config.distance, 2..=32)
+                                    .show_value(false),
+                            ),
+                        );
+                        response.clone().labelled_by(distance_label.id);
+                        let track = response.rect.shrink2(Vec2::new(9.0, 0.0));
+                        let center_y = track.center().y;
+                        let fraction = (self.config.distance - 2) as f32 / 30.0;
+                        let thumb_x = egui::lerp(track.left()..=track.right(), fraction);
+                        let painter = ui.painter();
+                        painter.line_segment(
+                            [track.left_center(), track.right_center()],
+                            Stroke::new(4.0, palette.stroke),
+                        );
+                        painter.line_segment(
+                            [track.left_center(), egui::pos2(thumb_x, center_y)],
+                            Stroke::new(4.0, palette.accent),
+                        );
+                        if response.has_focus() {
+                            painter.circle_stroke(
+                                egui::pos2(thumb_x, center_y),
+                                11.0,
+                                Stroke::new(1.5, palette.accent),
+                            );
+                        }
+                        painter.circle_filled(egui::pos2(thumb_x, center_y), 7.0, palette.panel);
                         painter.circle_stroke(
                             egui::pos2(thumb_x, center_y),
-                            11.0,
-                            Stroke::new(1.5, palette.accent),
+                            7.0,
+                            Stroke::new(2.0, palette.accent),
                         );
-                    }
-                    painter.circle_filled(egui::pos2(thumb_x, center_y), 7.0, palette.panel);
-                    painter.circle_stroke(
-                        egui::pos2(thumb_x, center_y),
-                        7.0,
-                        Stroke::new(2.0, palette.accent),
-                    );
-                    ui.add_sized(
-                        [value_width, 28.0],
-                        egui::Label::new(format!(
-                            "{}{}",
-                            self.config.distance,
-                            self.language.text("config.chunks")
-                        ))
-                        .halign(Align::RIGHT),
+                        ui.add_sized(
+                            [value_width, 28.0],
+                            egui::Label::new(format!(
+                                "{}{}",
+                                self.config.distance,
+                                self.language.text("config.chunks")
+                            ))
+                            .halign(Align::RIGHT),
+                        );
+                    });
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(self.language.text("config.distance_hint"))
+                                .size(theme::snap(ui, 11.0))
+                                .color(palette.secondary),
+                        )
+                        .wrap(),
                     );
                 });
                 ui.end_row();
@@ -1768,7 +3157,21 @@ impl BuilderApp {
                 keep_focused_visible(&mut self.content_has_focus, reduce_motion);
                 ui.end_row();
             });
-        ui.add_space(12.0);
+        CollapsingHeader::new(self.language.text("config.advanced")).show(ui, |ui| {
+            ui.add_enabled_ui(self.tools_task.is_none(), |ui| {
+                let response = wrapped_checkbox(
+                    ui,
+                    &mut self.config.strict_kernel,
+                    self.language.text("config.strict_kernel"),
+                );
+                if response.response.changed() {
+                    self.start_doctor();
+                }
+                keep_focused_visible(&mut self.content_has_focus, response.response);
+            });
+            ui.label(self.language.text("config.strict_kernel_hint"));
+        });
+        ui.add_space(4.0);
         let custom = self.config_is_custom();
         let (icon, message, color) = if custom {
             (
@@ -1787,21 +3190,20 @@ impl BuilderApp {
             .fill(palette.tint(color, 0.05))
             .stroke(Stroke::new(1.0, color))
             .corner_radius(CornerRadius::same(6))
-            .inner_margin(egui::Margin::symmetric(10, 7))
+            .inner_margin(egui::Margin::symmetric(10, 5))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     icons::show(ui, icon, color, 16.0);
                     ui.label(RichText::new(message).color(color));
                 });
             });
-        ui.add_space(if self.config.scale >= 1.9 { 0.0 } else { 8.0 });
         let caption = self.language.text("config.cli_limit").to_owned();
         let response = self.audited_label(
             ui,
             "config.cli_limit",
             egui::Label::new(
                 RichText::new(caption.as_str())
-                    .size(12.0)
+                    .size(theme::snap(ui, 12.0))
                     .color(palette.secondary),
             )
             .truncate(),
@@ -1823,7 +3225,14 @@ impl BuilderApp {
             .num_columns(columns)
             .spacing(Vec2::new(16.0, 10.0))
             .show(ui, |ui| {
-                ui.label(self.language.text("config.builtin_pack"));
+                config_field_label(
+                    ui,
+                    self.language,
+                    palette,
+                    cell_width,
+                    self.language.text("config.builtin_pack"),
+                    false,
+                );
                 if columns == 1 {
                     ui.end_row();
                 }
@@ -1849,7 +3258,14 @@ impl BuilderApp {
                 keep_focused_visible(&mut self.content_has_focus, license.inner.response);
                 ui.end_row();
 
-                ui.label(self.language.text("config.resource_path"));
+                config_field_label(
+                    ui,
+                    self.language,
+                    palette,
+                    cell_width,
+                    self.language.text("config.resource_path"),
+                    true,
+                );
                 if columns == 1 {
                     ui.end_row();
                 }
@@ -1891,7 +3307,7 @@ impl BuilderApp {
                 );
                 keep_focused_visible(&mut self.content_has_focus, license.response);
                 let remove_response = ui
-                    .small_button("")
+                    .add_sized([26.0, 26.0], Button::new(""))
                     .on_hover_text(self.language.text("config.remove"));
                 keep_focused_visible(&mut self.content_has_focus, remove_response.clone());
                 remove_response.widget_info(|| {
@@ -1932,20 +3348,20 @@ impl BuilderApp {
             .num_columns(columns)
             .spacing(Vec2::new(16.0, 8.0))
             .show(ui, |ui| {
-                let loader_label = ui.label(self.language.text("config.loader"));
+                let loader_label = config_field_label(
+                    ui,
+                    self.language,
+                    palette,
+                    cell_width,
+                    self.language.text("config.loader"),
+                    false,
+                );
                 if columns == 1 {
                     ui.end_row();
                 }
-                let compact = cell_width < 280.0;
                 ui.horizontal(|ui| {
-                    let badge_width = if self.config.loader == 0 || compact {
-                        0.0
-                    } else {
-                        118.0
-                    };
-                    let combo_width = ((cell_width - badge_width - ui.spacing().item_spacing.x)
-                        * 0.6)
-                        .clamp(64.0, 180.0);
+                    let combo_width =
+                        ((cell_width - ui.spacing().item_spacing.x) * 0.6).clamp(64.0, 180.0);
                     let loader = ComboBox::from_id_salt("config-loader")
                         .selected_text(self.language.text(
                             [
@@ -1977,28 +3393,27 @@ impl BuilderApp {
                         .labelled_by(loader_label.id);
                     keep_focused_visible(&mut self.content_has_focus, loader);
                 });
-                if columns == 1 && self.config.loader != 0 {
-                    ui.end_row();
-                }
-                if self.config.loader != 0 {
-                    Frame::new()
-                        .fill(palette.tint(palette.warning, 0.05))
-                        .stroke(Stroke::new(1.0, palette.warning))
-                        .corner_radius(CornerRadius::same(10))
-                        .inner_margin(egui::Margin::symmetric(8, 2))
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                icons::show(ui, Icon::Warning, palette.warning, 14.0);
-                                ui.label(
-                                    RichText::new(self.language.text("config.experimental"))
-                                        .size(12.0)
-                                        .color(palette.warning),
-                                );
-                            });
-                        });
-                }
                 ui.end_row();
             });
+        // Keep the warning out of the two-column grid. A third auto-sized cell
+        // made the grid's wrapped width (and therefore its repaint) unstable.
+        if self.config.loader != 0 {
+            Frame::new()
+                .fill(palette.tint(palette.warning, 0.05))
+                .stroke(Stroke::new(1.0, palette.warning))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(egui::Margin::symmetric(8, 2))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        icons::show(ui, Icon::Warning, palette.warning, 14.0);
+                        ui.label(
+                            RichText::new(self.language.text("config.experimental"))
+                                .size(theme::snap(ui, 12.0))
+                                .color(palette.warning),
+                        );
+                    });
+                });
+        }
         ui.add_space(4.0);
         ui.separator();
         ui.add_space(4.0);
@@ -2021,7 +3436,14 @@ impl BuilderApp {
                 keep_focused_visible(&mut self.content_has_focus, license.inner.response);
                 ui.end_row();
 
-                ui.label(self.language.text("config.mod_path"));
+                config_field_label(
+                    ui,
+                    self.language,
+                    palette,
+                    cell_width,
+                    self.language.text("config.mod_path"),
+                    false,
+                );
                 if columns == 1 {
                     ui.end_row();
                 }
@@ -2109,7 +3531,9 @@ impl BuilderApp {
                         ui.add_sized(
                             [width, 22.0],
                             egui::Label::new(
-                                RichText::new(self.language.text(key)).strong().size(12.0),
+                                RichText::new(self.language.text(key))
+                                    .strong()
+                                    .size(theme::snap(ui, 12.0)),
                             )
                             .truncate(),
                         );
@@ -2141,7 +3565,7 @@ impl BuilderApp {
                             .show(ui, |ui| {
                                 ui.label(
                                     RichText::new(self.language.text(grade))
-                                        .size(12.0)
+                                        .size(theme::snap(ui, 12.0))
                                         .color(color),
                                 );
                             });
@@ -2153,7 +3577,7 @@ impl BuilderApp {
                             self.mod_settings_open = Some(index);
                         }
                         let remove_response = ui
-                            .small_button("")
+                            .add_sized([26.0, 26.0], Button::new(""))
                             .on_hover_text(self.language.text("config.remove"));
                         keep_focused_visible(&mut self.content_has_focus, remove_response.clone());
                         remove_response.widget_info(|| {
@@ -2201,7 +3625,7 @@ impl BuilderApp {
                                     [(grade_width - 14.0).max(1.0), 20.0],
                                     egui::Label::new(
                                         RichText::new(self.language.text(grade))
-                                            .size(12.0)
+                                            .size(theme::snap(ui, 12.0))
                                             .color(color),
                                     )
                                     .truncate(),
@@ -2255,14 +3679,26 @@ impl BuilderApp {
             "build.title",
             egui::Label::new(egui::RichText::new(self.language.text("build.title")).heading()),
         );
-        self.audited_label(
-            ui,
-            "build.subtitle",
-            egui::Label::new(
-                RichText::new(self.language.text("build.subtitle")).color(palette.secondary),
-            )
-            .wrap(),
-        );
+        if !matches!(self.build_state, BuildState::Failed | BuildState::Cancelled)
+            || ui.ctx().content_rect().height() >= 300.0
+        {
+            self.audited_label(
+                ui,
+                "build.subtitle",
+                egui::Label::new(
+                    RichText::new(self.language.text("build.subtitle")).color(palette.secondary),
+                )
+                .wrap(),
+            );
+        }
+        if self.build_state == BuildState::Idle
+            && let Some(key) = self.build_gate()
+        {
+            ui.add(
+                egui::Label::new(RichText::new(self.language.text(key)).color(palette.warning))
+                    .wrap(),
+            );
+        }
         if self.build_state == BuildState::Failed {
             let title = self.language.text("build.failed").to_owned();
             let cause = self
@@ -2283,7 +3719,7 @@ impl BuilderApp {
             ui.add_space(4.0);
         }
         if self.output_dir.is_empty() {
-            self.output_dir = default_output_dir();
+            self.output_dir = self.work_dir.join("builds").to_string_lossy().into_owned();
         }
         let content_width = ui.available_width().min(ui.clip_rect().width());
         if content_width < 440.0 {
@@ -2414,16 +3850,29 @@ impl BuilderApp {
                                 display_progress_message(self.language, event)
                             ))
                             .monospace()
-                            .size(12.0),
+                            .size(theme::snap(ui, 12.0)),
                         );
                     }
                     for line in &self.build_logs {
-                        ui.label(RichText::new(line).monospace().size(11.0));
+                        ui.label(RichText::new(line).monospace().size(theme::snap(ui, 11.0)));
                     }
                     let copy = ui.button(self.language.text("build.copy_log"));
                     keep_focused_visible(&mut self.content_has_focus, copy.clone());
                     if copy.clicked() {
-                        copy_diagnostics(&self.diagnostics());
+                        copy_diagnostics(ui.ctx(), &self.diagnostics());
+                    }
+                    if ui
+                        .button(self.language.text("build.save_diagnostics"))
+                        .clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .set_file_name("gaius-diagnostics.txt")
+                            .save_file()
+                        && let Err(error) = write_diagnostics(&path, &self.diagnostics())
+                    {
+                        self.build_logs.push_back(format!(
+                            "{}: {error}",
+                            self.language.text("build.save_diagnostics_failed")
+                        ));
                     }
                 });
             keep_focused_visible(&mut self.content_has_focus, log.header_response);
@@ -2455,7 +3904,10 @@ impl BuilderApp {
                     }),
                 ),
             );
-            self.render_version_results(ui, palette);
+            let row_width = ui.available_width().min(ui.clip_rect().width()).min(588.0);
+            let label_width = (row_width * 0.25).clamp(72.0, 148.0).min(row_width);
+            let value_width = (row_width - label_width - ui.spacing().item_spacing.x).max(0.0);
+            self.render_version_results(ui, palette, row_width, label_width, value_width);
             self.render_badge(ui, palette, self.repro_status);
             self.render_hash_details(ui);
             self.audited_label(
@@ -2504,7 +3956,7 @@ impl BuilderApp {
                                 egui::Label::new(
                                     RichText::new(self.language.text("complete.success"))
                                         .strong()
-                                        .size(14.0),
+                                        .size(theme::snap(ui, 14.0)),
                                 ),
                             );
                             self.audited_label(
@@ -2512,7 +3964,7 @@ impl BuilderApp {
                                 "complete.title",
                                 egui::Label::new(
                                     RichText::new(self.language.text("complete.title"))
-                                        .size(10.0)
+                                        .size(theme::snap(ui, 10.0))
                                         .color(palette.secondary),
                                 ),
                             );
@@ -2537,10 +3989,74 @@ impl BuilderApp {
                     });
                 });
                 let summary_width = ui.available_width().min(588.0);
-                let label_width = (summary_width * 0.25).clamp(112.0, 148.0);
+                let label_width = (summary_width * 0.25).clamp(72.0, 148.0).min(summary_width);
                 let summary_row_height = if summary_width < 360.0 { 18.0 } else { 24.0 };
                 let column_spacing = ui.spacing().item_spacing.x;
                 let value_width = (summary_width - label_width - column_spacing).max(0.0);
+                let (location_row_rect, _) =
+                    ui.allocate_exact_size(Vec2::new(summary_width, 28.0), egui::Sense::hover());
+                let location_label_rect =
+                    Rect::from_min_size(location_row_rect.min, Vec2::new(label_width, 28.0));
+                let location_value_rect = Rect::from_min_size(
+                    egui::pos2(
+                        location_row_rect.min.x + label_width + column_spacing,
+                        location_row_rect.min.y,
+                    ),
+                    Vec2::new(value_width, 28.0),
+                );
+                let location_label = scope_at_rect(ui, location_label_rect, |ui| {
+                    ui.add(
+                        egui::Label::new(self.language.text("complete.location"))
+                            .halign(Align::Min),
+                    )
+                });
+                let copy_width = 62.0f32.min(value_width);
+                let path_width = (value_width - copy_width - column_spacing).max(0.0);
+                let path_font = TextStyle::Body.resolve(ui.style());
+                let display = fit_middle_ellipsis(
+                    ui,
+                    &self.output_dir,
+                    path_width,
+                    path_font.clone(),
+                    palette.text,
+                );
+                let path_cell_width = ui.fonts_mut(|fonts| {
+                    fonts
+                        .layout_no_wrap(display.clone(), path_font, palette.text)
+                        .size()
+                        .x
+                });
+                let location_value = scope_at_rect(ui, location_value_rect, |ui| {
+                    ui.spacing_mut().button_padding.y = 4.0;
+                    ui.horizontal(|ui| {
+                        let path = ui
+                            .add_sized(
+                                [path_cell_width, 28.0],
+                                egui::Label::new(display)
+                                    .halign(Align::Min)
+                                    .selectable(true),
+                            )
+                            .on_hover_text(self.output_dir.as_str());
+                        let copy = keep_focused_visible(
+                            &mut self.content_has_focus,
+                            ui.add_sized(
+                                [copy_width, 26.0],
+                                Button::new(self.language.text("complete.copy")),
+                            ),
+                        );
+                        if copy.clicked() {
+                            ui.ctx().copy_text(self.output_dir.clone());
+                        }
+                        (path, copy)
+                    })
+                    .inner
+                });
+                let (location_path, location_copy) = location_value.inner;
+                let location_label = location_label.inner;
+                self.layout_rects.completion_labels[1] = Some(location_label.rect);
+                self.layout_rects.completion_values[1] = Some(location_path.rect);
+                self.layout_rects.completion_copy = Some(location_copy.rect);
+
                 let (label, value) = add_completion_row(
                     ui,
                     summary_width,
@@ -2558,124 +4074,6 @@ impl BuilderApp {
                 );
                 self.layout_rects.completion_labels[0] = Some(label.rect);
                 self.layout_rects.completion_values[0] = Some(value.rect);
-
-                let (location_label, location_path, location_copy) = if summary_width < 360.0 {
-                    let compact_label_width = 72.0f32.min(summary_width * 0.38);
-                    let compact_value_width =
-                        (summary_width - compact_label_width - ui.spacing().item_spacing.x)
-                            .max(0.0);
-                    let location = ui.allocate_ui_with_layout(
-                        Vec2::new(summary_width, 28.0),
-                        Layout::left_to_right(Align::Center),
-                        |ui| {
-                            let label = add_left_cell(
-                                ui,
-                                Vec2::new(compact_label_width, 28.0),
-                                egui::Label::new(self.language.text("complete.location"))
-                                    .halign(Align::Min),
-                            );
-                            let copy_width = 62.0f32.min(compact_value_width);
-                            let path_width =
-                                (compact_value_width - copy_width - ui.spacing().item_spacing.x)
-                                    .max(0.0);
-                            let path_font = TextStyle::Body.resolve(ui.style());
-                            let display = fit_middle_ellipsis(
-                                ui,
-                                &self.output_dir,
-                                path_width,
-                                path_font.clone(),
-                                palette.text,
-                            );
-                            let path_cell_width = ui.fonts_mut(|fonts| {
-                                fonts
-                                    .layout_no_wrap(display.clone(), path_font, palette.text)
-                                    .size()
-                                    .x
-                            });
-                            let value = ui.horizontal(|ui| {
-                                let path = add_left_cell(
-                                    ui,
-                                    Vec2::new(path_cell_width, 28.0),
-                                    egui::Label::new(display)
-                                        .halign(Align::Min)
-                                        .selectable(true),
-                                );
-                                let path_rect = path.rect;
-                                path.on_hover_text(self.output_dir.as_str());
-                                let copy = keep_focused_visible(
-                                    &mut self.content_has_focus,
-                                    ui.add_sized(
-                                        [copy_width, 26.0],
-                                        Button::new(self.language.text("complete.copy")),
-                                    ),
-                                );
-                                if copy.clicked() {
-                                    ui.ctx().copy_text(self.output_dir.clone());
-                                }
-                                (path_rect, copy.rect)
-                            });
-                            (label.rect, value.inner.0, value.inner.1)
-                        },
-                    );
-                    location.inner
-                } else {
-                    let location = ui.allocate_ui_with_layout(
-                        Vec2::new(summary_width, 28.0),
-                        Layout::left_to_right(Align::Center),
-                        |ui| {
-                            let label = add_left_cell(
-                                ui,
-                                Vec2::new(label_width, 28.0),
-                                egui::Label::new(self.language.text("complete.location"))
-                                    .halign(Align::Min),
-                            );
-                            let copy_width = 62.0f32.min(value_width);
-                            let path_width =
-                                (value_width - copy_width - ui.spacing().item_spacing.x).max(0.0);
-                            let path_font = TextStyle::Body.resolve(ui.style());
-                            let display = fit_middle_ellipsis(
-                                ui,
-                                &self.output_dir,
-                                path_width,
-                                path_font.clone(),
-                                palette.text,
-                            );
-                            let path_cell_width = ui.fonts_mut(|fonts| {
-                                fonts
-                                    .layout_no_wrap(display.clone(), path_font, palette.text)
-                                    .size()
-                                    .x
-                            });
-                            let value = ui.horizontal(|ui| {
-                                let path = add_left_cell(
-                                    ui,
-                                    Vec2::new(path_cell_width, 28.0),
-                                    egui::Label::new(display)
-                                        .halign(Align::Min)
-                                        .selectable(true),
-                                );
-                                let path_rect = path.rect;
-                                path.on_hover_text(self.output_dir.as_str());
-                                let copy = keep_focused_visible(
-                                    &mut self.content_has_focus,
-                                    ui.add_sized(
-                                        [copy_width, 26.0],
-                                        Button::new(self.language.text("complete.copy")),
-                                    ),
-                                );
-                                if copy.clicked() {
-                                    ui.ctx().copy_text(self.output_dir.clone());
-                                }
-                                (path_rect, copy.rect)
-                            });
-                            (label.rect, value.inner.0, value.inner.1)
-                        },
-                    );
-                    location.inner
-                };
-                self.layout_rects.completion_labels[1] = Some(location_label);
-                self.layout_rects.completion_values[1] = Some(location_path);
-                self.layout_rects.completion_copy = Some(location_copy);
 
                 let (label, value) = add_completion_row(
                     ui,
@@ -2702,7 +4100,7 @@ impl BuilderApp {
                 );
                 self.layout_rects.completion_labels[3] = Some(label.rect);
                 self.layout_rects.completion_values[3] = Some(value.rect);
-                self.render_version_results(ui, palette);
+                self.render_version_results(ui, palette, summary_width, label_width, value_width);
                 self.render_badge(ui, palette, self.repro_status);
                 let explanation_key = match self.repro_status {
                     ReproStatus::Identical => "repro.explain_identical",
@@ -2717,7 +4115,9 @@ impl BuilderApp {
                     .wrap(),
                 );
                 self.render_hash_details(ui);
-                ui.add(
+                self.audited_label(
+                    ui,
+                    "complete.options_not_applied",
                     egui::Label::new(
                         RichText::new(self.language.text("complete.options_not_applied"))
                             .color(palette.secondary),
@@ -2767,59 +4167,116 @@ impl BuilderApp {
             });
     }
 
-    fn render_version_results(&mut self, ui: &mut Ui, palette: Palette) {
+    fn render_version_results(
+        &mut self,
+        ui: &mut Ui,
+        palette: Palette,
+        row_width: f32,
+        label_width: f32,
+        value_width: f32,
+    ) {
         if self.build_results.is_empty() {
             return;
         }
         ui.add_space(8.0);
-        let available_width = ui.available_width().min(ui.clip_rect().width());
         let heading = add_left_cell(
             ui,
-            Vec2::new(available_width, 22.0),
+            Vec2::new(row_width, 22.0),
             egui::Label::new(RichText::new(self.language.text("complete.artifacts")).strong())
                 .halign(Align::Min),
         );
         self.layout_rects.completion_artifacts = Some(heading.rect);
-        for result in &self.build_results {
+        for (index, result) in self.build_results.iter().enumerate() {
             let (status, color) = if result.exit_code != 0 {
-                (self.language.text("build.failed"), palette.error)
+                (self.language.text("complete.status.failed"), palette.error)
             } else {
-                (self.language.text("complete.success"), palette.accent)
+                (
+                    self.language.text("complete.status.success"),
+                    palette.accent,
+                )
             };
-            let status_text = format!("{} · {status}", result.version);
             let path = result.output_dir.display().to_string();
-            if available_width < 720.0 {
-                ui.vertical(|ui| {
-                    ui.add_sized(
-                        [available_width, 22.0],
-                        egui::Label::new(RichText::new(status_text).color(color)).truncate(),
-                    );
-                    ui.add_sized(
-                        [available_width, 22.0],
-                        egui::Label::new(path.as_str()).truncate(),
-                    )
-                    .on_hover_text(path.as_str());
-                    let open = ui.button(self.language.text("complete.open_folder"));
-                    keep_focused_visible(&mut self.content_has_focus, open.clone());
-                    if result.exit_code == 0 && open.clicked() {
-                        open_path(&result.output_dir);
-                    }
-                });
-            } else {
+            let row_height = 28.0;
+            let (row_rect, _) =
+                ui.allocate_exact_size(Vec2::new(row_width, row_height), egui::Sense::hover());
+            let column_gap = ui.spacing().item_spacing.x;
+            let label_rect = Rect::from_min_size(row_rect.min, Vec2::new(label_width, row_height));
+            let value_rect = Rect::from_min_size(
+                egui::pos2(row_rect.min.x + label_width + column_gap, row_rect.min.y),
+                Vec2::new(value_width, row_height),
+            );
+            scope_at_rect(ui, label_rect, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(status_text).color(color));
-                    let path_width = (available_width - 236.0).clamp(80.0, 420.0);
-                    ui.add_sized(
-                        [path_width, 22.0],
-                        egui::Label::new(path.as_str()).truncate(),
-                    )
-                    .on_hover_text(path.as_str());
-                    let open = ui.button(self.language.text("complete.open_folder"));
-                    keep_focused_visible(&mut self.content_has_focus, open.clone());
-                    if result.exit_code == 0 && open.clicked() {
-                        open_path(&result.output_dir);
-                    }
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&result.version)
+                                .strong()
+                                .size(theme::snap(ui, 13.0)),
+                        )
+                        .truncate(),
+                    );
+                    Frame::new()
+                        .fill(palette.tint(color, 0.06))
+                        .stroke(Stroke::new(1.0, color))
+                        .corner_radius(4)
+                        .inner_margin(egui::Margin::symmetric(4, 2))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(status)
+                                    .strong()
+                                    .size(theme::snap(ui, 10.0))
+                                    .color(color),
+                            );
+                        });
                 });
+            });
+            let button_text = self.language.text("complete.open_folder.short");
+            let button_font = TextStyle::Button.resolve(ui.style());
+            let button_text_width = ui.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(button_text.to_owned(), button_font, palette.text)
+                    .size()
+                    .x
+            });
+            let column_gap = ui.spacing().item_spacing.x;
+            let button_width =
+                (button_text_width + ui.spacing().button_padding.x * 2.0 + 2.0).min(value_width);
+            let path_width = (value_width - button_width - column_gap).max(0.0);
+            let path_font = TextStyle::Body.resolve(ui.style());
+            let display = fit_middle_ellipsis(ui, &path, path_width, path_font, palette.text);
+            let path_rect = Rect::from_min_size(value_rect.min, Vec2::new(path_width, row_height));
+            scope_at_rect(ui, path_rect, |ui| {
+                ui.add(egui::Label::new(display).halign(Align::Min).truncate())
+                    .on_hover_text(path.as_str())
+            });
+            let open_rect = Rect::from_min_size(
+                egui::pos2(path_rect.right() + column_gap, value_rect.min.y + 1.0),
+                Vec2::new(button_width, row_height - 2.0),
+            );
+            let open = ui
+                .scope(|ui| {
+                    ui.spacing_mut().button_padding.y = 4.0;
+                    ui.put(open_rect, Button::new(button_text))
+                })
+                .inner
+                .on_hover_text(self.language.text("complete.open_folder"));
+            keep_focused_visible(&mut self.content_has_focus, open.clone());
+            if result.exit_code == 0 && open.clicked() {
+                open_path(&result.output_dir);
+            }
+            if let Some(rect) = self.layout_rects.completion_artifact_labels.get_mut(index) {
+                *rect = Some(label_rect);
+            }
+            if let Some(rect) = self.layout_rects.completion_artifact_paths.get_mut(index) {
+                *rect = Some(path_rect);
+            }
+            if let Some(rect) = self
+                .layout_rects
+                .completion_artifact_open_buttons
+                .get_mut(index)
+            {
+                *rect = Some(open.rect);
             }
         }
     }
@@ -2879,6 +4336,11 @@ impl BuilderApp {
     }
 
     fn start_build(&mut self) {
+        if !self.tools_ready_for_selection() {
+            self.build_state = BuildState::Failed;
+            self.build_error = Some(self.language.text("doctor.tools.blocked").to_owned());
+            return;
+        }
         if self.selected_versions.is_empty() {
             self.build_state = BuildState::Failed;
             self.build_error = Some(self.language.text("build.select_version").to_owned());
@@ -2901,23 +4363,6 @@ impl BuilderApp {
             self.build_error = Some(self.language.text("build.mapping_missing").to_owned());
             return;
         }
-        if self
-            .selected_versions
-            .iter()
-            .any(|version| version == "26.3")
-        {
-            let toolchain = self.shader_toolchain_path.trim();
-            if toolchain.is_empty() {
-                self.build_state = BuildState::Failed;
-                self.build_error = Some(self.language.text("build.toolchain_required").to_owned());
-                return;
-            }
-            if validate_shader_toolchain(Path::new(toolchain)).is_err() {
-                self.build_state = BuildState::Failed;
-                self.build_error = Some(self.language.text("build.toolchain_invalid").to_owned());
-                return;
-            }
-        }
         let minecraft_dir = self.minecraft_dir.trim();
         if !minecraft_dir.is_empty() && !Path::new(minecraft_dir).is_dir() {
             self.build_state = BuildState::Failed;
@@ -2934,8 +4379,13 @@ impl BuilderApp {
             self.build_error = Some(self.language.text("build.resource_pack_missing").to_owned());
             return;
         }
+        if !self.verification_passed() {
+            self.build_state = BuildState::Failed;
+            self.build_error = Some(self.language.text("verify.blocked").to_owned());
+            return;
+        }
         if self.output_dir.is_empty() {
-            self.output_dir = default_output_dir();
+            self.output_dir = self.work_dir.join("builds").to_string_lossy().into_owned();
         }
         if let Err(error) = self.write_build_options() {
             self.build_state = BuildState::Failed;
@@ -2959,23 +4409,22 @@ impl BuilderApp {
             .filter(|path| !path.exists())
             .collect();
         let control = ProcessControl::default();
-        let settings = BuildSettings {
-            quality: Some(["low", "mid", "high"][self.config.quality.min(2)].to_owned()),
-            render_distance: Some(self.config.distance),
-            backend: Some(["webgpu", "webgl2", "auto"][self.config.backend.min(2)].to_owned()),
-            resource_packs: self
-                .config
+        let mut settings = BuildSettings::from_ui_indices(
+            self.config.quality,
+            self.config.distance,
+            self.config.backend,
+            self.config
                 .resource_paths
                 .iter()
                 .map(|pack| PathBuf::from(&pack.path))
                 .collect(),
-        };
+        );
+        settings.strict_kernel = self.config.strict_kernel;
         let task = PatcherClient.start_build(
             self.selected_versions.clone(),
             output,
             (!mappings_path.is_empty()).then(|| PathBuf::from(mappings_path)),
-            (!self.shader_toolchain_path.trim().is_empty())
-                .then(|| PathBuf::from(self.shader_toolchain_path.trim())),
+            self.tool_path_settings.paths(),
             (!minecraft_dir.is_empty()).then(|| PathBuf::from(minecraft_dir)),
             settings,
             control.clone(),
@@ -2988,14 +4437,8 @@ impl BuilderApp {
         self.config.backend != 0
             || self.config.quality != 1
             || self.config.distance != 12
-            || self.config.builtin_pack
-            || self.config.builtin_license
-            || !self.config.resource_path.trim().is_empty()
             || !self.config.resource_paths.is_empty()
-            || self.config.loader != 0
-            || self.config.loader_license
-            || !self.config.mod_path.trim().is_empty()
-            || !self.config.mods.is_empty()
+            || self.config.strict_kernel
     }
 
     fn write_build_options(&self) -> Result<(), String> {
@@ -3003,11 +4446,12 @@ impl BuilderApp {
         struct BuildOptions<'a> {
             schema: &'static str,
             versions: &'a [String],
-            applied_to_build: [&'static str; 8],
+            applied_to_build: [&'static str; 10],
             not_applied_to_build: [&'static str; 3],
             graphics_backend: &'static str,
             quality: &'static str,
             view_distance_chunks: u32,
+            strict_kernel: bool,
             built_in_pack_enabled: bool,
             built_in_pack_license_confirmed: bool,
             local_pack_path: &'a str,
@@ -3017,8 +4461,8 @@ impl BuilderApp {
             local_mod_path: &'a str,
             mods: &'a [ModRow],
         }
-        let backend = ["webgpu", "webgl2", "auto"][self.config.backend.min(2)];
-        let quality = ["low", "mid", "high"][self.config.quality.min(2)];
+        let backend = BuildSettings::backend_from_ui_index(self.config.backend);
+        let quality = BuildSettings::quality_from_ui_index(self.config.quality);
         let loader = ["off", "fabric", "neoforge", "forge"][self.config.loader.min(3)];
         let record = BuildOptions {
             schema: "gaius-builder-options-v1",
@@ -3027,16 +4471,19 @@ impl BuilderApp {
                 "output_dir",
                 "mappings_path",
                 "shader_toolchain_path",
+                "toolchain_dir",
                 "minecraft_dir",
                 "graphics_backend",
                 "quality",
                 "view_distance",
                 "local_packs",
+                "strict_kernel",
             ],
             not_applied_to_build: ["built_in_pack", "loader", "mods"],
             graphics_backend: backend,
             quality,
-            view_distance_chunks: self.config.distance,
+            view_distance_chunks: BuildSettings::render_distance_from_ui(self.config.distance),
+            strict_kernel: self.config.strict_kernel,
             built_in_pack_enabled: self.config.builtin_pack,
             built_in_pack_license_confirmed: self.config.builtin_license,
             local_pack_path: &self.config.resource_path,
@@ -3068,39 +4515,90 @@ impl BuilderApp {
     }
 
     fn diagnostics(&self) -> String {
-        let logs = self.build_logs.iter().cloned().collect::<Vec<_>>().join("");
+        let logs = self
+            .build_logs
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
         let value = format!(
-            "Gaius Builder\nPage: {}\nState: {:?}\nOutput: {}\nError: {}\nLogs:\n{}",
+            "Gaius Builder\nPage: {}\nState: {:?}\nOutput: {}\n{}\n{}Error: {}\nLogs:\n{}",
             self.page,
             self.build_state,
             self.output_dir,
+            self.tool_paths_diagnostics(),
+            self.display_diagnostics(),
             self.build_error.as_deref().unwrap_or("none"),
             logs
         );
         sanitize_user_paths(&value)
     }
 
+    fn tool_paths_diagnostics(&self) -> String {
+        format!(
+            "--toolchain-dir: {}\n--shader-toolchain: {}",
+            self.tool_path_settings.toolchain_dir.trim(),
+            self.tool_path_settings.shader_toolchain.trim(),
+        )
+    }
+
     fn doctor_diagnostics(&self) -> String {
         let report = self.doctor_report.as_ref();
+        let tools = report
+            .map(|report| {
+                report
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        format!(
+                            "{} [{}]: {} ({}) {}",
+                            tool.display_name,
+                            tool.required_for.join(", "),
+                            tool.state,
+                            tool.destination_path,
+                            tool.hint
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
         let value = format!(
-            "Gaius Builder\nPage: 2\nError: {}\nOutput:\n{}\n{}",
-            self.doctor_error.as_deref().unwrap_or("none"),
+            "Gaius Builder\nPage: 2\n{}\n{}Error: {}\nOutput:\n{}\n{}\nBuild tools:\n{}",
+            self.tool_paths_diagnostics(),
+            self.display_diagnostics(),
+            self.tools_error
+                .as_deref()
+                .or(self.doctor_error.as_deref())
+                .unwrap_or("none"),
             report
                 .map(|item| item.raw_output.as_str())
                 .unwrap_or_default(),
             report.map(|item| item.stderr.as_str()).unwrap_or_default(),
+            tools,
         );
         sanitize_user_paths(&value)
     }
 
-    fn action_row_height(&self) -> f32 {
-        let scale = self.config.scale.max(1.0);
+    fn action_row_height(&self, ui: &Ui, width: f32) -> f32 {
+        if self.page == 3 {
+            let mut job = egui::text::LayoutJob::simple(
+                self.language.text("terms.accept").to_owned(),
+                TextStyle::Body.resolve(ui.style()),
+                ui.visuals().text_color(),
+                (width - 24.0 - ui.spacing().item_spacing.x).max(1.0),
+            );
+            job.sections[0].format.line_height = Some(theme::snap(
+                ui,
+                ui.text_style_height(&TextStyle::Body) * 1.05,
+            ));
+            let label_height = ui.fonts_mut(|fonts| fonts.layout_job(job).size().y);
+            return label_height.max(24.0) + 40.0;
+        }
+        let scale = self.effective_zoom.max(1.0);
         let base = match self.page {
+            2 if self.show_official_check => 56.0,
             2 => 72.0,
-            3 if scale >= 1.9 => 168.0,
-            3 if scale >= 1.4 => 150.0,
-            3 if scale >= 1.2 => 120.0,
-            3 => 88.0,
             5 if self.build_state == BuildState::Cancelled
                 && !self.cleanup_candidates.is_empty() =>
             {
@@ -3110,7 +4608,11 @@ impl BuilderApp {
             6 => 72.0,
             _ => 0.0,
         };
-        base / scale
+        if base > 0.0 {
+            (base / scale).max(49.0)
+        } else {
+            0.0
+        }
     }
 
     fn render_page_actions(&mut self, ui: &mut Ui, palette: Palette) {
@@ -3130,7 +4632,16 @@ impl BuilderApp {
         }
         ui.horizontal_wrapped(|ui| match self.page {
             2 => {
-                if self.doctor_receiver.is_some() {
+                if self.show_official_check {
+                    let recheck = ui.button(self.language.text("verify.recheck"));
+                    self.record_action(0, &recheck);
+                    if recheck.clicked() {
+                        if !self.tools_ready_for_selection() {
+                            self.start_doctor();
+                        }
+                        self.start_verification();
+                    }
+                } else if self.doctor_receiver.is_some() {
                     let cancel = ui.button(self.language.text("doctor.cancel"));
                     self.record_action(0, &cancel);
                     if cancel.clicked() {
@@ -3151,9 +4662,11 @@ impl BuilderApp {
                     self.record_action(0, &retry);
                     if retry.clicked() {
                         self.start_doctor();
+                        self.start_verification();
                     }
                     let failed = self.doctor_error.is_some()
                         || self.doctor_cancelled
+                        || (self.doctor_report.is_some() && !self.tools_ready_for_selection())
                         || self.doctor_report.as_ref().is_some_and(has_hash_mismatch);
                     if failed {
                         let copy = ui
@@ -3165,7 +4678,7 @@ impl BuilderApp {
                             .on_hover_text(self.language.text("build.copy_diagnostics"));
                         self.record_action(1, &copy);
                         if copy.clicked() {
-                            copy_diagnostics(&self.doctor_diagnostics());
+                            copy_diagnostics(ui.ctx(), &self.doctor_diagnostics());
                         }
                     }
                 }
@@ -3173,7 +4686,15 @@ impl BuilderApp {
             3 => {}
             5 => match self.build_state {
                 BuildState::Idle => {
-                    let start = ui.button(self.language.text("build.start"));
+                    let start = ui
+                        .add_enabled(
+                            self.build_gate().is_none(),
+                            Button::new(self.language.text("build.start"))
+                                .min_size(Vec2::new(40.0, 40.0)),
+                        )
+                        .on_disabled_hover_text(
+                            self.language.text(self.build_gate().unwrap_or("")),
+                        );
                     self.record_action(0, &start);
                     if start.clicked() {
                         self.start_build();
@@ -3203,7 +4724,7 @@ impl BuilderApp {
                         .on_hover_text(self.language.text("build.copy_diagnostics"));
                     self.record_action(0, &copy);
                     if copy.clicked() {
-                        copy_diagnostics(&self.diagnostics());
+                        copy_diagnostics(ui.ctx(), &self.diagnostics());
                     }
                     let open = ui
                         .button(self.language.text(if compact {
@@ -3232,11 +4753,14 @@ impl BuilderApp {
                         }
                     }
                     let retry = ui
-                        .button(self.language.text(if compact {
-                            "build.retry.short"
-                        } else {
-                            "build.retry"
-                        }))
+                        .add_enabled(
+                            self.build_gate().is_none(),
+                            Button::new(self.language.text(if compact {
+                                "build.retry.short"
+                            } else {
+                                "build.retry"
+                            })),
+                        )
                         .on_hover_text(self.language.text("build.retry"));
                     self.record_action(3, &retry);
                     if retry.clicked() {
@@ -3254,10 +4778,11 @@ impl BuilderApp {
                     let open_browser = ui.add(
                         Button::new(RichText::new(open_browser_label).color(palette.on_accent()))
                             .fill(palette.accent)
-                            .stroke(Stroke::new(1.0, palette.accent)),
+                            .min_size(Vec2::splat(40.0)),
                     );
                     let open_browser =
                         open_browser.on_hover_text(self.language.text("complete.open_browser"));
+                    theme::focus_ring(ui, &open_browser, palette.on_accent());
                     self.record_action(0, &open_browser);
                     if open_browser.clicked()
                         && let Some(version) = self.selected_versions.first()
@@ -3301,7 +4826,7 @@ impl BuilderApp {
                         .on_hover_text(self.language.text("build.copy_diagnostics"));
                     self.record_action(0, &copy);
                     if copy.clicked() {
-                        copy_diagnostics(&self.diagnostics());
+                        copy_diagnostics(ui.ctx(), &self.diagnostics());
                     }
                     let open = ui
                         .button(self.language.text(if compact {
@@ -3315,11 +4840,14 @@ impl BuilderApp {
                         open_path(Path::new(&self.output_dir));
                     }
                     let retry = ui
-                        .button(self.language.text(if compact {
-                            "build.retry.short"
-                        } else {
-                            "build.retry"
-                        }))
+                        .add_enabled(
+                            self.build_gate().is_none(),
+                            Button::new(self.language.text(if compact {
+                                "build.retry.short"
+                            } else {
+                                "build.retry"
+                            })),
+                        )
                         .on_hover_text(self.language.text("build.retry"));
                     self.record_action(2, &retry);
                     if retry.clicked() {
@@ -3328,7 +4856,15 @@ impl BuilderApp {
                     }
                 }
                 _ => {
-                    let start = ui.button(self.language.text("build.start"));
+                    let start = ui
+                        .add_enabled(
+                            self.build_gate().is_none(),
+                            Button::new(self.language.text("build.start"))
+                                .min_size(Vec2::new(40.0, 40.0)),
+                        )
+                        .on_disabled_hover_text(
+                            self.language.text(self.build_gate().unwrap_or("")),
+                        );
                     self.record_action(0, &start);
                     if start.clicked() {
                         self.page = 5;
@@ -3352,19 +4888,22 @@ impl BuilderApp {
         self.layout_rects.terms_checkbox_label = Some(checkbox.label);
         self.record_text_audit("terms.accept", checkbox.label, ui.clip_rect());
         self.record_action(0, &checkbox.response);
-        if checkbox.response.changed() && accepted {
-            self.terms_checked = self.persist_terms_acceptance();
-        } else if checkbox.response.changed() {
-            self.terms_checked = false;
+        if checkbox.response.changed() {
+            if accepted {
+                self.accept_terms();
+            } else {
+                self.revoke_terms_acceptance();
+            }
         }
 
-        ui.add_space(4.0);
-        let hash_height = if self.config.scale >= 1.9 { 20.0 } else { 24.0 };
+        ui.add_space(1.0);
+        let hash_height = 24.0;
         let row_width = ui.available_width().max(0.0);
         ui.allocate_ui_with_layout(
             Vec2::new(row_width, hash_height),
             Layout::left_to_right(Align::Center),
             |ui| {
+                ui.spacing_mut().button_padding.y = 3.0;
                 let copy_width = 32.0;
                 let hash_width =
                     (ui.available_width() - copy_width - ui.spacing().item_spacing.x).max(0.0);
@@ -3373,7 +4912,7 @@ impl BuilderApp {
                     ui,
                     &hash_text,
                     hash_width,
-                    egui::FontId::monospace(10.0),
+                    egui::FontId::monospace(theme::snap(ui, 10.0)),
                     palette.secondary,
                 );
                 let hash = add_left_cell(
@@ -3382,7 +4921,7 @@ impl BuilderApp {
                     egui::Label::new(
                         RichText::new(display)
                             .monospace()
-                            .size(10.0)
+                            .size(theme::snap(ui, 10.0))
                             .color(palette.secondary),
                     )
                     .halign(Align::Min)
@@ -3391,16 +4930,9 @@ impl BuilderApp {
                 self.layout_rects.terms_hash_label = Some(hash.rect);
                 self.record_text_audit("terms.hash", hash.rect, ui.clip_rect());
                 hash.on_hover_text(self.terms_hash.as_str());
-                let copy = if hash_height < 24.0 {
-                    let (_, response) = ui.allocate_exact_size(
-                        Vec2::new(copy_width, hash_height),
-                        egui::Sense::click(),
-                    );
-                    response.on_hover_text(self.language.text("terms.hash.copy"))
-                } else {
-                    ui.add_sized([copy_width, hash_height], Button::new(""))
-                        .on_hover_text(self.language.text("terms.hash.copy"))
-                };
+                let copy = ui
+                    .add_sized([copy_width, hash_height], Button::new(""))
+                    .on_hover_text(self.language.text("terms.hash.copy"));
                 self.layout_rects.terms_hash_copy = Some(copy.rect);
                 copy.widget_info(|| {
                     egui::WidgetInfo::labeled(
@@ -3436,7 +4968,12 @@ impl BuilderApp {
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let (icon, label, color) = self.status(palette);
                     icons::show(ui, icon, color, 16.0);
-                    ui.label(RichText::new(label).color(palette.secondary));
+                    let status_width = (ui.available_width() - 230.0).max(0.0);
+                    ui.add_sized(
+                        [status_width, 24.0],
+                        egui::Label::new(RichText::new(label).color(palette.secondary)).truncate(),
+                    )
+                    .on_hover_text(label);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let next = ui.add_enabled(
                             self.can_advance(),
@@ -3444,8 +4981,20 @@ impl BuilderApp {
                                 "nav.finish"
                             } else {
                                 "nav.next"
-                            })),
+                            }))
+                            .min_size(Vec2::splat(40.0)),
                         );
+                        let next = if self.page == 2 {
+                            next.on_disabled_hover_text(self.language.text(
+                                if self.verification_passed() {
+                                    "doctor.tools.blocked"
+                                } else {
+                                    "verify.blocked"
+                                },
+                            ))
+                        } else {
+                            next
+                        };
                         self.layout_rects.nav_next = Some(next.rect);
                         if next.clicked() {
                             self.advance();
@@ -3465,6 +5014,7 @@ impl BuilderApp {
     fn can_advance(&self) -> bool {
         match self.page {
             1 => !self.selected_versions.is_empty(),
+            2 => self.check_page_ready(),
             3 => self.terms_checked,
             5 => self.build_state == BuildState::Succeeded,
             _ => true,
@@ -3487,6 +5037,22 @@ impl BuilderApp {
 
     fn status(&self, palette: Palette) -> (Icon, &'static str, eframe::egui::Color32) {
         if self.page == 2 {
+            if let Some(run) = self.current_verification() {
+                if run.error || run.has_failures() {
+                    return (
+                        Icon::Cross,
+                        self.language.text("verify.status_failed"),
+                        palette.error,
+                    );
+                }
+                if run.running() {
+                    return (
+                        Icon::Ring,
+                        self.language.text("status.checking"),
+                        palette.info,
+                    );
+                }
+            }
             if self.doctor_receiver.is_some() {
                 return (
                     Icon::Ring,
@@ -3513,6 +5079,13 @@ impl BuilderApp {
                     Icon::Cross,
                     self.language.text("status.hash_error"),
                     palette.error,
+                );
+            }
+            if !self.tools_ready_for_selection() {
+                return (
+                    Icon::Ring,
+                    self.language.text("doctor.tools.not_ready"),
+                    palette.warning,
                 );
             }
         }
@@ -3547,18 +5120,17 @@ impl BuilderApp {
 
     fn render_footer(&mut self, ui: &mut Ui, palette: Palette) -> Rect {
         ui.with_layout(Layout::top_down(Align::Center), |ui| {
-            let scale = self.config.scale.max(1.0);
             let clip = ui.clip_rect();
-            let response = ui.add_sized(
-                [ui.available_width(), ui.available_height()],
+            let response = ui.add(
                 egui::Label::new(
-                    RichText::new(self.language.text("footer.short_disclaimer"))
-                        .size(11.5 / scale)
+                    RichText::new(self.language.text("footer.disclaimer"))
+                        .size(theme::snap(ui, 11.5))
                         .color(palette.secondary),
                 )
-                .truncate(),
+                .wrap()
+                .halign(Align::Center),
             );
-            self.record_text_audit("footer.short_disclaimer", response.rect, clip);
+            self.record_text_audit("footer.disclaimer", response.rect, clip);
             response.rect
         })
         .inner
@@ -3650,10 +5222,36 @@ impl BuilderApp {
                 .default_width(360.0)
                 .show(context, |ui| {
                     ui.label(self.language.text("app.about_body"));
+                    let native = context.native_pixels_per_point().unwrap_or(1.0);
+                    ui.label(format!(
+                        "{}: {:.0}% ({native:.2} px/pt)",
+                        self.language.text("scale.native"),
+                        native * 100.0
+                    ));
+                    ui.label(format!(
+                        "{}: {:.0}% ({} {:.0}%)",
+                        self.language.text("scale.effective"),
+                        context.pixels_per_point() * 100.0,
+                        self.language.text("scale.label"),
+                        self.effective_zoom * 100.0
+                    ));
+                    if (self.effective_zoom - self.config.ui_scale.factor()).abs() > 0.001 {
+                        ui.label(self.language.text("scale.limited"));
+                    }
+                    if ui.button(self.language.text("scale.copy_dpi")).clicked() {
+                        copy_diagnostics(
+                            context,
+                            &format!(
+                                "{}Fonts: {}",
+                                self.display_diagnostics(),
+                                self.fonts_report(context)
+                            ),
+                        );
+                    }
                     ui.add_space(8.0);
                     ui.label(
                         RichText::new(self.language.text("footer.disclaimer"))
-                            .size(12.0)
+                            .size(theme::snap(ui, 12.0))
                             .color(palette.secondary),
                     );
                     if ui.button(self.language.text("app.about")).clicked() {
@@ -3679,7 +5277,9 @@ impl BuilderApp {
         self.hash_mismatches = mismatches.clone();
         self.build_results = vec![VersionBuildResult {
             version: "26.3".to_owned(),
-            output_dir: PathBuf::from("./gaius-output/26.3"),
+            output_dir: PathBuf::from(
+                "./gaius-output/releases/2026-11-17/26.3/portable-html-with-worker-wasm-and-assets",
+            ),
             exit_code: 0,
             error: None,
             hashes: HashComparison {
@@ -3694,6 +5294,24 @@ impl BuilderApp {
         self.terms_checked = true;
     }
 
+    fn mock_three_version_results() -> Vec<VersionBuildResult> {
+        VERSION_IDS
+            .into_iter()
+            .map(|version| VersionBuildResult {
+                version: version.to_owned(),
+                output_dir: PathBuf::from(format!(
+                    "./gaius-output/releases/2026-11-17/{version}/portable-html-with-worker-wasm-and-assets"
+                )),
+                exit_code: 0,
+                error: None,
+                hashes: HashComparison {
+                    state: HashState::Unknown,
+                    mismatches: Vec::new(),
+                },
+            })
+            .collect()
+    }
+
     fn mock_failed(&mut self, phase: &str, reason: &str) {
         self.build_state = BuildState::Failed;
         self.build_error = Some(format!("{phase}: {reason}"));
@@ -3701,18 +5319,67 @@ impl BuilderApp {
 }
 
 impl eframe::App for BuilderApp {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some((deadline, completion)) = &self.dpi_watch {
+            if let Some(render) = frame.wgpu_render_state() {
+                let _ = render.device.poll(eframe::wgpu::PollType::Poll);
+            }
+            if completion.get().is_some() {
+                self.dpi_watch = None;
+            } else if Instant::now() >= *deadline {
+                let _ = completion.set(Err(
+                    "timed out waiting for the rendered DPI preview".to_owned()
+                ));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.dpi_watch = None;
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(25));
+            }
+        }
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+        if self.read_only_preview {
+            input.events.clear();
+        }
+    }
+
+    fn on_exit(&mut self) {
+        if let Some(desktop) = &mut self.desktop {
+            desktop.save();
+        }
+    }
+
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
+        if let Some(at) = self.tool_check_at {
+            let wait = at.saturating_duration_since(Instant::now());
+            if wait.is_zero() {
+                self.start_doctor();
+            } else {
+                context.request_repaint_after(wait);
+            }
+        }
         self.poll_doctor();
+        self.poll_verification();
+        self.poll_tools_install();
         self.poll_build();
         self.handle_keys(&context);
         let system_theme = context.system_theme();
-        let effective = (self.theme_mode, system_theme);
+        let zoom = ui_scale::input(&context, self.config.ui_scale);
+        if zoom != self.config.ui_scale {
+            self.change_zoom(zoom);
+        }
+        let viewport = context.content_rect();
+        self.effective_zoom = context.zoom_factor();
+        let ppp = context.pixels_per_point();
+        let effective = (self.theme_mode, system_theme, ppp);
         if self.theme_applied != Some(effective) {
             theme::apply(&context, self.theme_mode);
+            theme::snap_styles(&context, ppp);
             self.theme_applied = Some(effective);
         }
-        context.set_zoom_factor(self.config.scale);
+
         context.style_mut_of(self.theme_mode.effective(system_theme), |style| {
             style.animation_time = if self.config.reduce_motion { 0.0 } else { 0.15 };
             style.spacing.scroll = egui::style::ScrollStyle::solid();
@@ -3721,26 +5388,33 @@ impl eframe::App for BuilderApp {
             style.spacing.scroll.foreground_color = true;
         });
         let palette = self.theme_mode.palette(system_theme);
-        let viewport = context.content_rect();
+        ui.reset_style();
         ui.painter()
             .rect_filled(viewport, CornerRadius::ZERO, palette.background);
 
-        let scale = self.config.scale.max(1.0);
+        let scale = self.effective_zoom.max(1.0);
         let bounds = viewport.shrink(12.0 / scale);
         ui.set_clip_rect(viewport);
         let (top_rect, top_content_rect) =
             scope_at_rect(ui, bounds, |ui| self.render_top_bar(ui, palette)).inner;
         #[cfg(not(test))]
         let _ = top_content_rect;
-        let rail_fraction = if self.config.scale >= 1.5 { 0.38 } else { 0.30 };
-        let rail_width = 205.0f32.min(bounds.width() * rail_fraction);
-        let column_gap = 12.0 / scale;
-        let bottom_height = 24.0 + 36.0 / scale;
-        let footer_height = if scale >= 1.9 {
-            28.0 / scale
+        self.compact_rail = bounds.width() < 570.0;
+        let rail_width = if self.compact_rail {
+            58.0
         } else {
-            34.0 / scale
+            205.0f32.min(bounds.width() * 0.30)
         };
+        let column_gap = 12.0 / scale;
+        let bottom_height = (24.0 + 36.0 / scale).max(52.0);
+        let footer_font_size = theme::snap(ui, 11.5);
+        let footer_galley = ui.painter().layout(
+            self.language.text("footer.disclaimer").to_owned(),
+            egui::FontId::proportional(footer_font_size),
+            palette.secondary,
+            bounds.width(),
+        );
+        let footer_height = (footer_galley.size().y + 12.0 / scale).max(34.0 / scale);
         let section_gap = 8.0 / scale;
         let footer_gap = if scale >= 1.9 {
             2.0 / scale
@@ -3766,7 +5440,8 @@ impl eframe::App for BuilderApp {
             self.scroll_page = self.page;
             self.page_scroll_offset = 0.0;
         }
-        let requested_action_height = self.action_row_height();
+        let requested_action_height =
+            self.action_row_height(ui, bounds.width() - rail_width - column_gap);
         let action_height = requested_action_height.min(main_height);
         let action_gap = if action_height > 0.0 {
             section_gap.min((main_height - action_height).max(0.0))
@@ -3824,6 +5499,9 @@ impl eframe::App for BuilderApp {
             completion_values: [None; 4],
             completion_copy: None,
             completion_artifacts: None,
+            completion_artifact_labels: [None; 3],
+            completion_artifact_paths: [None; 3],
+            completion_artifact_open_buttons: [None; 3],
             action_row: action_rect,
             action_widgets: [None; 5],
             action_widget_count: 0,
@@ -3851,7 +5529,9 @@ impl eframe::App for BuilderApp {
                     ui.set_width(content_width);
                     ui.set_max_width(content_width);
                     self.render_content(ui, palette);
-                    ui.min_rect()
+                    let content = ui.min_rect();
+                    theme::scroll_end_padding(ui);
+                    content
                 });
             self.layout_rects.content_used = scroll.inner;
             self.layout_rects.content_scroll_viewport = Some(scroll.inner_rect);
@@ -3874,7 +5554,26 @@ impl eframe::App for BuilderApp {
             self.render_footer(ui, palette)
         });
         self.render_dialogs(&context, palette);
-        if self.doctor_receiver.is_some() || self.build_task.is_some() {
+        let window = self
+            .desktop
+            .as_mut()
+            .map(|desktop| desktop.sample(frame, &context));
+        let fitted =
+            ui_scale::fit_zoom(self.requested_zoom(), viewport.size() * self.effective_zoom);
+        if fitted != self.effective_zoom {
+            context.set_zoom_factor(fitted);
+        } else if let Some(window) = window {
+            self.request_dpi_report(&context, window);
+        }
+        if self.doctor_receiver.is_some()
+            || self.build_task.is_some()
+            || self.tools_task.is_some()
+            || self
+                .verification
+                .as_ref()
+                .is_some_and(|run| run.task.is_some())
+            || (self.live_verification && self.page == 2 && self.current_verification().is_none())
+        {
             context.request_repaint_after(Duration::from_millis(100));
         }
     }
@@ -3913,8 +5612,8 @@ struct WrappedCheckbox {
 }
 
 fn wrapped_checkbox(ui: &mut Ui, checked: &mut bool, text: &str) -> WrappedCheckbox {
-    let line_height = ui.text_style_height(&TextStyle::Body) * 1.05;
-    let mark_size = ui.spacing().interact_size.y.clamp(16.0, 20.0);
+    let line_height = theme::snap(ui, ui.text_style_height(&TextStyle::Body) * 1.05);
+    let mark_size = 24.0;
     let (mark, label) = ui
         .horizontal_top(|ui| {
             let mark = ui
@@ -3939,12 +5638,18 @@ fn wrapped_checkbox(ui: &mut Ui, checked: &mut bool, text: &str) -> WrappedCheck
     ui.painter().rect(
         mark,
         CornerRadius::same(2),
-        if *checked {
+        if response.has_focus() {
+            ui.visuals().widgets.active.weak_bg_fill
+        } else if *checked {
             ui.visuals().selection.bg_fill
         } else {
             visuals.bg_fill
         },
-        visuals.fg_stroke,
+        if response.has_focus() {
+            visuals.bg_stroke
+        } else {
+            visuals.fg_stroke
+        },
         egui::StrokeKind::Inside,
     );
     if *checked {
@@ -4015,57 +5720,148 @@ pub fn render_screenshot(
     scale: f32,
     state: &str,
 ) -> Result<(), String> {
-    use egui_kittest::kittest::{NodeT, Queryable};
-
-    let scenario = ScreenshotState::parse(state)?;
-    if scenario == ScreenshotState::TermsAccepted && page != 3 {
-        return Err("terms-accepted screenshots must use page 3".to_owned());
-    }
-    if scenario == ScreenshotState::ModsScrolled && page != 4 {
-        return Err("mods-scrolled screenshots must use page 4".to_owned());
-    }
-    if scenario == ScreenshotState::ToolchainField && page != 2 {
-        return Err("toolchain-field screenshots must use page 2".to_owned());
-    }
-    if scenario == ScreenshotState::PreflightError && page != 5 {
-        return Err("real-preflight-error screenshots must use page 5".to_owned());
-    }
-    if scenario == ScreenshotState::BuildSuccess && page != 6 {
-        return Err("build-success screenshots must use page 6".to_owned());
-    }
-    let preflight_data = if scenario == ScreenshotState::PreflightError {
-        Some(run_real_toolchain_preflight()?)
-    } else {
-        None
+    let display = DisplayOptions {
+        work: None,
+        scale: Some(scale),
     };
+    render_screenshot_at_dpi(
+        path,
+        page,
+        theme_mode,
+        language,
+        size,
+        (1.0, &display),
+        state,
+    )
+    .map(|_| ())
+}
+
+fn screenshot_harness(
+    page: usize,
+    theme: ScreenTheme,
+    language: Language,
+    size: [u32; 2],
+    (native_ppp, display): (f32, &DisplayOptions),
+    scenario: ScreenshotState,
+) -> Result<(egui_kittest::Harness<'static, BuilderApp>, f32), String> {
+    let work_dir = display.work_dir();
+    let zoom = display.zoom(&desktop::Settings::load(&work_dir.join("ui-settings.json")));
+    let requested = zoom.factor();
+    if !(0.0 < requested && requested <= 4.0 && (0.75..=4.0).contains(&native_ppp)) {
+        return Err("unsupported screenshot native PPP or zoom".to_owned());
+    }
+    let native_size = Vec2::new(size[0] as f32, size[1] as f32);
+    let scale = ui_scale::fit_zoom(requested, native_size);
+    let size = native_size / scale;
     let mut harness = egui_kittest::Harness::builder()
-        .with_size(Vec2::new(size[0] as f32, size[1] as f32))
-        .with_pixels_per_point(1.0)
-        .with_theme(match theme_mode {
+        .with_size(size)
+        .with_pixels_per_point(native_ppp)
+        .with_theme(match theme {
             ScreenTheme::Dark => Theme::Dark,
             ScreenTheme::Light => Theme::Light,
         })
-        .with_context_setup(move |context| context.set_zoom_factor(scale))
+        .with_context_setup(move |ctx| ctx.options_mut(|options| options.zoom_factor = scale))
         .allow_missing_glyphs()
         .with_render_cursor(false)
         .build_eframe(move |context| {
             let mut app = BuilderApp::with_state(
                 &context.egui_ctx,
                 language,
-                theme_mode.mode(),
+                theme.mode(),
                 page,
                 false,
                 scenario,
             );
-            app.config.scale = scale;
-            if let Some((progress, logs, error)) = &preflight_data {
-                app.build_progress = progress.clone();
-                app.build_logs = logs.iter().cloned().collect();
-                app.build_error = Some(error.clone());
-            }
+            app.work_dir.clone_from(&work_dir);
+            app.apply_startup_zoom(zoom);
             app
         });
-    harness.set_size(Vec2::new(size[0] as f32 / scale, size[1] as f32 / scale));
+    harness.set_size(size);
+    Ok((harness, scale))
+}
+
+/// Render a window sized in native logical points and return its zoom diagnostics.
+pub fn render_screenshot_at_dpi(
+    path: &Path,
+    page: usize,
+    theme_mode: ScreenTheme,
+    language: Language,
+    size: [u32; 2],
+    (native_ppp, display): (f32, &DisplayOptions),
+    state: &str,
+) -> Result<serde_json::Value, String> {
+    use egui_kittest::kittest::Queryable;
+
+    let scenario = ScreenshotState::parse(state)?;
+    if matches!(
+        scenario,
+        ScreenshotState::TermsAccepted | ScreenshotState::TermsPreAccepted
+    ) && page != 3
+    {
+        return Err("terms acceptance screenshots must use page 3".to_owned());
+    }
+    if matches!(
+        scenario,
+        ScreenshotState::VerifyOk
+            | ScreenshotState::VerifyRunning
+            | ScreenshotState::VerifyFailedIndex
+    ) && page != 2
+    {
+        return Err("official file check screenshots must use page 2".to_owned());
+    }
+    if scenario == ScreenshotState::ModsScrolled && page != 4 {
+        return Err("mods-scrolled screenshots must use page 4".to_owned());
+    }
+    if scenario == ScreenshotState::ResourceConfig && page != 4 {
+        return Err("config-resources screenshots must use page 4".to_owned());
+    }
+    if scenario == ScreenshotState::ModConfig && page != 4 {
+        return Err("config-mods screenshots must use page 4".to_owned());
+    }
+    if matches!(
+        scenario,
+        ScreenshotState::ToolchainField
+            | ScreenshotState::HostToolsMissing
+            | ScreenshotState::HostToolsMismatch
+            | ScreenshotState::HostToolsReady
+            | ScreenshotState::ShaderVerified
+            | ScreenshotState::ShaderMissing
+            | ScreenshotState::ShaderMissingScrolled
+            | ScreenshotState::ShaderTampered
+            | ScreenshotState::MavenPartial
+            | ScreenshotState::MavenReady
+    ) && page != 2
+    {
+        return Err("toolchain and Maven screenshots must use page 2".to_owned());
+    }
+    if scenario == ScreenshotState::PreflightError && page != 5 {
+        return Err("real-preflight-error screenshots must use page 5".to_owned());
+    }
+    if scenario == ScreenshotState::DiagnosticsChinese && page != 5 {
+        return Err("diagnostics-chinese screenshots must use page 5".to_owned());
+    }
+    if matches!(
+        scenario,
+        ScreenshotState::BuildSuccess | ScreenshotState::BuildSuccessThree
+    ) && page != 6
+    {
+        return Err("build-success screenshots must use page 6".to_owned());
+    }
+    let (mut harness, scale) = screenshot_harness(
+        page,
+        theme_mode,
+        language,
+        size,
+        (native_ppp, display),
+        scenario,
+    )?;
+    if scenario == ScreenshotState::PreflightError {
+        let (progress, logs, error) = run_real_toolchain_preflight()?;
+        let app = harness.state_mut();
+        app.build_progress = progress;
+        app.build_logs = logs.into();
+        app.build_error = Some(error);
+    }
     harness.run();
     if scenario == ScreenshotState::TermsAccepted {
         let first_paragraph = terms_text(language)
@@ -4094,36 +5890,73 @@ pub fn render_screenshot(
         }
     }
     if scenario == ScreenshotState::ModsScrolled {
-        let settings = harness
-            .root()
-            .children_recursive()
-            .find(|node| {
-                node.accesskit_node().role() == egui::accesskit::Role::Button
-                    && node.accesskit_node().label().as_deref()
-                        == Some(language.text("config.table.settings"))
-            })
-            .ok_or_else(|| "Mods tab has no settings button to scroll into view".to_owned())?;
-        settings.scroll_to_me();
+        harness
+            .get_by_label("local/example-mod-1.jar")
+            .scroll_to_me();
         harness.run();
         let layout = harness.state().layout_rects;
-        if !layout
-            .config_scroll_viewport
-            .zip(layout.mod_first_row)
-            .is_some_and(|(viewport, row)| rect_contains_rect(viewport, row))
-        {
-            return Err("first mod row is not fully visible in the scrolled panel".to_owned());
+        let Some((viewport, row)) = layout.config_scroll_viewport.zip(layout.mod_first_row) else {
+            return Err("Mods tab has no first-row layout or scroll viewport".to_owned());
+        };
+        if !rect_contains_rect(viewport, row) {
+            let adjustment = if row.max.y > viewport.max.y {
+                row.max.y - viewport.max.y
+            } else {
+                row.min.y - viewport.min.y
+            };
+            let current_offset = harness.state().page_scroll_offset;
+            harness.state_mut().page_scroll_offset = (current_offset + adjustment + 1.0).max(0.0);
+            harness.run();
+        }
+        let layout = harness.state().layout_rects;
+        let Some((viewport, row)) = layout.config_scroll_viewport.zip(layout.mod_first_row) else {
+            return Err("Mods tab lost its first-row layout or scroll viewport".to_owned());
+        };
+        if !rect_contains_rect(viewport, row) {
+            return Err(format!(
+                "first mod row is not fully visible in the scrolled panel: {row:?} vs {viewport:?}"
+            ));
         }
     }
     if scenario == ScreenshotState::ToolchainField {
+        harness.get_by_label(language.text("doctor.paths")).click();
+        harness.run();
+    }
+    if size[0] <= 800 && scale >= 1.5 {
+        let state_key = match scenario {
+            ScreenshotState::HostToolsMissing => Some("doctor.tools.missing"),
+            ScreenshotState::HostToolsMismatch => Some("doctor.tools.hash_mismatch"),
+            ScreenshotState::HostToolsReady => Some("item.ok"),
+            _ => None,
+        };
+        if let Some(state_key) = state_key {
+            harness
+                .get_by_label(format!("Binaryen 133 · {}", language.text(state_key)).as_str())
+                .scroll_to_me();
+            harness.run();
+        }
+    }
+    if scenario == ScreenshotState::ShaderMissingScrolled {
+        scroll_to_shader_picker(&mut harness, language);
+    }
+    if matches!(
+        scenario,
+        ScreenshotState::BuildSuccess | ScreenshotState::BuildSuccessThree
+    ) && size[0] <= 800
+        && scale >= 1.5
+    {
         harness
-            .get_by_label(language.text("doctor.toolchain"))
+            .get_by_label(language.text("complete.artifacts"))
             .scroll_to_me();
         harness.run();
     }
     let image = harness.render()?;
     image
         .save(path)
-        .map_err(|error| format!("could not save screenshot {}: {error}", path.display()))
+        .map_err(|error| format!("could not save screenshot {}: {error}", path.display()))?;
+    let mut report = serde_json::json!({ "native_pixels_per_point": native_ppp });
+    harness.state().add_zoom_report(&mut report);
+    Ok(report)
 }
 
 fn run_real_toolchain_preflight() -> Result<(Vec<BuildProgress>, Vec<String>, String), String> {
@@ -4148,7 +5981,7 @@ fn run_real_toolchain_preflight() -> Result<(Vec<BuildProgress>, Vec<String>, St
                 version: "26.3",
                 output: &output,
                 mappings: None,
-                shader_toolchain: None,
+                tool_paths: &ToolPaths::default(),
                 minecraft_dir: None,
                 settings: &settings,
             },
@@ -4200,6 +6033,12 @@ impl ScreenshotState {
         Ok(match value {
             "normal" | "page" => Self::Normal,
             "terms-accepted" => Self::TermsAccepted,
+            "terms-pre-accepted" => Self::TermsPreAccepted,
+            "verify-ok" => Self::VerifyOk,
+            "verify-running" => Self::VerifyRunning,
+            "verify-failed-index" => Self::VerifyFailedIndex,
+            "config-resources" => Self::ResourceConfig,
+            "config-mods" => Self::ModConfig,
             "detect-fail" => Self::DetectFail,
             "hash-error" => Self::HashError,
             "build-fail" => Self::BuildFail,
@@ -4211,11 +6050,77 @@ impl ScreenshotState {
             "badge-green" => Self::BadgeGreen,
             "badge-yellow" => Self::BadgeYellow,
             "badge-red" => Self::BadgeRed,
+            "build-success-three" => Self::BuildSuccessThree,
             "toolchain-field" => Self::ToolchainField,
             "real-preflight-error" => Self::PreflightError,
+            "tools-missing" => Self::ToolsMissing,
+            "tools-optional" => Self::ToolsOptional,
+            "tools-strict" => Self::ToolsStrict,
+            "tools-python-exe" => Self::ToolsPythonExe,
+            "tools-downloading" => Self::ToolsDownloading,
+            "tools-failed" => Self::ToolsFailed,
+            "tools-ready" => Self::ToolsReady,
+            "host-tools-missing" => Self::HostToolsMissing,
+            "host-tools-mismatch" => Self::HostToolsMismatch,
+            "host-tools-ready" => Self::HostToolsReady,
+            "shader-verified" => Self::ShaderVerified,
+            "shader-missing" => Self::ShaderMissing,
+            "shader-missing-scrolled" => Self::ShaderMissingScrolled,
+            "shader-tampered" => Self::ShaderTampered,
+            "maven-partial" => Self::MavenPartial,
+            "maven-ready" => Self::MavenReady,
+            "diagnostics-chinese" => Self::DiagnosticsChinese,
             _ => return Err(format!("unknown screenshot state: {value}")),
         })
     }
+}
+
+fn scroll_to_shader_picker(
+    harness: &mut egui_kittest::Harness<'_, BuilderApp>,
+    language: Language,
+) {
+    use egui_kittest::kittest::Queryable;
+    harness
+        .get_by_label(language.text("doctor.shader.choose"))
+        .scroll_to_me();
+    harness.run();
+}
+
+fn config_field_label(
+    ui: &mut Ui,
+    language: Language,
+    palette: Palette,
+    width: f32,
+    label: &str,
+    applied: bool,
+) -> egui::Response {
+    let mut label_response = None;
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        ui.set_max_width(width);
+        label_response = Some(ui.label(label));
+        if applied {
+            ui.label(
+                RichText::new(language.text("config.applied_chip"))
+                    .size(theme::snap(ui, 11.0))
+                    .color(palette.accent),
+            );
+        } else {
+            Frame::new()
+                .fill(palette.tint(palette.info, 0.05))
+                .stroke(Stroke::new(1.0, palette.info))
+                .corner_radius(CornerRadius::same(4))
+                .inner_margin(egui::Margin::symmetric(6, 2))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(language.text("config.not_applied_chip"))
+                            .size(theme::snap(ui, 11.0))
+                            .color(palette.info),
+                    );
+                });
+        }
+    });
+    label_response.expect("configuration label is rendered")
 }
 
 fn rect_contains_rect(container: Rect, content: Rect) -> bool {
@@ -4322,14 +6227,14 @@ fn draw_progress_ring(ui: &mut Ui, progress: f32, stage: &str, palette: Palette)
         egui::pos2(center.x, center.y - 7.0),
         egui::Align2::CENTER_CENTER,
         format!("{:.0}%", fraction * 100.0),
-        egui::FontId::proportional(22.0),
+        egui::FontId::proportional(theme::snap(ui, 22.0)),
         palette.text,
     );
     ui.painter().text(
         egui::pos2(center.x, center.y + 19.0),
         egui::Align2::CENTER_CENTER,
         stage,
-        egui::FontId::proportional(12.0),
+        egui::FontId::proportional(theme::snap(ui, 12.0)),
         palette.secondary,
     );
 }
@@ -4379,7 +6284,11 @@ fn render_check(
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     ui.label(RichText::new(format!("{label} · {text}")).strong());
-                    ui.label(RichText::new(value).size(12.0).color(palette.secondary));
+                    ui.label(
+                        RichText::new(value)
+                            .size(theme::snap(ui, 12.0))
+                            .color(palette.secondary),
+                    );
                 });
             });
         });
@@ -4392,6 +6301,19 @@ fn version_detected(report: &DoctorReport, version_id: &str) -> bool {
         .iter()
         .find(|version| version.id == version_id)
         .is_some_and(|version| version.installed)
+}
+
+fn human_bytes(bytes: u64) -> String {
+    if bytes == 0 {
+        return String::new();
+    }
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+    } else if bytes >= 1_000_000 {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    } else {
+        format!("{:.0} KB", bytes as f64 / 1_000.0)
+    }
 }
 
 fn failed_hash_report() -> DoctorReport {
@@ -4438,121 +6360,6 @@ fn work_dir() -> PathBuf {
     std::env::current_dir()
         .unwrap_or_default()
         .join(".gaius-builder-work")
-}
-
-fn default_output_dir() -> String {
-    work_dir().join("builds").to_string_lossy().into_owned()
-}
-
-fn validate_shader_toolchain(path: &Path) -> Result<(), String> {
-    let manifest_path = path.join("gaius-shader-toolchain.json");
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &fs::read(&manifest_path)
-            .map_err(|error| format!("{}: {error}", manifest_path.display()))?,
-    )
-    .map_err(|error| format!("invalid shader toolchain manifest: {error}"))?;
-    if manifest.get("schema").and_then(serde_json::Value::as_u64) != Some(1) {
-        return Err("unsupported shader toolchain manifest schema".to_owned());
-    }
-    let sources = manifest
-        .get("sources")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| "shader toolchain manifest has no source pins".to_owned())?;
-    let source_names = [
-        "shaderc",
-        "glslang",
-        "spirv-tools",
-        "spirv-headers",
-        "spirv-cross",
-    ];
-    if source_names.iter().any(|name| {
-        sources
-            .get(*name)
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(str::is_empty)
-    }) {
-        return Err("shader toolchain manifest has incomplete source pins".to_owned());
-    }
-    let emscripten = manifest
-        .get("emscripten")
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "shader toolchain manifest has no emscripten pin".to_owned())?;
-    let files = manifest
-        .get("files")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| "shader toolchain manifest has no file hashes".to_owned())?;
-    let required = [
-        "gaius-shader-toolchain.js",
-        "gaius-shaderc.js",
-        "gaius-shaderc.wasm",
-        "gaius-spvc.js",
-        "gaius-spvc.wasm",
-    ];
-    for name in required {
-        let expected = files
-            .get(name)
-            .and_then(|entry| entry.get("sha256"))
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .ok_or_else(|| format!("shader toolchain manifest has no valid hash for {name}"))?;
-        let actual = sha256_file(&path.join(name))?;
-        if !actual.eq_ignore_ascii_case(expected) {
-            return Err(format!("shader toolchain file hash does not match: {name}"));
-        }
-    }
-    verify_toolchain_pins(sources, emscripten)?;
-    Ok(())
-}
-
-fn verify_toolchain_pins(
-    sources: &serde_json::Map<String, serde_json::Value>,
-    emscripten: &str,
-) -> Result<(), String> {
-    const PINS: &str = include_str!("../../../port/wasm/shader-toolchain/pins.env");
-    let pin_names = [
-        ("shaderc", "GAIUS_ST_SHADERC_COMMIT"),
-        ("glslang", "GAIUS_ST_GLSLANG_COMMIT"),
-        ("spirv-tools", "GAIUS_ST_SPIRV_TOOLS_COMMIT"),
-        ("spirv-headers", "GAIUS_ST_SPIRV_HEADERS_COMMIT"),
-        ("spirv-cross", "GAIUS_ST_SPIRV_CROSS_COMMIT"),
-    ];
-    let values = PINS
-        .lines()
-        .filter_map(|line| line.split_once('='))
-        .collect::<std::collections::HashMap<_, _>>();
-    for (source, key) in pin_names {
-        if sources.get(source).and_then(serde_json::Value::as_str) != values.get(key).copied() {
-            return Err(format!("shader toolchain source pin does not match {key}"));
-        }
-    }
-    let emscripten_version = values
-        .get("GAIUS_ST_EMSCRIPTEN_VERSION")
-        .copied()
-        .ok_or_else(|| "local shader toolchain pins have no emscripten version".to_owned())?;
-    let emscripten_commit = values
-        .get("GAIUS_ST_EMSCRIPTEN_COMMIT")
-        .copied()
-        .ok_or_else(|| "local shader toolchain pins have no emscripten commit".to_owned())?;
-    let expected_emscripten = format!("{} ({})", emscripten_version, emscripten_commit);
-    if emscripten != expected_emscripten {
-        return Err("shader toolchain emscripten pin does not match the local pins".to_owned());
-    }
-    Ok(())
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn cleanup_owned_outputs(
@@ -4780,14 +6587,49 @@ fn sanitize_user_paths(value: &str) -> String {
         .into_iter()
         .filter_map(std::env::var_os)
         .filter(|path| !path.is_empty())
-        .map(|path| path.to_string_lossy().into_owned())
+        .flat_map(|path| {
+            let path = path.to_string_lossy();
+            [
+                path.to_string(),
+                path.replace('\\', "/"),
+                path.replace('\\', "\\\\"),
+            ]
+        })
         .collect::<Vec<_>>();
     let usernames = ["USER", "USERNAME"]
         .into_iter()
         .filter_map(|variable| std::env::var(variable).ok())
         .filter(|name| !name.trim().is_empty())
         .collect::<Vec<_>>();
-    sanitize_paths(value, &homes, &usernames)
+    let mut sanitized = sanitize_paths(value, &homes, &usernames);
+    sanitized = redact_profile_paths(&sanitized);
+    sanitized
+}
+
+fn redact_profile_paths(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+    loop {
+        let lowered = rest.to_ascii_lowercase();
+        let Some((index, marker)) = ["\\users\\", "/users/", "/home/"]
+            .into_iter()
+            .filter_map(|marker| lowered.find(marker).map(|index| (index, marker)))
+            .min_by_key(|item| item.0)
+        else {
+            break;
+        };
+        let marker_start = index + marker.len();
+        output.push_str(&rest[..marker_start]);
+        output.push_str("<user-home>");
+        let after = &rest[marker_start..];
+        let Some(end) = after.find(['\\', '/', '\r', '\n']) else {
+            rest = "";
+            break;
+        };
+        rest = &after[end..];
+    }
+    output.push_str(rest);
+    output
 }
 
 fn sanitize_paths(value: &str, homes: &[String], usernames: &[String]) -> String {
@@ -4809,29 +6651,15 @@ fn sanitize_paths(value: &str, homes: &[String], usernames: &[String]) -> String
     result
 }
 
-fn copy_diagnostics(value: &str) {
-    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "windows") {
-        &[("clip", &[])]
-    } else if cfg!(target_os = "macos") {
-        &[("pbcopy", &[])]
-    } else {
-        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])]
-    };
-    for (program, args) in candidates {
-        let Ok(mut child) = std::process::Command::new(program)
-            .args(*args)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-        else {
-            continue;
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(value.as_bytes());
-        }
-        if child.wait().is_ok_and(|status| status.success()) {
-            break;
-        }
-    }
+fn write_diagnostics(path: &Path, value: &str) -> io::Result<()> {
+    let mut bytes = Vec::with_capacity(value.len() + 3);
+    bytes.extend_from_slice(b"\xEF\xBB\xBF");
+    bytes.extend_from_slice(value.as_bytes());
+    fs::write(path, bytes)
+}
+
+fn copy_diagnostics(context: &egui::Context, value: &str) {
+    context.copy_text(value.to_owned());
 }
 
 fn open_path(path: &Path) {
@@ -4873,13 +6701,31 @@ impl Sha256Text for str {
     }
 }
 
-fn install_cjk_font(context: &egui::Context, use_system_fonts: bool) {
+fn install_cjk_font(context: &egui::Context, use_system_fonts: bool) -> Vec<String> {
     context.set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
     if !use_system_fonts || std::env::var_os("GAIUS_BUILDER_NO_SYSTEM_FONTS").is_some() {
         context.set_font_providers(vec![]);
         context.set_fonts(egui::FontDefinitions::default());
-        return;
+        return Vec::new();
     }
+    static FONTS: std::sync::OnceLock<(egui::FontDefinitions, Vec<String>)> =
+        std::sync::OnceLock::new();
+    let (definitions, sources) = FONTS.get_or_init(system_font_definitions);
+    context.set_fonts(definitions.clone());
+    sources.clone()
+}
+
+fn system_font_definitions() -> (egui::FontDefinitions, Vec<String>) {
+    #[cfg(windows)]
+    let windows_fonts =
+        PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:/Windows".into()))
+            .join("Fonts");
+    #[cfg(not(windows))]
+    let windows_fonts = PathBuf::from("C:/Windows/Fonts");
+    let msyh_ttc = windows_fonts.join("msyh.ttc");
+    let msyh_ttf = windows_fonts.join("msyh.ttf");
+    let simhei = windows_fonts.join("simhei.ttf");
+    let segoe_symbols = windows_fonts.join("seguisym.ttf");
     let cjk_candidates = [
         (
             "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
@@ -4894,13 +6740,14 @@ fn install_cjk_font(context: &egui::Context, use_system_fonts: bool) {
             "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf",
             0,
         ),
-        ("C:/Windows/Fonts/msyh.ttc", 0),
-        ("C:/Windows/Fonts/msyh.ttf", 0),
+        (msyh_ttc.to_str().unwrap_or_default(), 0),
+        (msyh_ttf.to_str().unwrap_or_default(), 0),
+        (simhei.to_str().unwrap_or_default(), 0),
         ("/System/Library/Fonts/PingFang.ttc", 0),
         ("/Library/Fonts/Arial Unicode.ttf", 0),
     ];
     let symbol_candidates = [
-        ("C:/Windows/Fonts/seguisym.ttf", 0),
+        (segoe_symbols.to_str().unwrap_or_default(), 0),
         ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
         (
             "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
@@ -4914,8 +6761,12 @@ fn install_cjk_font(context: &egui::Context, use_system_fonts: bool) {
         ("/System/Library/Fonts/Apple Symbols.ttf", 0),
     ];
     let mut fonts = egui::FontDefinitions::default();
+    let mut sources = Vec::new();
     let mut append_font = |name: &str, path: &str, index: u32| -> bool {
         if let Ok(bytes) = fs::read(path) {
+            if let Some(file) = Path::new(path).file_name() {
+                sources.push(format!("{name}: {}#{index}", file.to_string_lossy()));
+            }
             let name = name.to_owned();
             fonts.font_data.insert(
                 name.clone(),
@@ -4936,7 +6787,7 @@ fn install_cjk_font(context: &egui::Context, use_system_fonts: bool) {
     for (index, (path, face)) in symbol_candidates.into_iter().enumerate() {
         append_font(&format!("system-symbol-fallback-{index}"), path, face);
     }
-    context.set_fonts(fonts);
+    (fonts, sources)
 }
 
 #[cfg(test)]
@@ -4948,6 +6799,104 @@ mod tests {
     fn test_app() -> BuilderApp {
         let context = egui::Context::default();
         BuilderApp::new(&context, Language::English, ThemeMode::Dark, 1, false)
+    }
+
+    #[test]
+    fn offscreen_preview_resolves_saved_zoom_corrupt_settings_and_cli_override() {
+        let work = std::env::temp_dir().join(format!("gaius-preview-zoom-{}", std::process::id()));
+        fs::create_dir(&work).unwrap();
+        let settings = work.join("ui-settings.json");
+        let cases = [
+            (r#"{"zoom":"150"}"#, None, 1.5, 1.5, false, "settings"),
+            ("{broken", None, 1.0, 1.0, true, "default"),
+            (r#"{"zoom":"auto"}"#, None, 1.0, 1.0, true, "settings"),
+            ("{}", None, 1.0, 1.0, true, "default"),
+            (r#"{"zoom":"150"}"#, Some(2.5), 2.5, 2.0, false, "cli"),
+        ];
+        for (saved, scale, requested, effective, auto, source) in cases {
+            fs::write(&settings, saved).unwrap();
+            let display = DisplayOptions {
+                work: Some(work.clone()),
+                scale,
+            };
+            let (mut harness, _) = screenshot_harness(
+                1,
+                ScreenTheme::Dark,
+                Language::Chinese,
+                [800, 540],
+                (2.0, &display),
+                ScreenshotState::Normal,
+            )
+            .unwrap();
+            harness.run();
+            let mut report = serde_json::json!({});
+            harness.state().add_zoom_report(&mut report);
+            assert_eq!(
+                report,
+                serde_json::json!({
+                    "requested_zoom": requested, "effective_zoom": effective,
+                    "requested_zoom_auto": auto, "zoom_source": source,
+                })
+            );
+            assert_eq!(fs::read_to_string(&settings).unwrap(), saved);
+        }
+        fs::remove_file(settings).unwrap();
+        fs::remove_dir(work).unwrap();
+    }
+
+    #[test]
+    fn completion_text_scrolls_fully_into_view_at_high_dpi() {
+        let display = DisplayOptions {
+            work: None,
+            scale: Some(1.0),
+        };
+        for (theme, language, size, native_ppp) in [
+            (ScreenTheme::Dark, Language::Chinese, [960, 620], 2.0),
+            (ScreenTheme::Light, Language::English, [800, 540], 1.5),
+        ] {
+            let (mut harness, _) = screenshot_harness(
+                6,
+                theme,
+                language,
+                size,
+                (native_ppp, &display),
+                ScreenshotState::BuildSuccess,
+            )
+            .unwrap();
+            let audit = |app: &BuilderApp| {
+                app.layout_rects
+                    .text_audits
+                    .iter()
+                    .flatten()
+                    .find(|audit| audit.name == "complete.options_not_applied")
+                    .copied()
+                    .expect("final paragraph is audited")
+            };
+            harness.run();
+            let before = audit(harness.state());
+            assert!(
+                before.rect.bottom() > before.clip.bottom(),
+                "fixture must overflow: {before:?}"
+            );
+            harness.hover_at(before.clip.center());
+            harness.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -500.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
+                modifiers: egui::Modifiers::NONE,
+            });
+            harness.run();
+            let after = audit(harness.state());
+            assert!(
+                rect_contains_rect(after.clip, after.rect),
+                "final paragraph clipped: {after:?}"
+            );
+            assert!(
+                (after.clip.bottom() - after.rect.bottom()) * native_ppp >= 7.5,
+                "final paragraph needs descender clearance beyond its text box: {after:?}"
+            );
+        }
     }
 
     fn visible_input_ids(harness: &egui_kittest::Harness<'_, BuilderApp>) -> BTreeSet<String> {
@@ -4973,10 +6922,26 @@ mod tests {
             .map(|node| format!("{:?}", node.accesskit_node().id()))
     }
 
-    fn collect_text_galleys(shape: &egui::Shape, clip: Rect, output: &mut Vec<(Rect, Rect)>) {
+    fn collect_text_galleys(
+        shape: &egui::Shape,
+        clip: Rect,
+        output: &mut Vec<(String, bool, usize, Rect, Rect)>,
+    ) {
         match shape {
             egui::Shape::Text(text) => {
-                output.push((text.galley.rect.translate(text.pos.to_vec2()), clip));
+                let displayed_chars = text
+                    .galley
+                    .rows
+                    .iter()
+                    .map(|row| row.row.glyphs.len())
+                    .sum();
+                output.push((
+                    text.galley.text().to_owned(),
+                    text.galley.elided,
+                    displayed_chars,
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                    clip,
+                ));
             }
             egui::Shape::Vec(shapes) => {
                 for shape in shapes {
@@ -5010,9 +6975,9 @@ mod tests {
                 rect = audit.rect,
                 clip = audit.clip,
             );
-            for (galley, clip) in rendered
+            for (_, _, _, galley, clip) in rendered
                 .iter()
-                .filter(|(galley, _)| rects_approximately_equal(*galley, audit.rect))
+                .filter(|(_, _, _, galley, _)| rects_approximately_equal(*galley, audit.rect))
             {
                 assert!(
                     rect_contains_rect(audit.clip, *galley),
@@ -5023,6 +6988,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn assert_full_footer_disclaimer(
+        harness: &egui_kittest::Harness<'_, BuilderApp>,
+        page: usize,
+        size: [u32; 2],
+        scale: f32,
+        language: Language,
+    ) {
+        let layout = harness.state().layout_rects;
+        let audit = layout
+            .text_audits
+            .iter()
+            .flatten()
+            .find(|audit| audit.name == "footer.disclaimer")
+            .expect("full footer disclaimer is audited");
+        assert!(
+            rect_contains_rect(layout.footer, audit.rect),
+            "footer disclaimer text rect is clipped at page {page}, size {size:?}, scale {scale}, language {language:?}: {:?} vs {:?}",
+            audit.rect,
+            layout.footer
+        );
+        assert!(
+            rect_contains_rect(audit.clip, audit.rect),
+            "footer disclaimer exceeds its clip at page {page}, size {size:?}, scale {scale}, language {language:?}: {:?} vs {:?}",
+            audit.rect,
+            audit.clip
+        );
+        assert!(
+            !rects_overlap(layout.footer, layout.bottom_bar),
+            "footer overlaps the bottom bar at page {page}, size {size:?}, scale {scale}, language {language:?}: {:?} vs {:?}",
+            layout.footer,
+            layout.bottom_bar
+        );
+
+        let expected = language.text("footer.disclaimer");
+        let mut rendered = Vec::new();
+        for clipped in &harness.output().shapes {
+            collect_text_galleys(&clipped.shape, clipped.clip_rect, &mut rendered);
+        }
+        let expected_chars = expected.chars().count();
+        assert!(
+            rendered
+                .iter()
+                .any(|(text, elided, displayed_chars, rect, clip)| {
+                    rects_approximately_equal(*rect, audit.rect)
+                        && text == expected
+                        && !elided
+                        && *displayed_chars >= expected_chars
+                        && rect_contains_rect(*clip, *rect)
+                }),
+            "footer disclaimer renders fewer than {expected_chars} characters or is elided at page {page}, size {size:?}, scale {scale}, language {language:?}"
+        );
     }
 
     #[test]
@@ -5067,6 +7085,66 @@ mod tests {
     }
 
     #[test]
+    fn saved_terms_restore_both_gates_and_revoke_clears_them() {
+        let mut app = test_app();
+        app.page = 3;
+        let path = std::env::temp_dir().join(format!("terms-restart-{}.json", std::process::id()));
+        app.terms_record_path = Some(path.clone());
+        terms_acceptance::save(&path, &app.terms_hash, terms_acceptance::now()).unwrap();
+        app.reload_terms_acceptance();
+        assert!(app.terms_scrolled && app.terms_checked && app.can_advance());
+        let initial_language = app.language;
+        app.language = match initial_language {
+            Language::Chinese => Language::English,
+            Language::English => Language::Chinese,
+        };
+        app.reload_terms_acceptance();
+        assert!(!app.terms_scrolled && !app.terms_checked && !app.can_advance());
+        app.language = initial_language;
+        app.reload_terms_acceptance();
+        assert!(app.can_advance());
+        app.revoke_terms_acceptance();
+        assert!(!path.exists());
+        assert!(!app.terms_scrolled && !app.terms_checked && !app.can_advance());
+    }
+
+    #[test]
+    fn verification_blocks_next_and_build_until_each_selected_group_passes() {
+        let mut app = test_app();
+        app.page = 2;
+        app.terms_checked = true;
+        for state in [
+            ScreenshotState::VerifyRunning,
+            ScreenshotState::VerifyFailedIndex,
+        ] {
+            app.mock_verification(state);
+            assert!(!app.can_advance());
+            assert_eq!(app.build_gate(), Some("verify.blocked"));
+            app.start_build();
+            assert!(app.build_task.is_none());
+            assert_eq!(
+                app.build_error.as_deref(),
+                Some(app.language.text("verify.blocked"))
+            );
+        }
+        app.start_verification();
+        assert!(app.can_advance());
+        assert!(app.build_gate().is_none());
+        app.selected_versions.push("1.21.11".to_owned());
+        assert!(!app.can_advance());
+        app.mock_verification(ScreenshotState::VerifyOk);
+        app.verification.as_mut().unwrap().reports[1] = VerifyReport::mock_failed_index();
+        assert!(!app.can_advance());
+        app.start_verification();
+        assert!(app.can_advance());
+        app.config.mappings_path = "different-mappings.txt".to_owned();
+        assert!(!app.can_advance());
+        app.start_verification();
+        app.minecraft_dir = "different-directory".to_owned();
+        assert!(!app.can_advance());
+    }
+
+    #[test]
     fn terms_checkbox_stays_inside_the_screen_at_all_sizes_and_scales() {
         let cases = [
             ([800, 540], 1.0),
@@ -5093,7 +7171,7 @@ mod tests {
                             3,
                             false,
                         );
-                        app.config.scale = scale;
+                        app.config.ui_scale = UiScale::for_factor(scale).unwrap();
                         app
                     });
                 harness.set_size(Vec2::new(size[0] as f32 / scale, size[1] as f32 / scale));
@@ -5255,7 +7333,7 @@ mod tests {
                         false,
                         ScreenshotState::UnsupportedMod,
                     );
-                    app.config.scale = scale;
+                    app.config.ui_scale = UiScale::for_factor(scale).unwrap();
                     app
                 });
             harness.set_size(physical_size / scale);
@@ -5407,7 +7485,264 @@ mod tests {
         assert!(ScreenshotState::parse("build-fail").is_ok());
         assert!(ScreenshotState::parse("cancelled").is_ok());
         assert!(ScreenshotState::parse("terms-accepted").is_ok());
+        assert!(ScreenshotState::parse("config-resources").is_ok());
+        assert!(ScreenshotState::parse("config-mods").is_ok());
         assert!(ScreenshotState::parse("mods-scrolled").is_ok());
+        assert!(ScreenshotState::parse("tools-missing").is_ok());
+        assert!(ScreenshotState::parse("tools-downloading").is_ok());
+        assert!(ScreenshotState::parse("tools-failed").is_ok());
+        assert!(ScreenshotState::parse("tools-ready").is_ok());
+    }
+
+    #[test]
+    fn missing_tools_block_next_and_ready_tools_allow_it() {
+        let missing = test_app_state(2, ScreenshotState::ToolsMissing);
+        assert!(!missing.can_advance());
+        assert!(!missing.step_complete(2));
+        let ready = test_app_state(2, ScreenshotState::ToolsReady);
+        assert!(ready.can_advance());
+        assert!(ready.step_complete(2));
+    }
+
+    #[test]
+    fn absent_kernel_tools_block_next_and_build_only_in_strict_mode() {
+        for (state, strict) in [
+            (ScreenshotState::ToolsOptional, false),
+            (ScreenshotState::ToolsStrict, true),
+        ] {
+            let mut app = test_app_state(2, state);
+            app.terms_checked = true;
+            assert_eq!(app.config.strict_kernel, strict);
+            assert_eq!(app.can_advance(), !strict);
+            assert_eq!(app.build_gate(), strict.then_some("doctor.tools.blocked"));
+            let report = app.doctor_report.as_mut().unwrap();
+            for tool in report.tools.iter_mut().filter(|tool| {
+                matches!(
+                    tool.id.as_str(),
+                    "rust-cargo" | "wasm32-target" | "cargo-cache"
+                )
+            }) {
+                tool.state = "present".to_owned();
+            }
+            assert!(app.can_advance());
+            assert_eq!(app.build_gate(), None);
+        }
+    }
+
+    const T9_STATES: [(&str, ScreenshotState); 5] = [
+        ("shader-verified", ScreenshotState::ShaderVerified),
+        ("shader-missing", ScreenshotState::ShaderMissing),
+        ("shader-tampered", ScreenshotState::ShaderTampered),
+        ("maven-partial", ScreenshotState::MavenPartial),
+        ("maven-ready", ScreenshotState::MavenReady),
+    ];
+
+    #[test]
+    fn t9_local_tool_states_gate_the_actual_next_and_build_buttons() {
+        for (name, state) in T9_STATES {
+            assert_eq!(ScreenshotState::parse(name).unwrap(), state);
+            let ready = matches!(
+                state,
+                ScreenshotState::ShaderVerified | ScreenshotState::MavenReady
+            );
+            for (page, label) in [(2, "Next"), (5, Language::English.text("build.start"))] {
+                let mut harness = egui_kittest::Harness::builder()
+                    .with_size(Vec2::new(960.0, 620.0))
+                    .build_eframe(|creation| {
+                        let mut app = BuilderApp::with_state(
+                            &creation.egui_ctx,
+                            Language::English,
+                            ThemeMode::Dark,
+                            page,
+                            false,
+                            state,
+                        );
+                        app.terms_checked = true;
+                        app
+                    });
+                harness.run();
+                assert_eq!(
+                    harness.get_by_label(label).accesskit_node().is_disabled(),
+                    !ready,
+                    "{name} page {page}"
+                );
+                if page == 2
+                    && matches!(
+                        state,
+                        ScreenshotState::ShaderMissing | ScreenshotState::ShaderTampered
+                    )
+                {
+                    harness.get_by_label(Language::English.text("doctor.shader.choose"));
+                    harness.get_by_label(Language::English.text("doctor.retry"));
+                    assert!(
+                        harness
+                            .query_by_label(Language::English.text("doctor.tools.download"))
+                            .is_none(),
+                        "{name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn t9_maven_confirmation_lists_the_shared_download_once_for_three_profiles() {
+        let language = Language::English;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(Vec2::new(960.0, 620.0))
+            .build_eframe(|creation| {
+                let mut app = BuilderApp::with_state(
+                    &creation.egui_ctx,
+                    language,
+                    ThemeMode::Dark,
+                    2,
+                    false,
+                    ScreenshotState::MavenPartial,
+                );
+                app.selected_versions = VERSION_IDS.map(str::to_owned).to_vec();
+                app.mock_verification(ScreenshotState::Normal);
+                app
+            });
+        harness.run();
+        for version in VERSION_IDS {
+            harness.get_by_label(&format!(
+                "{} · {version} · {}",
+                language.text("doctor.maven"),
+                language.text("doctor.tools.partial")
+            ));
+        }
+        let download = language.text("doctor.tools.download");
+        harness.get_by_label(download).scroll_to_me();
+        harness.run();
+        harness.get_by_label(download).click();
+        harness.run();
+        assert!(harness.state().tools_confirm);
+        assert_eq!(
+            harness
+                .query_all_by_label(&format!(
+                    "{} · {} · Source: repo.maven.apache.org",
+                    language.text("doctor.maven"),
+                    human_bytes(86_143_464)
+                ))
+                .count(),
+            1
+        );
+        assert!(!harness.state().can_advance());
+    }
+
+    #[test]
+    fn t9_tool_state_layout_fits_both_capture_sizes_and_languages() {
+        for (name, state) in T9_STATES {
+            for (size, scale) in [([960, 620], 1.0), ([800, 540], 1.5)] {
+                for (theme, language) in [
+                    (ThemeMode::Dark, Language::Chinese),
+                    (ThemeMode::Dark, Language::English),
+                    (ThemeMode::Light, Language::Chinese),
+                    (ThemeMode::Light, Language::English),
+                ] {
+                    let mut harness = egui_kittest::Harness::builder()
+                        .with_size(Vec2::new(size[0] as f32, size[1] as f32))
+                        .with_context_setup(move |context| context.set_zoom_factor(scale))
+                        .with_render_cursor(false)
+                        .build_eframe(|creation| {
+                            let mut app = BuilderApp::with_state(
+                                &creation.egui_ctx,
+                                language,
+                                theme,
+                                2,
+                                false,
+                                state,
+                            );
+                            app.config.ui_scale = UiScale::for_factor(scale).unwrap();
+                            app.config.reduce_motion = true;
+                            app
+                        });
+                    harness.set_size(Vec2::new(size[0] as f32 / scale, size[1] as f32 / scale));
+                    harness.run();
+                    assert_audited_text_fits_clip(&harness, 2, name, size, scale, language);
+                    let layout = harness.state().layout_rects;
+                    assert!(
+                        layout.content_used.right() <= layout.content.right() + 12.0,
+                        "{name} {language:?} {size:?} {scale}"
+                    );
+                    assert!(rect_contains_rect(layout.viewport, layout.action_row));
+                    assert!(rect_contains_rect(layout.viewport, layout.bottom_bar));
+                    if state == ScreenshotState::ShaderMissing && scale == 1.5 {
+                        scroll_to_shader_picker(&mut harness, language);
+                        let choose = harness.get_by_label(language.text("doctor.shader.choose"));
+                        let file_prefix = language
+                            .text("doctor.shader.expected")
+                            .split_once("{value}")
+                            .unwrap()
+                            .0;
+                        let files = harness.get_by_label_contains(file_prefix);
+                        let content = harness.state().layout_rects.content;
+                        assert!(
+                            rect_contains_rect(content, choose.rect()),
+                            "{language:?}: picker off-screen"
+                        );
+                        assert!(
+                            rect_contains_rect(content, files.rect()),
+                            "{language:?}: file list off-screen"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn changing_tool_paths_persists_each_override_and_rejects_a_queued_old_result() {
+        let file = std::env::temp_dir().join(format!("t9-gui-paths-{}.json", std::process::id()));
+        let mut app = test_app_state(2, ScreenshotState::ShaderVerified);
+        app.tool_settings_file = Some(file.clone());
+        app.live_verification = true;
+        let control = ProcessControl::default();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(Ok(MockBackend.doctor().unwrap())).unwrap();
+        app.doctor_receiver = Some(DoctorTask {
+            receiver,
+            control: control.clone(),
+        });
+        app.doctor_control = Some(control.clone());
+        let settings = ToolPathSettings {
+            toolchain_dir: "/home/private-gui-user/cache".to_owned(),
+            shader_toolchain: r"C:\Users\private-shader-user\modules".to_owned(),
+        };
+        app.set_tool_path_settings(settings.clone());
+        assert!(control.is_cancelled());
+        assert!(app.tool_check_at.is_some());
+        app.poll_doctor();
+        assert!(app.doctor_report.is_none() && !app.can_advance());
+        assert_eq!(ToolPathSettings::load(&file), settings);
+        for diagnostics in [app.diagnostics(), app.doctor_diagnostics()] {
+            assert!(
+                !diagnostics.contains("private-gui-user")
+                    && !diagnostics.contains("private-shader-user")
+            );
+            assert!(diagnostics.contains("--toolchain-dir: /home/<user-home>/cache"));
+            assert!(diagnostics.contains(r"--shader-toolchain: C:\Users\<user-home>\modules"));
+        }
+        app.set_tool_path_settings(ToolPathSettings {
+            shader_toolchain: String::new(),
+            ..settings
+        });
+        let restored = ToolPathSettings::load(&file).paths();
+        assert!(restored.toolchain_dir.is_some());
+        assert!(restored.shader_toolchain.is_none());
+        fs::remove_file(file).unwrap();
+    }
+
+    fn test_app_state(page: usize, state: ScreenshotState) -> BuilderApp {
+        let context = egui::Context::default();
+        BuilderApp::with_state(
+            &context,
+            Language::English,
+            ThemeMode::Dark,
+            page,
+            false,
+            state,
+        )
     }
 
     #[test]
@@ -5570,55 +7905,6 @@ mod tests {
     }
 
     #[test]
-    fn shader_toolchain_manifest_and_modules_are_verified() {
-        let root = std::env::temp_dir().join(format!("patchgui-toolchain-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("create temporary toolchain");
-        let module_names = [
-            "gaius-shader-toolchain.js",
-            "gaius-shaderc.js",
-            "gaius-shaderc.wasm",
-            "gaius-spvc.js",
-            "gaius-spvc.wasm",
-        ];
-        let mut file_hashes = serde_json::Map::new();
-        for name in module_names {
-            let bytes = format!("fixture:{name}");
-            fs::write(root.join(name), &bytes).expect("write fixture module");
-            file_hashes.insert(
-                name.to_owned(),
-                serde_json::json!({ "sha256": bytes.sha256(), "bytes": bytes.len() }),
-            );
-        }
-        let pins = include_str!("../../../port/wasm/shader-toolchain/pins.env")
-            .lines()
-            .filter_map(|line| line.split_once('='))
-            .collect::<std::collections::HashMap<_, _>>();
-        let sources = serde_json::json!({
-            "shaderc": pins["GAIUS_ST_SHADERC_COMMIT"],
-            "glslang": pins["GAIUS_ST_GLSLANG_COMMIT"],
-            "spirv-tools": pins["GAIUS_ST_SPIRV_TOOLS_COMMIT"],
-            "spirv-headers": pins["GAIUS_ST_SPIRV_HEADERS_COMMIT"],
-            "spirv-cross": pins["GAIUS_ST_SPIRV_CROSS_COMMIT"],
-        });
-        let manifest = serde_json::json!({
-            "schema": 1,
-            "emscripten": format!("{} ({})", pins["GAIUS_ST_EMSCRIPTEN_VERSION"], pins["GAIUS_ST_EMSCRIPTEN_COMMIT"]),
-            "sources": sources,
-            "files": file_hashes,
-        });
-        fs::write(
-            root.join("gaius-shader-toolchain.json"),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .expect("write manifest");
-        assert!(validate_shader_toolchain(&root).is_ok());
-        fs::write(root.join("gaius-spvc.wasm"), b"modified").expect("modify fixture module");
-        assert!(validate_shader_toolchain(&root).is_err());
-        fs::remove_dir_all(root).expect("remove fixture toolchain");
-    }
-
-    #[test]
     fn build_options_mark_cli_settings_as_applied_and_mods_as_unapplied() {
         let root = std::env::temp_dir().join(format!("patchgui-options-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -5655,6 +7941,37 @@ mod tests {
         );
         assert_eq!(record["view_distance_chunks"], 16);
         fs::remove_dir_all(root).expect("remove fixture options");
+    }
+
+    #[test]
+    fn reproducibility_customization_tracks_only_settings_passed_to_build() {
+        let mut app = test_app();
+        assert!(!app.config_is_custom());
+
+        app.config.builtin_pack = true;
+        app.config.loader = 1;
+        app.config.mods.push(ModRow {
+            path: "local/mod.jar".to_owned(),
+            supported: CompatGrade::Experimental,
+            licensed: true,
+        });
+        app.config.resource_path = "local/not-added.zip".to_owned();
+        assert!(!app.config_is_custom());
+
+        app.config.quality = 0;
+        assert!(app.config_is_custom());
+        app.config.quality = 1;
+        app.config.distance = 13;
+        assert!(app.config_is_custom());
+        app.config.distance = 12;
+        app.config.backend = 1;
+        assert!(app.config_is_custom());
+        app.config.backend = 0;
+        app.config.resource_paths.push(LocalAsset {
+            path: "local/selected.zip".to_owned(),
+            licensed: true,
+        });
+        assert!(app.config_is_custom());
     }
 
     #[test]
@@ -5745,62 +8062,110 @@ mod tests {
 
     #[test]
     fn completion_key_value_columns_have_fixed_left_edges() {
-        for language in [Language::Chinese, Language::English] {
-            for theme in [ScreenTheme::Dark, ScreenTheme::Light] {
-                let mut harness = egui_kittest::Harness::builder()
-                    .with_size(Vec2::new(960.0, 620.0))
-                    .with_theme(match theme {
-                        ScreenTheme::Dark => Theme::Dark,
-                        ScreenTheme::Light => Theme::Light,
-                    })
-                    .with_render_cursor(false)
-                    .build_eframe(|creation| {
-                        BuilderApp::with_state(
-                            &creation.egui_ctx,
-                            language,
-                            theme.mode(),
-                            6,
-                            false,
-                            ScreenshotState::BadgeGreen,
-                        )
-                    });
-                harness.run();
+        for (size, scale) in [
+            ([800.0, 540.0], 1.0),
+            ([800.0, 540.0], 1.25),
+            ([800.0, 540.0], 1.5),
+            ([800.0, 540.0], 2.0),
+            ([960.0, 620.0], 1.0),
+            ([1280.0, 800.0], 1.0),
+            ([1920.0, 1080.0], 1.0),
+        ] {
+            for language in [Language::Chinese, Language::English] {
+                for theme in [ScreenTheme::Dark, ScreenTheme::Light] {
+                    let mut harness = egui_kittest::Harness::builder()
+                        .with_size(Vec2::new(size[0], size[1]))
+                        .with_pixels_per_point(1.0)
+                        .with_context_setup(move |context| context.set_zoom_factor(scale))
+                        .with_theme(match theme {
+                            ScreenTheme::Dark => Theme::Dark,
+                            ScreenTheme::Light => Theme::Light,
+                        })
+                        .with_render_cursor(false)
+                        .build_eframe(|creation| {
+                            BuilderApp::with_state(
+                                &creation.egui_ctx,
+                                language,
+                                theme.mode(),
+                                6,
+                                false,
+                                ScreenshotState::BuildSuccessThree,
+                            )
+                        });
+                    harness.set_size(Vec2::new(size[0] / scale, size[1] / scale));
+                    harness.run();
 
-                let layout = harness.state().layout_rects;
-                let labels = layout
-                    .completion_labels
-                    .map(|rect| rect.expect("every completion label has a layout rect"));
-                let values = layout
-                    .completion_values
-                    .map(|rect| rect.expect("every completion value has a layout rect"));
-                for rect in labels.iter().skip(1) {
+                    let layout = harness.state().layout_rects;
+                    let labels = layout
+                        .completion_labels
+                        .map(|rect| rect.expect("every completion label has a layout rect"));
+                    let values = layout
+                        .completion_values
+                        .map(|rect| rect.expect("every completion value has a layout rect"));
+                    for rect in labels.iter().skip(1) {
+                        assert!(
+                            (rect.min.x - labels[0].min.x).abs() <= 0.5,
+                            "completion labels do not share a left edge for {size:?} at {scale}x, {language:?}, {theme:?}: {labels:?}"
+                        );
+                    }
+                    for rect in values.iter().skip(1) {
+                        assert!(
+                            (rect.min.x - values[0].min.x).abs() <= 0.5,
+                            "completion values do not share a left edge for {size:?} at {scale}x, {language:?}, {theme:?}: {values:?}"
+                        );
+                    }
+                    let artifacts = layout
+                        .completion_artifacts
+                        .expect("artifact heading has a layout rect");
                     assert!(
-                        (rect.min.x - labels[0].min.x).abs() <= 0.5,
-                        "completion labels do not share a left edge for {language:?}, {theme:?}: {labels:?}"
+                        (artifacts.min.x - labels[0].min.x).abs() <= 0.5,
+                        "artifact heading is not left-aligned with the completion grid for {size:?} at {scale}x, {language:?}, {theme:?}: {artifacts:?}, {:?}",
+                        labels[0]
                     );
-                }
-                for rect in values.iter().skip(1) {
+                    let copy = layout
+                        .completion_copy
+                        .expect("path copy button has a layout rect");
+                    let path = values[1];
                     assert!(
-                        (rect.min.x - values[0].min.x).abs() <= 0.5,
-                        "completion values do not share a left edge for {language:?}, {theme:?}: {values:?}"
+                        copy.min.x >= path.max.x - 0.5 && copy.min.x - path.max.x <= 8.5,
+                        "copy button is not directly after the path for {size:?} at {scale}x, {language:?}, {theme:?}: {path:?}, {copy:?}"
                     );
+                    let mut previous_artifact_label: Option<Rect> = None;
+                    for index in 0..3 {
+                        let artifact_label = layout.completion_artifact_labels[index]
+                            .expect("every version status cell has a layout rect");
+                        let artifact_path = layout.completion_artifact_paths[index]
+                            .expect("every artifact path has a layout rect");
+                        let open = layout.completion_artifact_open_buttons[index]
+                            .expect("every artifact folder button has a layout rect");
+                        assert!(
+                            (artifact_label.min.x - labels[0].min.x).abs() <= 0.5,
+                            "artifact status column does not align for {size:?} at {scale}x, {language:?}, {theme:?}: {artifact_label:?}, {:?}",
+                            labels[0]
+                        );
+                        assert!(
+                            (artifact_path.min.x - values[0].min.x).abs() <= 0.5,
+                            "artifact path column does not align for {size:?} at {scale}x, {language:?}, {theme:?}: {artifact_path:?}, {:?}",
+                            values[0]
+                        );
+                        assert!(
+                            (artifact_label.min.y - artifact_path.min.y).abs() <= 0.5,
+                            "artifact status and path do not share a row for {size:?} at {scale}x, {language:?}, {theme:?}: {artifact_label:?}, {artifact_path:?}"
+                        );
+                        if let Some(previous) = previous_artifact_label {
+                            assert!(
+                                artifact_label.min.y >= previous.max.y - 0.5,
+                                "artifact versions do not stack as separate rows for {size:?} at {scale}x, {language:?}, {theme:?}: {previous:?}, {artifact_label:?}"
+                            );
+                        }
+                        previous_artifact_label = Some(artifact_label);
+                        assert!(
+                            open.min.x >= artifact_path.max.x - 0.5
+                                && open.min.x - artifact_path.max.x <= 8.5,
+                            "artifact folder button is not directly after its path for {size:?} at {scale}x, {language:?}, {theme:?}: {artifact_path:?}, {open:?}"
+                        );
+                    }
                 }
-                let artifacts = layout
-                    .completion_artifacts
-                    .expect("artifact heading has a layout rect");
-                assert!(
-                    (artifacts.min.x - labels[0].min.x).abs() <= 0.5,
-                    "artifact heading is not left-aligned with the completion grid for {language:?}, {theme:?}: {artifacts:?}, {:?}",
-                    labels[0]
-                );
-                let copy = layout
-                    .completion_copy
-                    .expect("path copy button has a layout rect");
-                let path = values[1];
-                assert!(
-                    copy.min.x >= path.max.x - 0.5 && copy.min.x - path.max.x <= 8.5,
-                    "copy button is not directly after the path for {language:?}, {theme:?}: {path:?}, {copy:?}"
-                );
             }
         }
     }
@@ -5823,7 +8188,7 @@ mod tests {
                     false,
                     ScreenshotState::BadgeGreen,
                 );
-                app.config.scale = scale;
+                app.config.ui_scale = UiScale::for_factor(scale).unwrap();
                 app.output_dir = "/data/output/builds/Gaius-26.3-with-a-long-directory-name".into();
                 app
             });
@@ -5875,7 +8240,7 @@ mod tests {
                             2,
                             false,
                         );
-                        app.config.scale = scale;
+                        app.config.ui_scale = UiScale::for_factor(scale).unwrap();
                         app
                     });
                 harness.set_size(physical_size / scale);
@@ -5967,40 +8332,52 @@ mod tests {
         };
         let directory = PathBuf::from(directory);
         fs::create_dir_all(&directory).expect("completion gallery directory is writable");
-
+        let viewports = [
+            ([960, 620], 1.0, "960x620", "100"),
+            ([800, 540], 1.5, "800x540", "150"),
+        ];
+        let mut index = String::from(
+            "# 完成页截图\n\n| 窗口 | 缩放 | 主题 | 语言 | 截图 |\n|---|---:|---|---|---|\n",
+        );
         for language in [Language::Chinese, Language::English] {
             for theme in [ScreenTheme::Dark, ScreenTheme::Light] {
                 let theme_code = theme_slug(theme);
                 let language_code = language.code();
-                render_screenshot(
-                    &directory.join(format!("page-6-{theme_code}-{language_code}-960x620.png")),
-                    6,
-                    theme,
-                    language,
-                    [960, 620],
-                    1.0,
-                    "badge-green",
-                )
-                .expect("completion page screenshot renders");
-                for (badge, state) in [
-                    ("badge-green", "badge-green"),
-                    ("badge-yellow", "badge-yellow"),
-                    ("badge-red", "badge-red"),
-                ] {
+                for (size, scale, size_label, scale_label) in viewports {
+                    let name = format!(
+                        "completion-{theme_code}-{language_code}-{size_label}-{scale_label}.png"
+                    );
                     render_screenshot(
-                        &directory
-                            .join(format!("{badge}-{theme_code}-{language_code}-960x620.png")),
+                        &directory.join(&name),
                         6,
                         theme,
                         language,
-                        [960, 620],
-                        1.0,
-                        state,
+                        size,
+                        scale,
+                        "build-success",
                     )
-                    .expect("completion badge screenshot renders");
+                    .expect("completion page screenshot renders");
+                    index.push_str(&format!(
+                        "| {size_label} | {scale_label}% | {theme_code} | {language_code} | [{name}]({name}) |\n"
+                    ));
                 }
             }
         }
+        let three_versions = "completion-three-versions-dark-zh-1280x800-100.png";
+        render_screenshot(
+            &directory.join(three_versions),
+            6,
+            ScreenTheme::Dark,
+            Language::Chinese,
+            [1280, 800],
+            1.0,
+            "build-success-three",
+        )
+        .expect("three-version completion screenshot renders");
+        index.push_str(&format!(
+            "\n三版本成功结果：[{three_versions}]({three_versions})\n"
+        ));
+        fs::write(directory.join("INDEX.md"), index).expect("completion gallery index is writable");
     }
 
     #[test]
@@ -6035,6 +8412,31 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_redact_chinese_windows_user_paths_and_keep_unicode_project_path() {
+        let value = sanitize_paths("failure at C:\\Users\\张三\\桌面\\构建目录\\26.3", &[], &[]);
+        let value = redact_profile_paths(&value);
+        assert_eq!(
+            value,
+            "failure at C:\\Users\\<user-home>\\桌面\\构建目录\\26.3"
+        );
+    }
+
+    #[test]
+    fn diagnostics_file_uses_utf8_bom() {
+        let root = std::env::temp_dir().join(format!("gaius-diagnostics-{}", std::process::id()));
+        let path = root.join("diagnostics.txt");
+        fs::create_dir_all(&root).unwrap();
+        write_diagnostics(&path, "路径 C:\\工作\\构建").unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"\xEF\xBB\xBF"));
+        assert_eq!(
+            std::str::from_utf8(&bytes[3..]).unwrap(),
+            "路径 C:\\工作\\构建"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn screenshot_gallery_when_requested() {
         let Some(directory) = std::env::var_os("GAIUS_BUILDER_GALLERY_DIR") else {
             return;
@@ -6065,6 +8467,26 @@ mod tests {
                         },
                     )
                     .expect("page screenshot renders");
+                }
+                for (name, state) in [
+                    ("config-settings", "normal"),
+                    ("config-resources", "config-resources"),
+                    ("config-mods", "config-mods"),
+                ] {
+                    render_screenshot(
+                        &directory.join(format!(
+                            "{name}-{}-{}-960x620.png",
+                            theme_slug(theme),
+                            language.code()
+                        )),
+                        4,
+                        theme,
+                        language,
+                        [960, 620],
+                        1.0,
+                        state,
+                    )
+                    .expect("configuration-tab screenshot renders");
                 }
                 render_screenshot(
                     &directory.join(format!(
@@ -6267,7 +8689,7 @@ mod tests {
                     false,
                     ScreenshotState::Running,
                 );
-                app.config.scale = scale;
+                app.config.ui_scale = UiScale::for_factor(scale).unwrap();
                 app
             });
         harness.set_size(size / scale);
@@ -6306,7 +8728,7 @@ mod tests {
                     false,
                     ScreenshotState::BadgeRed,
                 );
-                app.config.scale = scale;
+                app.config.ui_scale = UiScale::for_factor(scale).unwrap();
                 app
             });
         harness.set_size(size / scale);
@@ -6343,6 +8765,306 @@ mod tests {
     }
 
     #[test]
+    fn full_footer_disclaimer_fits_every_size_scale_and_language() {
+        let sizes = [
+            ([800, 540], "800x540"),
+            ([960, 620], "960x620"),
+            ([1280, 800], "1280x800"),
+            ([1920, 1080], "1920x1080"),
+        ];
+        let scales = [(1.0, "100"), (1.25, "125"), (1.5, "150"), (2.0, "200")];
+
+        for language in [Language::Chinese, Language::English] {
+            for (size, size_label) in sizes {
+                for (scale, _) in scales {
+                    let mut harness = egui_kittest::Harness::builder()
+                        .with_size(Vec2::new(size[0] as f32, size[1] as f32))
+                        .with_pixels_per_point(1.0)
+                        .with_context_setup(move |context| context.set_zoom_factor(scale))
+                        .with_render_cursor(false)
+                        .build_eframe(|creation| {
+                            let mut app = BuilderApp::new(
+                                &creation.egui_ctx,
+                                language,
+                                ThemeMode::Dark,
+                                4,
+                                false,
+                            );
+                            app.config.ui_scale = UiScale::for_factor(scale).unwrap();
+                            app.config.reduce_motion = true;
+                            app
+                        });
+                    harness.set_size(Vec2::new(size[0] as f32 / scale, size[1] as f32 / scale));
+                    harness.run();
+
+                    assert_full_footer_disclaimer(&harness, 4, size, scale, language);
+
+                    if size == [800, 540] && scale >= 1.5 {
+                        assert!(
+                            harness.state().layout_rects.content_scroll_needed,
+                            "central content should scroll at {size_label}, scale {scale}, language {language:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_dpi_layout_and_text_grid_matrix() {
+        use egui::accesskit::{Action, Role};
+        let cases = [
+            (1, ScreenshotState::Normal),
+            (2, ScreenshotState::Normal),
+            (3, ScreenshotState::Normal),
+            (4, ScreenshotState::Normal),
+            (5, ScreenshotState::Normal),
+            (6, ScreenshotState::Normal),
+            (4, ScreenshotState::ModConfig),
+            (6, ScreenshotState::BuildSuccess),
+        ];
+        let appearances = [
+            (ThemeMode::Dark, Language::Chinese),
+            (ThemeMode::Light, Language::English),
+            (ThemeMode::Light, Language::Chinese),
+            (ThemeMode::Dark, Language::English),
+        ];
+        for (native_index, native) in [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
+            .into_iter()
+            .enumerate()
+        {
+            for (zoom_index, choice) in [
+                UiScale::Auto,
+                UiScale::P125,
+                UiScale::P150,
+                UiScale::P200,
+                UiScale::P250,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                for (case_index, (page, state)) in cases.into_iter().enumerate() {
+                    let (theme, language) =
+                        appearances[(native_index + zoom_index + case_index) % appearances.len()];
+                    let size = if (zoom_index + case_index) % 2 == 0 {
+                        [800, 540]
+                    } else {
+                        [960, 620]
+                    };
+                    let native_size = Vec2::new(size[0] as f32, size[1] as f32);
+                    let zoom = ui_scale::fit_zoom(choice.factor(), native_size);
+                    let mut harness = egui_kittest::Harness::builder()
+                        .with_size(native_size / zoom)
+                        .with_pixels_per_point(native)
+                        .with_context_setup(move |ctx| {
+                            ctx.options_mut(|options| options.zoom_factor = zoom)
+                        })
+                        .build_eframe(|creation| {
+                            let mut app = BuilderApp::with_state(
+                                &creation.egui_ctx,
+                                language,
+                                theme,
+                                page,
+                                false,
+                                state,
+                            );
+                            app.config.ui_scale = choice;
+                            app.config.reduce_motion = true;
+                            app
+                        });
+                    harness.set_size(native_size / zoom).run();
+                    let ppp = native * zoom;
+                    assert!((harness.output().pixels_per_point - ppp).abs() < 0.001);
+                    let layout = harness.state().layout_rects;
+                    assert!(
+                        (layout.viewport.size() * zoom - native_size)
+                            .abs()
+                            .max_elem()
+                            * native
+                            <= 1.0,
+                        "{native}x{zoom}, {size:?}: viewport {:?}",
+                        layout.viewport
+                    );
+                    let case = format!(
+                        "{native}×{zoom}, {size:?}, {page}/{state:?}, {language:?}/{theme:?}"
+                    );
+                    for panel in [
+                        layout.top_bar,
+                        layout.rail,
+                        layout.content,
+                        layout.footer,
+                        layout.bottom_bar,
+                    ] {
+                        assert!(
+                            rect_contains_rect(layout.viewport, panel),
+                            "{case}: panel outside viewport: {panel:?}"
+                        );
+                    }
+                    assert!(
+                        rect_contains_rect(layout.top_bar, layout.top_bar_content),
+                        "{case}: clipped toolbar"
+                    );
+                    assert_full_footer_disclaimer(&harness, page, size, zoom, language);
+                    for action in layout.action_widgets.iter().flatten() {
+                        assert!(
+                            rect_contains_rect(layout.action_row, *action),
+                            "{case}: clipped pinned action {action:?} vs {:?}",
+                            layout.action_row
+                        );
+                        assert!(
+                            action.height() >= 23.99 && action.width() >= 23.99,
+                            "{case}: small pinned action {action:?}"
+                        );
+                    }
+                    let next = layout.nav_next.unwrap();
+                    assert!(
+                        rect_contains_rect(layout.bottom_bar, next)
+                            && next.width() >= 39.99
+                            && next.height() >= 39.99,
+                        "{case}: Next is small or clipped: {next:?}"
+                    );
+                    if page == 5 || state == ScreenshotState::BuildSuccess {
+                        let primary = layout.action_widgets[0].unwrap();
+                        assert!(
+                            primary.size().min_elem() >= 39.99,
+                            "{case}: small primary action"
+                        );
+                    }
+                    for node in harness.root().children_recursive() {
+                        let a11y = node.accesskit_node();
+                        if a11y.is_disabled()
+                            || !a11y.data().supports_action(Action::Click)
+                            || !matches!(
+                                a11y.role(),
+                                Role::Button
+                                    | Role::CheckBox
+                                    | Role::ComboBox
+                                    | Role::RadioButton
+                                    | Role::Tab
+                            )
+                        {
+                            continue;
+                        }
+                        let rect = node.rect();
+                        assert!(
+                            rect.size().min_elem() >= 23.9,
+                            "{case}: small {:?} {:?}: {rect:?}",
+                            a11y.role(),
+                            a11y.label()
+                        );
+                    }
+                    for audit in layout.text_audits.iter().flatten() {
+                        if rects_overlap(audit.rect, audit.clip) {
+                            assert!(
+                                audit.rect.left() >= audit.clip.left() - 0.5
+                                    && audit.rect.right() <= audit.clip.right() + 0.5,
+                                "{case}: horizontally clipped text: {}",
+                                audit.name
+                            );
+                        }
+                    }
+                    for clipped in &harness.output().shapes {
+                        assert_pixel_text(&clipped.shape, ppp, &case);
+                    }
+                }
+            }
+        }
+    }
+
+    fn assert_pixel_text(shape: &egui::Shape, ppp: f32, case: &str) {
+        let is_integral = |points: f32| (points * ppp - (points * ppp).round()).abs() < 0.005;
+        match shape {
+            egui::Shape::Text(text) => {
+                let job = &text.galley.job;
+                for section in &job.sections {
+                    let size = section.format.font_id.size;
+                    assert!(
+                        is_integral(size),
+                        "{case}: fractional font size {size} at {ppp} PPP: {:?}",
+                        job.text
+                    );
+                }
+                for row in &text.galley.rows {
+                    // The galley may include subpixel advance widths; row baselines and
+                    // line heights are grid-aligned by epaint when hinting is enabled.
+                    assert!(
+                        is_integral(row.pos.y),
+                        "{case}: fractional text row position: {:?}",
+                        job.text
+                    );
+                }
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    assert_pixel_text(shape, ppp, case);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn moving_between_native_dpis_preserves_zoom_and_reflows() {
+        let zoom = 1.5;
+        let size = Vec2::new(800.0, 540.0) / zoom;
+        let mut ctx = egui::Context::default();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(size)
+            .with_pixels_per_point(1.25)
+            .with_context_setup(move |ctx| ctx.options_mut(|options| options.zoom_factor = zoom))
+            .build_eframe(|creation| {
+                ctx = creation.egui_ctx.clone();
+                let mut app = BuilderApp::with_state(
+                    &creation.egui_ctx,
+                    Language::Chinese,
+                    ThemeMode::Light,
+                    4,
+                    false,
+                    ScreenshotState::ModConfig,
+                );
+                app.config.ui_scale = UiScale::P150;
+                app
+            });
+        for native in [1.25, 2.5, 1.5, 2.0, 1.25] {
+            harness
+                .input_mut()
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(native);
+            harness.set_size(size).run();
+            let app = harness.state();
+            assert_eq!(app.config.ui_scale, UiScale::P150);
+            assert!(app.compact_rail);
+            let ppp = native * zoom;
+            assert_eq!(harness.output().pixels_per_point, ppp);
+            assert_eq!(app.theme_applied.unwrap().2, ppp);
+            assert!(rect_contains_rect(
+                app.layout_rects.viewport,
+                app.layout_rects.nav_next.unwrap()
+            ));
+            let fonts = app.fonts_report(&ctx);
+            if app
+                .font_sources
+                .iter()
+                .any(|font| font.starts_with("system-cjk-fallback"))
+            {
+                assert_eq!(fonts["cjk_probe_has_glyphs"], true);
+            }
+            if app
+                .font_sources
+                .iter()
+                .any(|font| font.starts_with("system-symbol-fallback"))
+            {
+                assert_eq!(fonts["symbol_probe_has_glyphs"], true);
+            }
+            for clipped in &harness.output().shapes {
+                assert_pixel_text(&clipped.shape, ppp, "mixed-DPI monitor move");
+            }
+        }
+    }
+
+    #[test]
     fn shell_panels_stay_in_viewport_and_bottom_bar_is_page_stable() {
         let states = [
             ("normal", ScreenshotState::Normal),
@@ -6356,6 +9078,13 @@ mod tests {
             ("badge-green", ScreenshotState::BadgeGreen),
             ("badge-yellow", ScreenshotState::BadgeYellow),
             ("badge-red", ScreenshotState::BadgeRed),
+            ("tools-missing", ScreenshotState::ToolsMissing),
+            ("tools-optional", ScreenshotState::ToolsOptional),
+            ("tools-strict", ScreenshotState::ToolsStrict),
+            ("tools-python-exe", ScreenshotState::ToolsPythonExe),
+            ("tools-downloading", ScreenshotState::ToolsDownloading),
+            ("tools-failed", ScreenshotState::ToolsFailed),
+            ("tools-ready", ScreenshotState::ToolsReady),
         ];
         let sizes = [
             ([800, 540], 1.0),
@@ -6394,7 +9123,7 @@ mod tests {
                                 false,
                                 state,
                             );
-                            app.config.scale = scale;
+                            app.config.ui_scale = UiScale::for_factor(scale).unwrap();
                             app.config.reduce_motion = true;
                             app
                         });
@@ -6554,7 +9283,7 @@ mod tests {
                             false,
                             state,
                         );
-                        app.config.scale = 2.0;
+                        app.config.ui_scale = UiScale::for_factor(2.0).unwrap();
                         app.config_tab = tab;
                         app.config.reduce_motion = true;
                         app
@@ -6563,6 +9292,28 @@ mod tests {
                 harness.run();
                 assert_audited_text_fits_clip(&harness, 4, "config-tab", [800, 540], 2.0, language);
             }
+        }
+    }
+
+    #[test]
+    fn view_distance_first_run_hint_is_accessible_in_both_languages() {
+        for language in [Language::Chinese, Language::English] {
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(Vec2::new(960.0, 620.0))
+                .with_render_cursor(false)
+                .build_eframe(|creation| {
+                    BuilderApp::with_state(
+                        &creation.egui_ctx,
+                        language,
+                        ThemeMode::Dark,
+                        4,
+                        false,
+                        ScreenshotState::Normal,
+                    )
+                });
+            harness.run();
+            let hint = harness.get_by_label(language.text("config.distance_hint"));
+            assert!(!hint.accesskit_node().is_hidden());
         }
     }
 

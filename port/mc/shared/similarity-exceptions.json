@@ -37,10 +37,6 @@
       "reason": "Legacy pack-resource contract differs from the newer fixed-path resource type."
     },
     {
-      "paths": ["port/mc/shared/canonical/client/java/net/minecraft/client/resources/model/BrowserModelDependencyScheduler.java", "port/mc/shared/legacy-12111/client/java/net/minecraft/client/resources/model/BrowserModelDependencyScheduler.java"],
-      "reason": "Legacy model-dependency task ABI differs; retained compatibility implementation."
-    },
-    {
       "paths": ["port/mc/shared/legacy-12111/client/java/dev/gaius/browser/BrowserScreens.java", "port/mc/shared/canonical/client/java/dev/gaius/browser/BrowserScreens.java"],
       "reason": "Legacy screen entry points differ; retained compatibility implementation."
     },

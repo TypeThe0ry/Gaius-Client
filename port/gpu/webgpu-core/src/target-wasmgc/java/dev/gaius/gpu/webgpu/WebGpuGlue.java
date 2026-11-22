@@ -1,9 +1,12 @@
 package dev.gaius.gpu.webgpu;
 
+import dev.gaius.browser.HostLoop;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import org.teavm.interop.Import;
 import org.teavm.jso.JSBody;
+import org.teavm.jso.JSFunctor;
+import org.teavm.jso.JSObject;
 import org.teavm.jso.typedarrays.Int8Array;
 
 /**
@@ -274,8 +277,27 @@ final class WebGpuGlue {
     @Import(module = "gaiusGpu", name = "passResume")
     static native void passResume();
 
+    static void setPipeline(int pipeline) {
+        // Variants created by a pass may not have been validated during reload. Suspend the
+        // render activation on first use so its draws follow validation in the same pass.
+        if (bindPipeline(pipeline) && HostLoop.jspi() && HostLoop.canSuspend()) {
+            HostLoop.awaitHost(resume -> onPipelineValidated(pipeline, resume::run));
+            bindPipeline(pipeline);
+        }
+    }
+
+    /** Returns true only when native validation is still pending. */
     @Import(module = "gaiusGpu", name = "setPipeline")
-    static native void setPipeline(int pipeline);
+    private static native boolean bindPipeline(int pipeline);
+
+    @JSFunctor
+    private interface PipelineReady extends JSObject {
+        void run();
+    }
+
+    @JSBody(params = { "pipeline", "ready" }, script =
+            "globalThis.GaiusWebGpu.awaitPipelineValidation(pipeline, ready);")
+    private static native void onPipelineValidated(int pipeline, PipelineReady ready);
 
     @Import(module = "gaiusGpu", name = "setVertexBuffer")
     static native void setVertexBuffer(int slot, int buffer, int offset, int size);

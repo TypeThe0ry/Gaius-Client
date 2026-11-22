@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use eframe::egui::{self, Color32, CornerRadius, Margin, Stroke, Theme, ThemePreference, Vec2};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +55,18 @@ impl Palette {
         }
     }
 
+    pub(crate) fn verification_caption(
+        self,
+        ui: &egui::Ui,
+        text: impl Into<String>,
+    ) -> egui::RichText {
+        // Use at least 12 points, and keep the pixel floor at sub-100% zoom.
+        let size = 12.0 / ui.ctx().pixels_per_point().min(1.0);
+        egui::RichText::new(text)
+            .size(snap(ui, size))
+            .color(self.text)
+    }
+
     pub fn tint(self, color: Color32, amount: f32) -> Color32 {
         let blend = |front: u8, back: u8| {
             (front as f32 * amount + back as f32 * (1.0 - amount)).round() as u8
@@ -96,7 +110,78 @@ pub fn apply(ctx: &egui::Context, mode: ThemeMode) {
     ctx.set_theme(mode.preference());
 }
 
+pub(crate) fn snap(ui: &egui::Ui, points: f32) -> f32 {
+    snap_points(points, ui.ctx().pixels_per_point())
+}
+
+pub(crate) fn scroll_end_padding(ui: &mut egui::Ui) {
+    // Cover the largest UI text (including runtime CJK fallback) at this DPI.
+    // Row height minus ascent is a conservative descender bound (it includes line gap).
+    let size = ui
+        .style()
+        .text_styles
+        .values()
+        .map(|font| font.size)
+        .fold(snap(ui, 22.0), f32::max);
+    let descender = ui.fonts_mut(|fonts| {
+        [
+            egui::FontId::proportional(size),
+            egui::FontId::monospace(size),
+        ]
+        .into_iter()
+        .map(|font| {
+            let galley = fonts.layout_no_wrap("gjpqy国語".to_owned(), font, Color32::WHITE);
+            galley
+                .rows
+                .iter()
+                .flat_map(|row| &row.glyphs)
+                .map(|glyph| glyph.font_face_height - glyph.font_face_ascent)
+                .fold(0.0_f32, f32::max)
+        })
+        .fold(0.0_f32, f32::max)
+    });
+    let ppp = ui.ctx().pixels_per_point();
+    ui.add_space(((descender * ppp).ceil() + 8.0) / ppp);
+}
+
+fn snap_points(points: f32, ppp: f32) -> f32 {
+    (points * ppp).round().max(1.0) / ppp
+}
+
+pub(crate) fn configure_text(ctx: &egui::Context) {
+    ctx.options_mut(|options| {
+        for style in [&mut options.dark_style, &mut options.light_style] {
+            let text = &mut Arc::make_mut(style).visuals.text_options;
+            text.font_hinting = true;
+            text.subpixel_binning = false;
+        }
+        options.tessellation_options.round_text_to_pixels = true;
+    });
+}
+
+pub(crate) fn snap_styles(ctx: &egui::Context, ppp: f32) {
+    ctx.all_styles_mut(|style| {
+        for font in style.text_styles.values_mut() {
+            font.size = snap_points(font.size, ppp);
+        }
+    });
+}
+
+pub(crate) fn focus_ring(ui: &egui::Ui, response: &egui::Response, color: Color32) {
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect.shrink(2.0),
+            CornerRadius::same(6),
+            Stroke::new(2.0, color),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 fn customize(style: &mut egui::Style, palette: Palette) {
+    // Start with unsnapped defaults on each DPI change; never re-round old values.
+    style.text_styles = egui::Style::default().text_styles;
+    style.spacing.interact_size = Vec2::splat(24.0);
     style.spacing.item_spacing = Vec2::splat(8.0);
     style.spacing.button_padding = Vec2::new(16.0, 8.0);
     style.spacing.window_margin = Margin::same(16);
@@ -157,6 +242,62 @@ mod tests {
             (first.max(second), first.min(second))
         };
         (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn official_file_check_captions_meet_pixel_and_contrast_minima() {
+        for (mode, system) in [
+            (ThemeMode::Dark, None),
+            (ThemeMode::Light, None),
+            (ThemeMode::System, None),
+            (ThemeMode::System, Some(Theme::Dark)),
+            (ThemeMode::System, Some(Theme::Light)),
+        ] {
+            for scale in [0.75, 1.0, 1.25, 1.5, 2.0, 4.0] {
+                let ctx = egui::Context::default();
+                apply(&ctx, mode);
+                ctx.set_zoom_factor(scale);
+                let input = egui::RawInput {
+                    system_theme: system,
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    assert_eq!(ctx.theme(), mode.effective(system));
+                    let palette = mode.palette(ctx.system_theme());
+                    let status = palette.verification_caption(ui, "Asset index: Failed");
+                    let disclosure = status.clone().color(palette.error);
+                    let path = palette.verification_caption(ui, "assets/indexes/34.json (Missing)");
+                    let hint = palette.verification_caption(ui, "Use local mappings");
+                    let more = palette.verification_caption(ui, "2 more files");
+                    let repair = palette.verification_caption(ui, "Repair official files");
+                    for (caption, surface) in [
+                        (status, palette.background),
+                        (disclosure, palette.background),
+                        (path, palette.background),
+                        (hint, palette.background),
+                        (more, palette.background),
+                        (repair, palette.tint(palette.error, 0.08)),
+                    ] {
+                        let job = egui::WidgetText::from(caption).into_layout_job(
+                            ui.style(),
+                            egui::TextStyle::Body.into(),
+                            egui::Align::Center,
+                        );
+                        let format = &job.sections[0].format;
+                        let pixels = format.font_id.size * ui.ctx().pixels_per_point();
+                        let ratio = contrast(format.color, surface);
+                        assert_eq!(format.color.a(), 255);
+                        assert!(
+                            pixels >= 12.0 && ratio >= 4.5,
+                            "{mode:?}/{system:?} at {scale}×: {} is {pixels:.2} px at {ratio:.2}:1",
+                            job.text,
+                        );
+                    }
+                });
+                output.textures_delta.clear();
+                assert_eq!(output.pixels_per_point, scale);
+            }
+        }
     }
 
     #[test]

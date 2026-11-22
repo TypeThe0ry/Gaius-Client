@@ -26,6 +26,7 @@
 > Mojang or Microsoft.** You must own Minecraft: Java Edition and follow the
 > [Minecraft EULA](https://www.minecraft.net/eula). This repository contains
 > no game code, no game files and no builds, and Gaius provides no downloads.
+> Some build tools can fetch required inputs directly from upstream sources.
 > See the [disclaimer](DISCLAIMER.md).
 
 ## What is Gaius?
@@ -77,8 +78,12 @@ Mods are not supported.
 
 ## Get started
 
+**This public tree cannot build the game on its own.** The overlay build also
+requires the omitted light and Unihex generator sources. See the
+[local overlay recipe](patcher/recipes/README.md#local-bridge-generation).
+
 Gaius provides no downloads, so you build your own copy with the patcher
-below:
+below once you have all the build inputs:
 
 1. Install and start each version you want once in the official Minecraft
    launcher.

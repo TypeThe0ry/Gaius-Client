@@ -6,7 +6,7 @@ import {join, resolve, relative, delimiter} from "node:path";
 import {fileURLToPath} from "node:url";
 import {spawnSync} from "node:child_process";
 import {compareSection} from "./mesh-golden-compare.mjs";
-import {stageMeshJvmSources} from "./mesh-jvm-sources.mjs";
+import {stageMeshJvmBridge, stageMeshJvmSources} from "./mesh-jvm-sources.mjs";
 import {compiledText, resolveSources} from "../tools/sourcesets/sourcesets.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -48,12 +48,13 @@ function run(command, args, cwd = root) {
 function javaPath(path) {
   return process.platform === "win32" ? path.replace(/^\/([a-z])\//i, (_, drive) => `${drive.toUpperCase()}:/`) : path;
 }
+let compiledBridges;
 if (argumentsList.includes("--generate")) {
   const work = join(root, "port/work", profile.id);
   const jar = join(work, "client-named.jar");
   assert(existsSync(jar), "local named vanilla jar missing; downloads are not allowed");
   const classpath = [jar, ...readFileSync(join(work, "classpath.txt"), "utf8").trim()
-    .split(/;|:(?=\/|[A-Za-z]:\/)/u).filter(Boolean).map(javaPath)].join(delimiter);
+    .split(/;|:(?=\/|[A-Za-z]:\/)/u).filter(Boolean).map(javaPath)];
   const harness = join(nativeRoot, "golden/mesh");
   const classes = join(out, "classes");
   mkdirSync(classes, {recursive: true}); mkdirSync(fixtures, {recursive: true});
@@ -71,11 +72,13 @@ if (argumentsList.includes("--generate")) {
     javaFiles.push(...staged.javaFiles);
     sourceFiles.push(...staged.sourceFiles);
     compiledSources = staged.compiledSources;
+    compiledBridges = staged.compiledBridges;
+    classpath.unshift(staged.bridgeDirectory);
   }
-  const args = ["-encoding", "UTF-8", "-cp", classpath, "-d", classes, ...javaFiles];
+  const args = ["-encoding", "UTF-8", "-cp", classpath.join(delimiter), "-d", classes, ...javaFiles];
   writeFileSync(join(out, "javac.args"), args.map((value) => `"${value.replaceAll("\\", "/")}"`).join("\n"));
   run("javac", ["-J-Xmx3g", "-J-Duser.language=en", `@${join(out, "javac.args")}`]);
-  const runtimeArgs = ["-Xmx3g", "-Djava.awt.headless=true", "-cp", `${classes}${delimiter}${classpath}`,
+  const runtimeArgs = ["-Xmx3g", "-Djava.awt.headless=true", "-cp", [classes, ...classpath].join(delimiter),
     "dev.gaius.browser.kernel.mesh.MeshGolden", fixtures, String(profile.kernelSemantics.code), String(profile.kernelSemantics.meshVertexStride)];
   writeFileSync(join(out, "java.args"), runtimeArgs.map((value) => `"${value.replaceAll("\\", "/")}"`).join("\n"));
   run("java", [`@${join(out, "java.args")}`], out);
@@ -97,7 +100,7 @@ if (argumentsList.includes("--generate")) {
   writeFileSync(join(fixtures, "fixtures.json"), JSON.stringify({schema: 1, profile: profile.id,
     reference: "vanilla JVM SectionCompiler", corpus: "synthetic baked models, real block states and renderers",
     kernelSemantics: profile.kernelSemantics, profileSha256: hash(readFileSync(join(root, "port/versions", `${profileId}.json`))),
-    vanillaSha256: hash(readFileSync(jar)), sources: Object.fromEntries(sourceFiles.map((path) => [relative(root, path).replaceAll("\\", "/"), hash(readFileSync(path))])), compiledSources, files}, null, 2) + "\n");
+    vanillaSha256: hash(readFileSync(jar)), sources: Object.fromEntries(sourceFiles.map((path) => [relative(root, path).replaceAll("\\", "/"), hash(readFileSync(path))])), compiledSources, compiledBridges, files}, null, 2) + "\n");
   console.log(`${profile.id}: 300 JVM sections captured`);
 }
 if (!option("--dist") && !argumentsList.includes("--native-only")) process.exit(0);
@@ -117,6 +120,10 @@ if (manifest.compiledSources) {
     assert(resolved.files.has(name), `staged harness source missing: ${name}`);
     assert.equal(hash(compiledText(resolved.files.get(name))), digest, `staged harness changed: ${name}`);
   }
+}
+if (manifest.compiledBridges) {
+  const current = compiledBridges ?? stageMeshJvmBridge(profile, join(out, "verify-bridge-classes"), root);
+  assert.deepEqual(current, manifest.compiledBridges, "generated mesh bridge changed");
 }
 for (const [name, digest] of Object.entries(manifest.files)) {
   assert(!name.includes("/") && !name.includes("\\") && name !== "..", "fixture paths must be local basenames");

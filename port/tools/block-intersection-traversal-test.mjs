@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {mkdir, mkdtemp, readFile, readdir, rm} from 'node:fs/promises';
-import {homedir} from 'node:os';
+import {homedir, tmpdir} from 'node:os';
 import {delimiter, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const root = fileURLToPath(new URL('../..', import.meta.url));
-const scratch = process.env.GAIUS_BLOCK_TEST_SCRATCH || '/data/scratch/gaius-block-intersection';
+const scratch = process.env.GAIUS_BLOCK_TEST_SCRATCH || join(tmpdir(), 'gaius-block-intersection');
 const asmRoot = join(homedir(), '.m2/repository/org/ow2/asm');
 const asm = [join(asmRoot, 'asm/9.8/asm-9.8.jar'), join(asmRoot, 'asm-tree/9.8/asm-tree-9.8.jar')];
 function run(cmd, args) {

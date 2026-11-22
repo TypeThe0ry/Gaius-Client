@@ -1,5 +1,6 @@
 {
   "id": "26.3",
+  "rd32TraceSupported": true,
   "pages": {
     "enabled": true,
     "runtimes": [

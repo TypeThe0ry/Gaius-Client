@@ -15,6 +15,7 @@ import io.netty.channel.ChannelPromise;
 import io.netty.channel.DefaultChannelConfig;
 import io.netty.channel.EventLoop;
 import io.netty.channel.local.LocalAddress;
+import io.netty.util.AttributeKey;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.channels.AlreadyConnectedException;
@@ -25,6 +26,10 @@ import org.teavm.jso.typedarrays.Int8Array;
 
 /** Netty channel backed by Gaius' WebSocket-to-TCP browser bridge. */
 public final class BrowserWebSocketChannel extends AbstractChannel {
+    private static final AttributeKey<String> EAGLER_URL = AttributeKey.valueOf("gaius.transport.eaglerUrl");
+    private static final AttributeKey<String> ACTIVE_TRANSPORT = AttributeKey.valueOf("gaius.transport.active");
+    private static final AttributeKey<Integer> RELAY_WARMUP_ATTEMPT =
+            AttributeKey.valueOf("gaius.relayWarmupAttempt");
     private static final ChannelMetadata METADATA = new ChannelMetadata(false);
     private static final int INITIAL_CHANNEL_CAPACITY = 16;
     // Decoder work runs on the browser event loop. A single pipeline handoff cannot be preempted
@@ -65,6 +70,8 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
     // Sample the diagnostic switch once per channel after the bridge is initialized.  The
     // default-off pump path then has no per-pump JS bridge crossings or diagnostic allocations.
     private boolean arrivalTimelineTracing;
+    private boolean eagler;
+    private boolean remoteTransportKnown;
     private boolean open = true;
     private boolean active;
     private boolean pumping;
@@ -89,6 +96,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
         try {
             initBridge();
             recordBridgeInitPhase("init-complete");
+            BrowserRelayRaceHelpers.init();
             initBridgeTail();
             recordBridgeInitPhase("tail-complete");
         } catch (RuntimeException | Error error) {
@@ -183,6 +191,42 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             }
         }
         return false;
+    }
+
+    public static void warmServerList(boolean hasSavedServers) {
+        if (hasSavedServers) {
+            initBridge();
+            BrowserRelayRaceHelpers.init();
+            initBridgeTail();
+        }
+        warmServerListJs(hasSavedServers);
+    }
+
+    @JSBody(params = "hasSavedServers", script = """
+            const bridge = globalThis.__gaiusNettyBridge;
+            if (bridge) bridge.warmServerList(hasSavedServers);
+            """)
+    private static native void warmServerListJs(boolean hasSavedServers);
+
+    @JSBody(params = {"host", "port"}, script = """
+            const bridge = globalThis.__gaiusNettyBridge;
+            if (bridge) bridge.serverListTarget(host, port);
+            """)
+    public static native void serverListTarget(String host, int port);
+
+    @JSBody(params = {"host", "port", "attempt"}, script = """
+            if (globalThis.__gaiusNettyBridge) globalThis.__gaiusNettyBridge.reserveServerListWarmup(host, port, attempt);
+            """)
+    public static native void reserveServerListWarmup(String host, int port, int attempt);
+
+    @JSBody(params = "attempt", script = """
+            if (globalThis.__gaiusNettyBridge) globalThis.__gaiusNettyBridge.cancelServerListWarmup(attempt);
+            """)
+    public static native void cancelServerListWarmup(int attempt);
+
+    public static boolean isPublicServerAddress(String address) {
+        BrowserRelayRaceHelpers.init();
+        return BrowserRelayRaceHelpers.isPublicAddress(address);
     }
 
     public static boolean isAvailable() {
@@ -325,7 +369,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                 scheduleOutboundContinuation();
                 return;
             }
-            int chunkLength = Math.min(
+            int chunkLength = eagler ? readableBytes : Math.min(
                     MAX_OUTBOUND_BYTES_PER_PUMP - bytesWritten,
                     readableBytes - pendingOutboundOffset);
             Int8Array chunk = copyBytes(
@@ -374,7 +418,10 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                 ? local
                 : InetSocketAddress.createUnresolved("browser", 0);
         active = true;
-        openSocket(socketId, host(remote), port(remote));
+        String eaglerUrl = hasAttr(EAGLER_URL) ? attr(EAGLER_URL).get() : null;
+        eagler = eaglerUrl != null;
+        Integer warmupAttempt = (!eagler && hasAttr(RELAY_WARMUP_ATTEMPT)) ? attr(RELAY_WARMUP_ATTEMPT).get() : null;
+        openSocket(socketId, host(remote), port(remote), warmupAttempt == null ? 0 : warmupAttempt, eaglerUrl);
         promise.trySuccess();
         pipeline().fireChannelActive();
     }
@@ -385,6 +432,13 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
         }
         pumping = true;
         try {
+            if (!remoteTransportKnown) {
+                String transport = selectedRemoteTransport(socketId);
+                if (transport != null) {
+                    attr(ACTIVE_TRANSPORT).set(transport);
+                    remoteTransportKnown = true;
+                }
+            }
             String error = pollError(socketId);
             if (error != null) {
                 pipeline().fireExceptionCaught(new ChannelException(error));
@@ -719,10 +773,13 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             pendingInboundReadyCount: 0,
             localSessionOwners: new Map(),
             directPluginMisses: new Map(),
+            directPluginRtts: new Map(),
             relayPreflightCache: new Map(),
             targetRelayLeases: new Map(),
             relayRegistryCache: new Map(),
             relayRegistryPromise: null,
+            lastSuccessfulRelayUrl: null,
+            relaySocketOpenRtts: new Map(),
             activeDecoderEntryId: 0,
             activeDecoderSliceBytes: 0,
             activeDecoderScopeIds: [],
@@ -958,7 +1015,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             const defaultRelayRegistryUrl = null;
             // Server-list status and the subsequent join are separate Netty channels. Cache only
             // discovery metadata for a few seconds; every channel still gets its own tunnel.
-            const directPluginMissTtlMs = 30 * 1000;
+            const directPluginMissTtlMs = 5 * 60 * 1000;
             const relayPreflightCacheTtlMs = 15 * 1000;
             const relayPreflightFailureCacheTtlMs = 5 * 1000;
             const defaultTargetAffinityMs = 5 * 60 * 1000;
@@ -1176,7 +1233,8 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             const rawUse = object && object.use;
             const use = rawUse === 'multiplayer' || rawUse === 'lan' ? rawUse : 'both';
             const pinned = !!(object && object.pinned);
-            return {url: url, token: token, priority: priority, name: name, direct: false,
+            return {id: object && typeof object.id === 'string' ? object.id : undefined,
+              url: url, token: token, priority: priority, name: name, direct: false,
               use: use, pinned: pinned};
             }
             function normalizeRelayRegistryUrl(value) {
@@ -1453,6 +1511,13 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             return unique;
             }
             function directPluginUrl(host) {
+            // A server address typed as ws:// or wss:// (Add Server) names its own tunnel endpoint.
+            const typedTargets = globalThis.__gaiusWsTargets;
+            const typedTarget = typedTargets && typedTargets[String(host || '').toLowerCase()];
+            if (typedTarget) {
+              const typedUrl = normalizeRelayUrl(typedTarget);
+              if (typedUrl) return typedUrl;
+            }
             const params = new URLSearchParams(location.search || '');
             if (params.get('directPlugin') === '0' ||
                 globalThis.__gaiusDirectPlugin === false) {
@@ -1466,6 +1531,31 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
             return scheme + '://' + authorityHost(host) + ':' + port + '/tunnel';
             }
+            function rawTransportMode(host) {
+            const proxyModes = globalThis.__gaiusWsProxyModes;
+            const key = String(host || '').trim().toLowerCase();
+            if (proxyModes && Object.prototype.hasOwnProperty.call(proxyModes, key)) {
+              return proxyModes[key] === true;
+            }
+            const modes = globalThis.__gaiusWsTransportModes;
+            return !!modes && String(modes[key] || '') === 'raw';
+            }
+            function rawTransportUrl(host, explicitUrl) {
+            const targets = globalThis.__gaiusWsTargets;
+            const value = explicitUrl != null ? explicitUrl : targets && targets[String(host || '').trim().toLowerCase()];
+            if (typeof value !== 'string' || !value.trim()) return null;
+            try {
+              const url = new URL(value.trim());
+              if ((url.protocol !== 'ws:' && url.protocol !== 'wss:') ||
+                  !url.hostname || url.username || url.password) return null;
+              url.hash = '';
+              return url.href;
+            } catch (ignored) {
+              return null;
+            }
+            }
+            state.rawTransportMode = rawTransportMode;
+            state.rawTransportUrl = rawTransportUrl;
             function bridgeToken(candidate) {
             if (candidate && typeof candidate.token === 'string' && candidate.token.length > 0) {
               return candidate.token;
@@ -1506,17 +1596,32 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             function directPluginCacheKey(entry, candidate) {
             return entry.targetKey;
             }
+            function directPluginPersistentKey(entry, candidate) {
+            return 'gaius.directPluginMiss:' + directPluginCacheKey(entry, candidate);
+            }
+            function readPersistentDirectPluginMiss(entry, candidate, now) {
+            const key = directPluginPersistentKey(entry, candidate);
+            try {
+              const saved = JSON.parse(localStorage.getItem(key) || 'null');
+              if (saved && Number.isFinite(saved.recordedAt) &&
+                  now >= saved.recordedAt && now - saved.recordedAt < directPluginMissTtlMs) return saved.recordedAt;
+              if (saved) localStorage.removeItem(key);
+            } catch (ignored) {}
+            return null;
+            }
             function directPluginWasRecentlyUnavailable(entry, candidate) {
             const now = Date.now();
             pruneDiscoveryCache(state.directPluginMisses, now, directPluginMissTtlMs);
-            const recordedAt = state.directPluginMisses.get(
-              directPluginCacheKey(entry, candidate)
-            );
-            if (!Number.isFinite(recordedAt) || now - recordedAt > directPluginMissTtlMs) {
-              return false;
+            const cacheKey = directPluginCacheKey(entry, candidate);
+            const inMemory = state.directPluginMisses.get(cacheKey);
+            const recordedAt = inMemory !== undefined ? inMemory :
+              readPersistentDirectPluginMiss(entry, candidate, now);
+            if (Number.isFinite(recordedAt) && now >= recordedAt && now - recordedAt < directPluginMissTtlMs) {
+              state.directPluginMisses.set(cacheKey, recordedAt);
+              state.stats.directPluginCachedMisses++;
+              return true;
             }
-            state.stats.directPluginCachedMisses++;
-            return true;
+            return false;
             }
             function rememberDirectPluginUnavailable(entry, candidate) {
             const now = Date.now();
@@ -1524,9 +1629,14 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             const key = directPluginCacheKey(entry, candidate);
             state.directPluginMisses.delete(key);
             state.directPluginMisses.set(key, now);
+            const persistentKey = directPluginPersistentKey(entry, candidate);
+            try { localStorage.setItem(persistentKey, JSON.stringify({recordedAt: now})); } catch (ignored) {}
             }
             function forgetDirectPluginUnavailable(entry, candidate) {
-            state.directPluginMisses.delete(directPluginCacheKey(entry, candidate));
+            const cacheKey = directPluginCacheKey(entry, candidate);
+            state.directPluginMisses.delete(cacheKey);
+            const persistentKey = directPluginPersistentKey(entry, candidate);
+            try { localStorage.removeItem(persistentKey); } catch (ignored) {}
             }
             function relayPreflightCacheKey(entry, candidate) {
             return candidate.url + '\\n' + entry.targetKey;
@@ -1710,11 +1820,14 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             entry.relayPreflightReady = false;
             entry.relayPreflightWaitStarted = false;
             recordConnectPhase(entry, 'relay-preparation-start');
-            const immediate = appendRelayCandidates(entry, bridgeUrls([], entry));
-            const immediateProbes = probeRelayCandidates(entry, immediate);
+            appendRelayCandidates(entry, bridgeUrls([], entry));
+            const immediateProbes = probeRelayCandidates(entry, entry.candidates.filter(function(candidate) {
+              return !candidate.direct;
+            }));
             const registryPromise = state.relayRegistryPromise || discoverRelayNodes();
             state.relayRegistryPromise = registryPromise;
             const discoveredProbes = registryPromise.then(function(discovered) {
+              if (entry.closed || entry.disposed || entry.connected) return;
               return probeRelayCandidates(
                 entry,
                 appendRelayCandidates(entry, bridgeUrls(discovered, entry))
@@ -1724,6 +1837,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               immediateProbes,
               discoveredProbes
             ]).then(function() {
+              if (entry.closed || entry.disposed || entry.connected) return;
               entry.relayPreflightReady = true;
               rankRemainingRelayCandidates(entry);
             });
@@ -1888,6 +2002,8 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               directPluginWasRecentlyUnavailable,
               rememberDirectPluginUnavailable,
               forgetDirectPluginUnavailable,
+              relayNodeCandidate,
+              defaultBridgeUrl,
               rankRemainingRelayCandidates,
               ensureRelayCandidates,
               scheduleRelayPreparation,
@@ -1898,58 +2014,41 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               localPortClaimTimeoutMs,
               localPortClaimRetryMs
             } = scope;
-            function relayNodeRecord(candidate) {
-            if (!candidate || candidate.direct) return null;
-            const nodes = state.stats.relayNodes;
-            let record = nodes[candidate.url];
-            if (!record) {
-              record = {
-                name: candidate.name,
-                priority: candidate.priority,
-                attempts: 0,
-                successes: 0,
-                failures: 0,
-                lastAttemptAt: 0,
-                lastSuccessAt: 0,
-                lastFailureAt: 0,
-                lastError: null,
-                lastPreflightAt: 0,
-                lastPreflightError: null,
-                availableConnections: null,
-                targetConnectTimeoutMs: null,
-                targetAffinityMs: null,
-                targetActiveConnections: 0,
-                targetRecentlyReachable: false,
-                targetAttestation: false
-              };
-              nodes[candidate.url] = record;
+            const race = globalThis.__gaiusRelayRaceHelpers;
+            race.configureTargetWarmup(state, {
+              canRaceRelay: canRaceRelay,
+              canPredialRelay: canPredialRelay,
+              preferredRelay: preferredRelay,
+              normalizedTargetKey: normalizedTargetKey,
+              bridgeToken: bridgeToken,
+              relayTargetMatches: relayTargetMatches,
+              validateRelay: validateRelayAcknowledgement
+            });
+            race.configureWarmup(state, {
+              clearRelayPreparation: clearRelayPreparation,
+              preferredRelay: preferredRelay,
+              privateRelayUrl: privateRelayUrl,
+              isLanPage: isLanPage,
+              externalExplicitRelayUrl: race.externalExplicitRelayUrl,
+              startRelayPredial: startRelayPredial,
+              canRaceRelay: canRaceRelay,
+              normalizedTargetKey: normalizedTargetKey,
+              recordConnectPhase: recordConnectPhase
+            });
+            function relayRaceEnabled() {
+              return globalThis.__gaiusRelayRaceHelpers.enabled('relayRace');
             }
-            return record;
+            function canRaceRelay(entry) {
+              return relayRaceEnabled() && race.enabled('relayWarm') && !isLanPage() &&
+                !globalThis.__gaiusLinkBridgeUrl && race.publicHost(entry.host);
             }
+            const {
+              relayNodeRecord,
+              recordRelayNodeAttempt,
+              recordRelayNodeSuccess,
+              recordRelayNodeFailure
+            } = race.relayNodeStats(state, acquireTargetRelayLease);
             state.relayNodeRecordResolver = relayNodeRecord;
-            function recordRelayNodeAttempt(candidate) {
-            const record = relayNodeRecord(candidate);
-            if (!record) return;
-            record.attempts++;
-            record.lastAttemptAt = Date.now();
-            }
-            function recordRelayNodeSuccess(entry, candidate) {
-            const record = relayNodeRecord(candidate);
-            if (!record) return;
-            record.successes++;
-            record.lastSuccessAt = Date.now();
-            record.lastError = null;
-            state.stats.relayNodeSuccesses++;
-            acquireTargetRelayLease(entry, candidate);
-            }
-            function recordRelayNodeFailure(candidate, message) {
-            const record = relayNodeRecord(candidate);
-            if (!record) return;
-            record.failures++;
-            record.lastFailureAt = Date.now();
-            record.lastError = String(message || 'RelayNode connection failed').slice(0, 240);
-            state.stats.relayNodeFailures++;
-            }
             function relayTunnelConnectTimeout(candidate) {
             const configured = Number(candidate && candidate.targetConnectTimeoutMs);
             if (candidate && candidate.localLan) return 65000;
@@ -1995,9 +2094,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                 Object.keys(descriptors).length >= 32) return;
             const normalized = {uuid: uuid, username: username, value: value, signature: signature};
             descriptors[key] = normalized;
-            // Keep a UUID alias only while it is unambiguous. Offline browser
-            // profiles may share the deterministic UUID, so profile lookup
-            // always prefers the composite UUID+username key.
+            // Prefer composite UUID keys; aliases must be unique.
             if (!Object.prototype.hasOwnProperty.call(descriptors, uuid) ||
                 String(descriptors[uuid] && descriptors[uuid].username || '') === username) {
               descriptors[uuid] = normalized;
@@ -2111,7 +2208,14 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             }
             function clearRelayPreparation(entry) {
             if (!entry) return;
+            if (entry.id !== undefined && entry.warmupAttempt) state.cancelServerListWarmup(entry.warmupAttempt);
             clearCandidateTimeout(entry);
+            if (entry.preconnectedRelay) {
+              const pending = entry.preconnectedRelay;
+              entry.preconnectedRelay = null;
+              if (pending.timeout) clearTimeout(pending.timeout);
+              try { pending.socket.close(); } catch (ignored) {}
+            }
             if (entry.relayPreparationTimer) {
               clearTimeout(entry.relayPreparationTimer);
               entry.relayPreparationTimer = 0;
@@ -2120,6 +2224,8 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               clearTimeout(entry.relaySelectionTimer);
               entry.relaySelectionTimer = 0;
             }
+            entry.preconnectedRelay = null;
+            entry.rearmDirectProbeTimeout = null;
             }
             function forgetLocalOwner(entry) {
             if (!entry || !entry.localSessionId) return;
@@ -2282,12 +2388,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               return;
             }
             if (Date.now() >= entry.localClaimDeadline) {
-              // A throttled event loop can make this retry run after the deadline
-              // even though an earlier-due Worker registration timer is already
-              // queued behind it. Yield one macrotask turn before the final check
-              // so expired registration work can publish its MessagePort first.
-              // This does not extend the claim window or permit repeated grace
-              // turns: the next empty check fails closed.
+              // Yield once; preserve deadline.
               if (!finalDeadlineCheck) {
                 if (entry.localClaimDeadlineCheckPending) return;
                 entry.localClaimDeadlineCheckPending = true;
@@ -2420,10 +2521,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               entry.retireClosedHandle = 0;
             }
             entry.retireClosedPending = false;
-            // Mark the entry closed before asking the browser to close the socket.  Some
-            // WebSocket implementations can deliver `onclose` reentrantly; the error path
-            // must own retirement exactly once rather than racing that callback and marking
-            // the entry disposed before the shared retire helper can schedule its finalizer.
+            // Mark closed before close callbacks.
             entry.closed = true;
             try { if (entry.ws) entry.ws.close(); } catch (ignored) {}
             if (typeof state.cancelOutboundFlush === 'function') {
@@ -2436,8 +2534,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             discardOutboundData(entry);
             state.discardInbound(entry);
             state.stopEventLoopGapProbeIfIdle();
-            // Reuse the identity-checked remote-close retirement path so an onerror/fail
-            // without a later Java tick still wakes the bounded Java channel cleanup.
+            // Identity-checked retirement wakes Java cleanup.
             state.retireClosedEntry(entry);
             }
             function sendControl(entry, message) {
@@ -2475,38 +2572,234 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             function discardOutboundControls(entry) {
             state.discardOutboundControls(entry);
             }
-            function queueControl(entry, message, target, closeAfterSend, generation) {
+            function queueControl(entry, message, target, closeAfterSend, generation, trace) {
             state.queueOutboundControl(
               entry,
               message,
               target,
               closeAfterSend,
-              generation
+              generation,
+              trace
             );
             }
             function requestFlush(entry, delayMillis) {
             state.requestOutboundFlush(entry, delayMillis);
             }
-            function markAcceptedLinkRelayFailed(candidate) {
-            const raw = String(globalThis.__gaiusLinkBridgeUrl || '').trim();
-            if (!raw || !candidate) return;
+            function persistentRelayCandidate(candidate, url) {
+              if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
+                  !url || privateRelayUrl(url) || race.externalExplicitRelayUrl(url) ||
+                  candidate.use === 'lan' || new URL(url).username || new URL(url).password) return null;
+              return {url: url,
+                name: typeof candidate.name === 'string' ? candidate.name.slice(0, 80) : url,
+                priority: Number.isFinite(candidate.priority) ? candidate.priority : 0,
+                use: candidate.use === 'multiplayer' ? 'multiplayer' : 'both',
+                pinned: candidate.pinned === true};
+            }
+            function preferredRelay(entry) {
+              return race.preferredRelay(entry, state, scope.normalizeRelayUrl, persistentRelayCandidate,
+                scope.bridgeUrls, privateRelayUrl, defaultBridgeUrl());
+            }
+            function relayHost(url) {
+            try { return String(new URL(url, location.href).hostname || '').toLowerCase().replace(/^\\[|\\]$/g, ''); }
+            catch (ignored) { return ''; }
+            }
+            function privateRelayUrl(url) {
+            return !race.publicHost(relayHost(url));
+            }
+            function isLoopbackHost(value) {
+            const host = String(value || '').toLowerCase().replace(/^\\[|\\]$/g, '').replace(/[.]+$/, '');
+            return host === 'localhost' || host.endsWith('.localhost') || host === '::1' ||
+              /^127(?:[.]|$)/.test(host);
+            }
+            function isLoopbackPage() {
+            return isLoopbackHost(location.hostname);
+            }
+            function isLanPage() {
+            return !!location.hostname && !isLoopbackPage() && !race.publicHost(location.hostname);
+            }
+            function rememberSuccessfulRelay(candidate) {
+            const safeCandidate = persistentRelayCandidate(candidate, candidate.url);
+            if (!safeCandidate || candidate.token || globalThis.__gaiusLinkBridgeUrl) return;
+            state.lastSuccessfulRelayUrl = candidate.url;
+            state.lastSuccessfulRelayCandidate = safeCandidate;
+            state.lastSuccessfulRelayAt = Date.now();
             try {
-              const accepted = new URL(raw, location.href);
-              if (accepted.protocol === 'http:') accepted.protocol = 'ws:';
-              if (accepted.protocol === 'https:') accepted.protocol = 'wss:';
-              if (accepted.pathname === '' || accepted.pathname === '/' ||
-                  accepted.pathname === '/health' || accepted.pathname === '/relay-node/v1') {
-                accepted.pathname = '/tunnel';
-              }
-              accepted.hash = '';
-              accepted.search = '';
-              if (candidate.url === accepted.href) globalThis.__gaiusLinkBridgeFailed = true;
+              localStorage.setItem('gaius.lastSuccessfulRelay', JSON.stringify({
+                savedAt: state.lastSuccessfulRelayAt, url: candidate.url,
+                candidate: safeCandidate
+              }));
             } catch (ignored) {}
             }
-            function openRemoteCandidate(entry) {
+            function coldRelayUrl(entry, candidate) {
+              return race.coldRelayUrl(entry, candidate, bridgeToken(candidate), localTunnelRole(entry.host));
+            }
+            const urlConnectAckTimeoutMs = 1000;
+            function relayTargetMatches(entry, message) {
+              const port = message.port;
+              return typeof message.host === 'string' && !!message.host.trim() &&
+                Number.isInteger(port) && port >= 1 && port <= 65535 &&
+                normalizedTargetKey(message.host, port) === entry.targetKey;
+            }
+            function validateRelayAcknowledgement(entry, message, offeredTable, targetWarm) {
+              const table = message.protocolTable;
+              // Like ordinary text connect, PR #2 may omit the session-table echo.
+              return message.type === 'connected' && relayTargetMatches(entry, message) &&
+                (targetWarm && table === undefined || (offeredTable ? !!table &&
+                  table.formatVersion === offeredTable.formatVersion && table.sha256 === offeredTable.sha256 :
+                  table === undefined));
+            }
+            function receivePredial(pending, event) {
+              race.receive(pending, event, openRemoteCandidate, validateRelayAcknowledgement, retirePredial,
+                function(message) {
+                  if (!relayTargetMatches(pending.owner, message)) return false;
+                  if (pending.urlConnect && !pending.targetConnecting) {
+                    pending.targetConnecting = true;
+                    clearTimeout(pending.timeout);
+                    pending.timeout = setTimeout(function() { retirePredial(pending, true); },
+                      relayTunnelConnectTimeout(pending.candidate));
+                  }
+                  return true;
+                });
+            }
+            function retirePredial(pending, retryUrl) {
+              const owner = pending.owner;
+              if (owner.preconnectedRelay !== pending) return;
+              pending.failed = true;
+              if (pending.timeout) clearTimeout(pending.timeout);
+              owner.preconnectedRelay = null;
+              // Expiring a list slot must not clear a live plugin's deadline.
+              if (owner.id === undefined) race.expireWarmup(owner);
+              try { pending.socket.close(); } catch (ignored) {}
+              if ((pending.urlConnect || pending.targetWarm) && !owner.connected && !owner.closed) {
+                if (pending.urlConnect) race.rejectUrlConnect(pending.candidate.url);
+                if (retryUrl) startRelayPredial(owner, pending.candidate, true);
+              }
+            }
+            function canPredialRelay(entry, relay) {
+              return (entry.id === undefined ? race.enabled('relayWarm') : canRaceRelay(entry)) &&
+                relay && !relay.direct && relay.use !== 'lan' && !race.externalExplicitRelayUrl(relay.url) &&
+                !privateRelayUrl(relay.url) && !isLanPage();
+            }
+            function startRelayPredial(entry, relay, forceControl) {
+            if (!canPredialRelay(entry, relay) || entry.closed || entry.connected || entry.preconnectedRelay) return;
+            const joining = entry.id !== undefined;
+            if (joining && !entry.relayRaceStarted) {
+              entry.relayRaceStarted = true;
+              recordConnectPhase(entry, 'relay-race-start', relay.url);
+            }
+            try {
+              const reserved = state.joinWarmupEntry;
+              const warmed = reserved && entry.warmupAttempt && reserved.warmupAttempt === entry.warmupAttempt &&
+                reserved.targetKey === entry.targetKey ? reserved : null;
+              if (warmed && race.warmupUsable(warmed) && warmed.preconnectedRelay.candidate.url === relay.url) {
+                entry.preconnectedRelay = warmed.preconnectedRelay;
+                warmed.preconnectedRelay = null;
+                if (state.joinWarmupEntry === warmed) state.joinWarmupEntry = null;
+                if (state.serverListWarmupEntry === warmed) state.serverListWarmupEntry = null;
+                const adoptedPending = entry.preconnectedRelay;
+                adoptedPending.listReused = true;
+                adoptedPending.trace = race.segment(state, entry, relay,
+                  adoptedPending.targetWarm ? 'prewarm' : 'control', adoptedPending);
+                if (adoptedPending.targetWarm) {
+                  entry.relayProtocolDeclaration = adoptedPending.protocolTable || null;
+                  const warmedSocket = adoptedPending.socket;
+                  warmedSocket.onclose = warmedSocket.onerror = function() { retirePredial(adoptedPending, true); };
+                  warmedSocket.onmessage = function(event) { receivePredial(adoptedPending, event); };
+                }
+                recordConnectPhase(entry, 'relay-predial-reused', relay.url);
+                recordConnectPhase(entry, 'url-connect=false', relay.url);
+                if (adoptedPending.timeout) clearTimeout(adoptedPending.timeout);
+                adoptedPending.owner = entry;
+                adoptedPending.timeout = setTimeout(function() { retirePredial(adoptedPending, !!adoptedPending.targetWarm); },
+                  relayTunnelConnectTimeout(relay));
+                if (entry.preconnectedRelay.socket.readyState === WebSocket.OPEN &&
+                    typeof entry.rearmDirectProbeTimeout === 'function') {
+                  entry.rearmDirectProbeTimeout(entry.preconnectedRelay.openMillis);
+                }
+                if (entry.preconnectedRelay.socket.readyState === WebSocket.OPEN) {
+                  const tunnelRole = localTunnelRole(entry.host);
+                  globalThis.__gaiusRelayRaceHelpers.sendConnect(
+                    entry.preconnectedRelay, relay, bridgeToken, tunnelRole,
+                    tunnelRole ? localSkinDescriptor(tunnelRole) : null);
+                }
+                return;
+              }
+              if (warmed) race.expireWarmup(warmed);
+              if (joining) {
+                recordConnectPhase(entry, 'relay-websocket-start', relay.url);
+                recordConnectPhase(entry, 'relay-predial-start', relay.url);
+              }
+              let urlConnect = null;
+              if (joining) {
+                if (forceControl) recordConnectPhase(entry, 'url-connect=false', relay.url);
+                else urlConnect = coldRelayUrl(entry, relay);
+              }
+              let socket;
+              try { socket = new WebSocket(urlConnect || relay.url); }
+              catch (error) {
+                if (!urlConnect) throw error;
+                race.rejectUrlConnect(relay.url);
+                recordConnectPhase(entry, 'url-connect=false', relay.url);
+                urlConnect = null;
+                socket = new WebSocket(relay.url);
+              }
+              const pending = {candidate: relay, socket: socket, failed: false, timeout: 0,
+                startedAt: Date.now(), openMillis: 0, owner: entry,
+                urlConnect: !!urlConnect, protocolTable: urlConnect ? entry.relayProtocolDeclaration || undefined : undefined,
+                controlSent: false, earlyMessage: null};
+              if (joining && state.relaySegmentTracing) {
+                pending.trace = race.segment(state, entry, relay, urlConnect ? 'url' : 'control', pending);
+                if (urlConnect) pending.trace.connectSentAt = race.now();
+              }
+              entry.preconnectedRelay = pending;
+              socket.onerror = socket.onclose = function() { retirePredial(pending, true); };
+              socket.onopen = function() {
+                if (pending.owner.closed || pending.owner.preconnectedRelay !== pending) return;
+                if (pending.owner.id === undefined && !race.warmupUsable(pending.owner)) {
+                  race.expireWarmup(pending.owner);
+                  return;
+                }
+                if (state.relaySegmentTracing) {
+                  pending.wsOpenAt = race.now();
+                  if (pending.trace) pending.trace.wsOpenAt = pending.wsOpenAt;
+                }
+                pending.openMillis = Date.now() - pending.startedAt;
+                if (pending.owner.id !== undefined) {
+                  recordConnectPhase(pending.owner, 'relay-websocket-open', relay.url);
+                  recordConnectPhase(pending.owner, 'relay-predial-open', String(pending.openMillis));
+                } else {
+                  race.armListWarmupExpiry(pending.owner);
+                }
+                const previous = state.relaySocketOpenRtts.get(relay.url);
+                if (state.relaySocketOpenRtts.size >= 128 && previous === undefined) {
+                  state.relaySocketOpenRtts.delete(state.relaySocketOpenRtts.keys().next().value);
+                }
+                state.relaySocketOpenRtts.set(relay.url, Number.isFinite(previous)
+                  ? previous * 0.75 + pending.openMillis * 0.25 : pending.openMillis);
+                if (typeof pending.owner.rearmDirectProbeTimeout === 'function') {
+                  pending.owner.rearmDirectProbeTimeout(pending.openMillis);
+                }
+                const tunnelRole = localTunnelRole(pending.owner.host);
+                globalThis.__gaiusRelayRaceHelpers.sendConnect(
+                  pending, relay, bridgeToken, tunnelRole,
+                  tunnelRole ? localSkinDescriptor(tunnelRole) : null);
+              };
+              socket.onmessage = function(event) {
+                receivePredial(pending, event);
+              };
+              if (joining) {
+                pending.timeout = setTimeout(function() { retirePredial(pending, true); },
+                  urlConnect ? urlConnectAckTimeoutMs : relayTunnelConnectTimeout(relay));
+              } else {
+                race.armListWarmupExpiry(entry);
+              }
+            } catch (ignored) {}
+            }
+            function openRemoteCandidate(entry, retryCandidate) {
             if (entry.closed || entry.connected) return;
             const upcoming = entry.candidates[entry.candidateIndex];
-            if ((!upcoming || !upcoming.direct) && !entry.relaySelectionReady) {
+            const needRelay = !retryCandidate && (!upcoming || !upcoming.direct);
+            if (needRelay && !race.prioritizePredial(entry) && !entry.relaySelectionReady) {
               ensureRelayCandidates(entry);
               if (!entry.relayPreflightWaitStarted) {
                 entry.relayPreflightWaitStarted = true;
@@ -2518,7 +2811,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               }
               return;
             }
-            if (entry.candidateIndex >= entry.candidates.length) {
+            if (!retryCandidate && entry.candidateIndex >= entry.candidates.length) {
               if (!entry.relayPreflightReady && !entry.relayExhaustionWaitStarted) {
                 entry.relayExhaustionWaitStarted = true;
                 entry.relayPreflightPromise.then(function() {
@@ -2532,28 +2825,9 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               fail(entry, 'No Gaius direct endpoint or relay node could reach the server');
               return;
             }
-            const candidate = entry.candidates[entry.candidateIndex++];
-            // Portable and Worker entry points do not necessarily execute the
-            // launcher bootstrap. Explicit bridge/relay/registry links must
-            // still receive the same user confirmation before a WebSocket or
-            // URL token is sent to an external origin.
-            const pageParams = new URLSearchParams(location.search || '');
-            const explicitRelayLink = pageParams.getAll('bridge').concat(
-              pageParams.getAll('relay'), pageParams.getAll('relayRegistry')
-            ).some(function(value) { return String(value || '').trim() && value !== '0'; });
-            let externalExplicitRelay = false;
-            if (!candidate.direct && explicitRelayLink) {
-              try {
-                const candidateUrl = new URL(candidate.url, location.href);
-                const host = String(candidateUrl.hostname || '').toLowerCase();
-                externalExplicitRelay = candidateUrl.origin !== location.origin &&
-                  host !== 'localhost' && !host.endsWith('.localhost') &&
-                  !/^127[.][0-9]+[.][0-9]+[.][0-9]+$/.test(host) && host !== '::1';
-              } catch (ignored) {
-                externalExplicitRelay = true;
-              }
-            }
-            if (externalExplicitRelay &&
+            const candidate = retryCandidate || entry.candidates[entry.candidateIndex++];
+            // Confirm explicit external relays.
+            if (!retryCandidate && !candidate.direct && race.externalExplicitRelayUrl(candidate.url) &&
                 (typeof globalThis.__gaiusConfirmRelay !== 'function' ||
                  !globalThis.__gaiusConfirmRelay(candidate.url))) {
               state.stats.relayFailovers++;
@@ -2561,7 +2835,8 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               openRemoteCandidate(entry);
               return;
             }
-            if (candidate.direct && directPluginWasRecentlyUnavailable(entry, candidate)) {
+            if (candidate.direct && !candidate.raw &&
+                directPluginWasRecentlyUnavailable(entry, candidate)) {
               openRemoteCandidate(entry);
               return;
             }
@@ -2583,20 +2858,78 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               }
               recordRelayNodeAttempt(candidate);
             }
+            if (candidate.direct && canRaceRelay(entry)) {
+              ensureRelayCandidates(entry);
+              entry.relaySelectionPromise.then(function() {
+                if (entry.closed || entry.connected) return;
+                const prepared = entry.preconnectedRelay;
+                if (prepared) {
+                  if (prepared.earlyMessage) receivePredial(prepared, prepared.earlyMessage);
+                  return;
+                }
+                const remainingCandidates = entry.candidates.slice(entry.candidateIndex);
+                const relay = remainingCandidates.find(function(value) { return !value.direct; });
+                if (!relay) return;
+                const implicit = scope.normalizeRelayUrl(defaultBridgeUrl());
+                if (relay.url === implicit && race.onlyLanAndImplicitRelay(
+                    scope.bridgeUrls([], entry), privateRelayUrl, implicit)) return;
+                startRelayPredial(entry, relay);
+              });
+            }
             const generation = ++entry.webSocketGeneration;
-            recordConnectPhase(
-              entry,
-              candidate.direct ? 'direct-websocket-start' : 'relay-websocket-start',
-              candidate.url
-            );
+            if (candidate.direct) entry.directProbeStartedAt = Date.now();
             let ws;
+            let adoptedRelay = null;
+            let urlConnect = null;
+            let relayTrace = null;
             try {
-              ws = new WebSocket(candidate.url);
+              const pendingRelay = !retryCandidate && !candidate.direct && entry.preconnectedRelay &&
+                entry.preconnectedRelay.candidate.url === candidate.url &&
+                (entry.preconnectedRelay.socket.readyState === WebSocket.CONNECTING ||
+                 entry.preconnectedRelay.socket.readyState === WebSocket.OPEN)
+                ? entry.preconnectedRelay : null;
+              if (pendingRelay && !pendingRelay.failed) {
+                adoptedRelay = pendingRelay;
+                entry.preconnectedRelay = null;
+                if (pendingRelay.timeout) clearTimeout(pendingRelay.timeout);
+                ws = pendingRelay.socket;
+                urlConnect = pendingRelay.urlConnect;
+                ws.onerror = null;
+                ws.onclose = null;
+              } else {
+                if (!candidate.direct && entry.preconnectedRelay) {
+                  const stale = entry.preconnectedRelay;
+                  entry.preconnectedRelay = null;
+                  if (stale.timeout) clearTimeout(stale.timeout);
+                  try { stale.socket.close(); } catch (ignored) {}
+                }
+                recordConnectPhase(entry,
+                  candidate.direct ? 'direct-websocket-start' : 'relay-websocket-start', candidate.url);
+                if (!candidate.direct) {
+                  if (retryCandidate) recordConnectPhase(entry, 'url-connect=false', candidate.url);
+                  else urlConnect = coldRelayUrl(entry, candidate);
+                }
+                ws = new WebSocket(urlConnect || candidate.url);
+              }
+              if (!candidate.direct && state.relaySegmentTracing) {
+                relayTrace = adoptedRelay ? adoptedRelay.trace :
+                  race.segment(state, entry, candidate, urlConnect ? 'url' : 'control', null);
+                if (!adoptedRelay && urlConnect) relayTrace.connectSentAt = race.now();
+              }
             } catch (error) {
+              if (candidate.raw) {
+                fail(entry, error && (error.message || error) || 'Raw WebSocket open failed');
+                return;
+              }
+              if (urlConnect) {
+                race.rejectUrlConnect(candidate.url);
+                openRemoteCandidate(entry, candidate);
+                return;
+              }
               if (candidate.direct) {
                 rememberDirectPluginUnavailable(entry, candidate);
               } else {
-                markAcceptedLinkRelayFailed(candidate);
+                race.markAcceptedLinkRelayFailed(candidate);
                 state.stats.relayFailovers++;
                 recordRelayNodeFailure(candidate, error && (error.message || error));
               }
@@ -2605,12 +2938,19 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             }
             entry.ws = ws;
             entry.currentCandidate = candidate;
-            // Keep the Blob fallback ordered even when arrayBuffer() completion is
-            // asynchronous.  Standard browsers use ArrayBuffer because of the
-            // binaryType assignment above; this chain is only for implementations
-            // that still surface binary WebSocket messages as Blob instances.
+            // Preserve Blob fallback order.
             entry.blobArrivalChain = Promise.resolve();
             ws.binaryType = 'arraybuffer';
+            const targetWarm = !!(adoptedRelay && adoptedRelay.targetWarm);
+            function retryControl() {
+              if ((!urlConnect && !targetWarm) || entry.closed || entry.connected || generation !== entry.webSocketGeneration) return false;
+              clearCandidateTimeout(entry);
+              entry.webSocketGeneration++;
+              if (urlConnect) race.rejectUrlConnect(candidate.url);
+              try { ws.close(); } catch (ignored) {}
+              openRemoteCandidate(entry, candidate);
+              return true;
+            }
             const armCandidateTimeout = function(timeoutMs) {
               clearCandidateTimeout(entry);
               entry.candidateTimeout = setTimeout(function() {
@@ -2618,35 +2958,78 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               if (entry.closed || entry.connected || generation !== entry.webSocketGeneration) {
                 return;
               }
+              if (candidate.raw) {
+                try { ws.close(); } catch (ignored) {}
+                fail(entry, 'Raw WebSocket handshake timed out');
+                return;
+              }
+              if (retryControl()) return;
               recordConnectPhase(
                 entry,
                 candidate.direct ? 'direct-failed' : 'relay-failed',
                 candidate.direct ? 'websocket-timeout' : 'target-timeout'
               );
+              entry.webSocketGeneration++;
               try { ws.close(); } catch (ignored) {}
               if (candidate.direct) {
                 rememberDirectPluginUnavailable(entry, candidate);
               } else {
-                markAcceptedLinkRelayFailed(candidate);
+                race.markAcceptedLinkRelayFailed(candidate);
                 state.stats.relayFailovers++;
                 recordRelayNodeFailure(candidate, 'RelayNode tunnel connection timed out');
               }
               openRemoteCandidate(entry);
               }, timeoutMs);
             };
-            armCandidateTimeout(
-              candidate.direct ? 800 : relayTunnelConnectTimeout(candidate)
-            );
+            if (candidate.direct && !candidate.raw) {
+              entry.rearmDirectProbeTimeout = function(relayOpenMillis) {
+                if (entry.closed || entry.connected || entry.directNegotiating ||
+                    generation !== entry.webSocketGeneration) return;
+                const budget = Math.max(250, Math.min(600, Math.ceil(relayOpenMillis * 1.5 + 40)));
+                const elapsed = Date.now() - entry.directProbeStartedAt;
+                armCandidateTimeout(Math.max(0, budget - elapsed));
+              };
+            }
+            const preparedOpen = entry.preconnectedRelay && entry.preconnectedRelay.socket.readyState === 1
+              ? entry.preconnectedRelay.openMillis : undefined;
+            const relayReference = entry.preconnectedRelay
+              ? entry.preconnectedRelay.candidate
+              : entry.candidates.slice(entry.candidateIndex).find(function(value) { return !value.direct; });
+            const relayOpenAverage = state.relaySocketOpenRtts &&
+              state.relaySocketOpenRtts.get(relayReference && relayReference.url);
+            // Adapt the plugin deadline after relay open.
+            const relayOpenRtt = Number.isFinite(preparedOpen) && preparedOpen >= 0
+              ? preparedOpen : Number.isFinite(relayOpenAverage) && relayOpenAverage >= 0
+                ? relayOpenAverage : null;
+            const pluginTimeout = relayOpenRtt === null ? 350
+              : Math.max(250, Math.min(600, Math.ceil(relayOpenRtt * 1.5 + 40)));
+            const relayAckTimeout = urlConnect && !(adoptedRelay && adoptedRelay.targetConnecting)
+              ? urlConnectAckTimeoutMs : relayTunnelConnectTimeout(candidate);
+            armCandidateTimeout(candidate.raw ? 10000
+              : candidate.direct ? pluginTimeout : relayAckTimeout);
+            const relayAlreadyOpen = !candidate.direct && ws.readyState === WebSocket.OPEN;
+            if (relayAlreadyOpen) {
+              queueMicrotask(function() { if (ws.onopen) ws.onopen(); });
+            }
             ws.onopen = function() {
               if (generation !== entry.webSocketGeneration || entry.closed) return;
-              recordConnectPhase(
-                entry,
-                candidate.direct ? 'direct-websocket-open' : 'relay-websocket-open',
-                candidate.url
-              );
-              if (!candidate.direct) {
-                armCandidateTimeout(relayTunnelConnectTimeout(candidate));
+              if (relayTrace && relayTrace.wsOpenAt === undefined) relayTrace.wsOpenAt = race.now();
+              if (!relayAlreadyOpen) {
+                recordConnectPhase(entry,
+                  candidate.direct ? 'direct-websocket-open' : 'relay-websocket-open', candidate.url);
               }
+              if (candidate.raw) {
+                clearCandidateTimeout(entry);
+                entry.connected = true;
+                state.stats.connected++;
+                recordConnectPhase(entry, 'raw-websocket-connected', candidate.url);
+                requestFlush(entry);
+                return;
+              }
+              if (!candidate.direct) {
+                armCandidateTimeout(relayAckTimeout);
+              }
+              if (targetWarm) return; // The reserved OPEN socket already sent connect.
               const control = {type: 'connect', host: entry.host, port: entry.port};
               const tunnelRole = localTunnelRole(entry.host);
               if (!candidate.direct && !tunnelRole) {
@@ -2663,14 +3046,33 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               }
               const token = bridgeToken(candidate);
               if (token !== undefined) control.token = token;
-              queueControl(entry, control, ws, false, generation);
+              if (!urlConnect && !ws.__gaiusRelayConnectSent &&
+                  (candidate.direct || !adoptedRelay || !adoptedRelay.controlSent)) {
+                queueControl(entry, control, ws, false, generation, relayTrace);
+                ws.__gaiusRelayConnectSent = true;
+                if (adoptedRelay) adoptedRelay.controlSent = true;
+              }
             };
             ws.onmessage = function(event) {
               if (generation !== entry.webSocketGeneration || entry.closed) return;
               if (typeof event.data === 'string') {
+                if (candidate.raw) {
+                  fail(entry, 'Raw WebSocket transport received a text frame');
+                  return;
+                }
                 try {
                   const message = JSON.parse(event.data);
+                  if (targetWarm && !entry.connected &&
+                      (!message || (message.type === 'connected'
+                        ? !validateRelayAcknowledgement(entry, message, adoptedRelay.protocolTable, true)
+                        : message.type !== 'connecting' || !relayTargetMatches(entry, message)))) {
+                    retryControl();
+                    return;
+                  }
+                  if (message && message.type === 'error' && urlConnect && retryControl()) return;
                   if (message && message.type === 'connecting') {
+                    if (urlConnect && !relayTargetMatches(entry, message)) return;
+                    if (relayTrace && relayTrace.connectAckAt === undefined) relayTrace.connectAckAt = race.now();
                     if (candidate.direct) {
                       entry.directNegotiating = true;
                       if (entry.relayPreparationTimer) {
@@ -2708,10 +3110,12 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                   }
                   if (message && message.type === 'connected') {
                     if (entry.connected) return;
-                    if (!candidate.direct && message.protocolTable !== undefined &&
+                    if (!candidate.direct && (message.protocolTable !== undefined ||
+                        (urlConnect && entry.relayProtocolDeclaration)) &&
                         (!entry.relayProtocolDeclaration || !message.protocolTable ||
                          message.protocolTable.formatVersion !== entry.relayProtocolDeclaration.formatVersion ||
                          message.protocolTable.sha256 !== entry.relayProtocolDeclaration.sha256)) {
+                      if (urlConnect && retryControl()) return;
                       state.failInbound(entry, 'RelayNode protocol table acknowledgement mismatch');
                       return;
                     }
@@ -2719,16 +3123,18 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                       Number.isInteger(Number(message.port));
                     const attestationMatches = attestationPresent &&
                       normalizedTargetKey(message.host, Number(message.port)) === entry.targetKey;
-                    if ((!candidate.direct && !attestationPresent) ||
-                        (attestationPresent && !attestationMatches)) {
+                    if ((!candidate.direct && (!attestationPresent || !Number.isInteger(message.port) ||
+                        message.port < 1 || message.port > 65535)) || (attestationPresent && !attestationMatches)) {
+                      if (urlConnect && retryControl()) return;
                       clearCandidateTimeout(entry);
+                      entry.webSocketGeneration++;
                       state.stats.relayTargetAttestationFailures++;
                       try { ws.close(1008, 'RelayNode target attestation mismatch'); }
                       catch (ignored) {}
                       if (candidate.direct) {
                         rememberDirectPluginUnavailable(entry, candidate);
                       } else {
-                        markAcceptedLinkRelayFailed(candidate);
+                        race.markAcceptedLinkRelayFailed(candidate);
                         state.stats.relayFailovers++;
                         recordRelayNodeFailure(candidate, 'RelayNode target attestation mismatch');
                       }
@@ -2736,6 +3142,11 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                       return;
                     }
                     clearCandidateTimeout(entry);
+                    if (relayTrace) {
+                      relayTrace.targetUsableAt = race.now();
+                      if (relayTrace.targetReadyAt === undefined) relayTrace.targetReadyAt = relayTrace.targetUsableAt;
+                      if (relayTrace.connectAckAt === undefined) relayTrace.connectAckAt = relayTrace.targetReadyAt;
+                    }
                     entry.connected = true;
                     entry.directNegotiating = false;
                     if (entry.relayPreparationTimer) {
@@ -2743,11 +3154,28 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                       entry.relayPreparationTimer = 0;
                     }
                     if (candidate.direct) {
+                      if (!state.directPluginRtts) state.directPluginRtts = new Map();
+                      const elapsed = Date.now() - entry.directProbeStartedAt;
+                      const previous = state.directPluginRtts.get(entry.targetKey);
+                      state.directPluginRtts.set(entry.targetKey,
+                        Number.isFinite(previous) ? previous * 0.75 + elapsed * 0.25 : elapsed);
                       forgetDirectPluginUnavailable(entry, candidate);
                       state.stats.directConnected++;
+                      clearRelayPreparation(entry);
                     }
-                    else recordRelayNodeSuccess(entry, candidate);
+                    else {
+                      const directLoser = entry.ws;
+                      if (directLoser && directLoser !== ws && entry.currentCandidate &&
+                          entry.currentCandidate.direct) {
+                        try { directLoser.close(1000, 'Relay won connection race'); } catch (ignored) {}
+                      }
+                      rememberSuccessfulRelay(candidate);
+                      recordRelayNodeSuccess(entry, candidate);
+                      clearRelayPreparation(entry);
+                    }
                     state.stats.connected++;
+                    if (entry.relayRaceStarted) recordConnectPhase(entry, 'race-winner=' +
+                      (candidate.direct ? 'plugin' : 'relay'), candidate.url);
                     recordConnectPhase(
                       entry,
                       candidate.direct ? 'direct-connected' : 'relay-connected',
@@ -2755,9 +3183,10 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                     );
                     requestFlush(entry);
                   }
-                } catch (ignored) {}
+                } catch (ignored) { if (targetWarm) retryControl(); }
                 return;
               }
+              if (targetWarm && !entry.connected && retryControl()) return;
               if (event.data instanceof ArrayBuffer) {
                 const binaryArrivalToken = typeof state.recordArrivalMessage === 'function'
                   ? state.recordArrivalMessage(entry, 'websocket', event.data)
@@ -2772,9 +3201,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                   typeof entry.blobArrivalChain.then === 'function'
                   ? entry.blobArrivalChain
                   : Promise.resolve();
-                // WebSocket message events are ordered, but Blob conversion
-                // completion is not a wire-order guarantee.  Serialize only this
-                // compatibility path; ArrayBuffer messages remain on the hot path.
+                // Serialize Blob conversion to preserve frame order.
                 entry.blobArrivalChain = previousBlobChain
                   .catch(function(previousError) {
                     if (generation === entry.webSocketGeneration &&
@@ -2800,15 +3227,41 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                   });
               }
             };
+            if (adoptedRelay && adoptedRelay.earlyMessage) {
+              const earlyMessage = adoptedRelay.earlyMessage;
+              adoptedRelay.earlyMessage = null;
+              ws.onmessage(earlyMessage);
+            }
             ws.onerror = function() {
+              if (candidate.raw && generation === entry.webSocketGeneration && !entry.closed) {
+                fail(entry, 'Raw WebSocket transport error');
+                return;
+              }
+              if (retryControl()) return;
+              if (candidate.direct && !entry.connected &&
+                  generation === entry.webSocketGeneration && !entry.closed) {
+                clearCandidateTimeout(entry);
+                rememberDirectPluginUnavailable(entry, candidate);
+                recordConnectPhase(entry, 'direct-failed', 'websocket-error');
+                entry.webSocketGeneration++;
+                try { ws.close(); } catch (ignored) {}
+                openRemoteCandidate(entry);
+                return;
+              }
               if (entry.connected && generation === entry.webSocketGeneration) {
                 fail(entry, 'WebSocket transport error');
               }
             };
             ws.onclose = function(event) {
+              if (retryControl()) return;
               if (generation !== entry.webSocketGeneration || entry.closed) return;
               clearCandidateTimeout(entry);
               if (!entry.connected) {
+                if (candidate.raw) {
+                  fail(entry, 'Raw WebSocket closed before open: ' +
+                    (event && event.code || 0) + ' ' + (event && event.reason || ''));
+                  return;
+                }
                 entry.directNegotiating = false;
                 recordConnectPhase(
                   entry,
@@ -2818,7 +3271,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                 if (candidate.direct) {
                   rememberDirectPluginUnavailable(entry, candidate);
                 } else {
-                  markAcceptedLinkRelayFailed(candidate);
+                  race.markAcceptedLinkRelayFailed(candidate);
                   state.stats.relayFailovers++;
                   recordRelayNodeFailure(
                     candidate,
@@ -2851,7 +3304,11 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               }
             };
             }
-            state.open = function(id, host, port) {
+            state.open = function(id, host, port, warmupAttempt, eaglerUrl) {
+            if (typeof warmupAttempt === 'string' && eaglerUrl === undefined) {
+              eaglerUrl = warmupAttempt;
+              warmupAttempt = 0;
+            }
             const key = id|0;
             const normalizedHost = String(host);
             const normalizedPort = port|0;
@@ -2892,6 +3349,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               host: normalizedHost,
               port: normalizedPort,
               targetKey: normalizedTargetKey(host, port),
+              warmupAttempt: warmupAttempt|0,
               ws: null,
               localPort: null,
               localSessionId: null,
@@ -2948,6 +3406,8 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               candidateUrls: new Set(),
               candidateIndex: 0,
               currentCandidate: null,
+              preconnectedRelay: null,
+              directProbeStartedAt: 0,
               webSocketGeneration: 0,
               blobArrivalChain: Promise.resolve(),
               arrivalFrameSequence: 0,
@@ -2968,15 +3428,21 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               relayExhaustionWaitStarted: false,
               relayTargetLeaseKey: null
             };
+            entry.eagler = eaglerUrl != null;
+            entry.rawTransport = entry.eagler || state.rawTransportMode(normalizedHost);
             state.channels.set(key, entry);
             state.stats.opened++;
             state.scheduleEventLoopGapProbe();
+            const reservation = state.joinWarmupEntry;
+            if (reservation && reservation.warmupAttempt === entry.warmupAttempt) {
+              if (reservation.targetKey !== entry.targetKey || !canRaceRelay(entry)) {
+                state.cancelServerListWarmup(entry.warmupAttempt);
+              } else if (!race.warmupUsable(reservation)) {
+                race.expireWarmup(reservation);
+              }
+            }
             const sessionId = localSession(entry.host);
-            // A gaius-local hostname is also used as the public relay address
-            // in an Open to LAN invite. Claim a MessagePort only when this
-            // page actually owns the matching Worker generation; a joining
-            // browser must continue through the relay instead of waiting for
-            // a port that can only exist in the host page.
+            // Claim local ports only for this page's Worker.
             const localGeneration = sessionId === null ? '' : localWorkerGeneration(sessionId);
             const relayOnlySessions = globalThis.__gaiusRelayOnlySessions;
             const relayOnly = (localTunnelRole(entry.host) === 'server' ||
@@ -2998,12 +3464,11 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               }
             }
             const localRole = localTunnelRole(entry.host);
-            // The startup server-<session> channel is the worker's local
-            // MessagePort and must remain local. Only the explicit
-            // lan-server-<session> channel used by Open to LAN is relay-backed.
+            // Keep startup channels local; relay Open to LAN channels.
             const localOwner = sessionId !== null && localRole !== 'lan-server' && !relayOnly &&
               ownsLocalWorkerSession(sessionId);
             if (localOwner) {
+              state.cancelServerListWarmup(entry.warmupAttempt);
               claimLocalPort(
                 entry,
                 sessionId,
@@ -3012,16 +3477,46 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               );
               return;
             }
+            if (state.relaySegmentTracing) race.recordRelayOpenIntent(state, entry);
             recordConnectPhase(entry, 'open');
-            const directUrl = relayOnly ? null : directPluginUrl(entry.host);
+            if (entry.rawTransport) {
+              state.cancelServerListWarmup(entry.warmupAttempt);
+              const rawUrl = state.rawTransportUrl(entry.host, eaglerUrl);
+              if (!rawUrl) {
+                fail(entry, 'Raw WebSocket transport requires a valid ws:// or wss:// target URL');
+                return;
+              }
+              entry.candidates.push({url: rawUrl, direct: true, raw: true});
+              entry.candidateUrls.add(rawUrl);
+              openRemoteCandidate(entry);
+              return;
+            }
+            const warm = race.reservedTargetPredial(state, entry);
+            const targetWarm = warm && canPredialRelay(entry, warm.candidate);
+            const preferred = targetWarm ? warm.candidate : canRaceRelay(entry) ? preferredRelay(entry) : null;
+            // A validated target connection has already won the race. An in-flight
+            // prewarm still competes with the normal direct plugin candidate.
+            const directUrl = relayOnly || (targetWarm && warm.earlyMessage) ? null : directPluginUrl(entry.host);
             if (directUrl) {
               entry.candidates.push({url: directUrl, direct: true});
               entry.candidateUrls.add(directUrl);
-              scheduleRelayPreparation(entry);
-            } else {
+            }
+            const eagerRelay = canPredialRelay(entry, preferred);
+            if (eagerRelay) {
+              // Seed the relay leg before preflight or the direct miss check. The
+              // regular candidate path promotes this same socket if direct is skipped.
+              entry.candidates.push(preferred);
+              entry.candidateUrls.add(preferred.url);
+              startRelayPredial(entry, preferred);
+            } else if (!directUrl) {
               ensureRelayCandidates(entry);
+            } else if (canRaceRelay(entry)) {
+              scheduleRelayPreparation(entry);
             }
             openRemoteCandidate(entry);
+            if (!entry.closed && !entry.connected && eagerRelay) {
+              ensureRelayCandidates(entry);
+            }
             };
             state.send = function(id, data) {
             const entry = state.channels.get(id|0);
@@ -3031,19 +3526,18 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               : new Uint8Array(0);
             const frameCount = source.byteLength === 0
               ? 1
-              : Math.ceil(source.byteLength / maximumOutboundBytesPerTurn);
+              : (entry.eagler ? 1 : Math.ceil(source.byteLength / maximumOutboundBytesPerTurn));
             if (entry.queuedBytes + source.byteLength > maximumOutboundQueueBytes ||
                 entry.queuedFrames + frameCount > maximumOutboundQueueFrames) {
-              // Keep the ByteBuf in Netty's outbound buffer. Java retries after the browser
-              // queue drains; failing this call must never remove protocol bytes silently.
+              // Queue ByteBuf for retry; never drop protocol bytes.
               entry.outboundBackpressured = true;
               state.stats.outboundBackpressureDeferrals++;
               requestFlush(entry, webSocketBackpressureRetryMs);
               return false;
             }
             entry.outboundBackpressured = false;
-            if (source.byteLength === 0) {
-              entry.outbound.push(new Uint8Array(0));
+            if (entry.eagler || source.byteLength === 0) {
+              entry.outbound.push(new Uint8Array(source));
             } else {
               for (let offset = 0; offset < source.byteLength;
                    offset += maximumOutboundBytesPerTurn) {
@@ -3172,76 +3666,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             state.relayRegistryPromise = discoverRelayNodes();
             return state.relayRegistryPromise;
             };
-            // Lightweight defaults keep source-level bridge harnesses operational. The TeaVM
-            // constructor immediately replaces these with the bounded scheduler below.
-            state.scheduleEventLoopGapProbe = function() {};
-            state.stopEventLoopGapProbeIfIdle = function() {};
-            state.startHighWatermark = function() {};
-            state.finishHighWatermark = function() {};
-            state.discardInbound = function(entry) {
-            if (!entry) return;
-            state.finishHighWatermark(entry);
-            state.stats.inboundQueuedBytes = Math.max(
-              0,
-              state.stats.inboundQueuedBytes - entry.inboundBytes - entry.pendingInboundBytes
-            );
-            entry.inbound = [];
-            entry.inboundHead = 0;
-            entry.inboundBytes = 0;
-            entry.pendingInbound = [];
-            entry.pendingInboundHead = 0;
-            entry.pendingInboundBytes = 0;
-            entry.flowPaused = false;
-            };
-            const fallbackInboundQueueFrames = 4096;
-            function fallbackInboundFrameCount(entry) {
-            return Math.max(0, entry.inbound.length - entry.inboundHead);
-            }
-            state.deliverInbound = function(entry, buffer) {
-            if (!entry || entry.closed) return;
-            const bytes = buffer instanceof ArrayBuffer
-              ? new Uint8Array(buffer)
-              : new Uint8Array(buffer.buffer, buffer.byteOffset || 0, buffer.byteLength || 0);
-            if (fallbackInboundFrameCount(entry) >= fallbackInboundQueueFrames) {
-              state.failInbound(entry, 'Browser transport inbound queue exceeded frame limit');
-              return;
-            }
-            entry.inbound.push(bytes);
-            entry.inboundBytes += bytes.byteLength;
-            state.stats.inboundQueuedBytes += bytes.byteLength;
-            state.stats.receivedFrames++;
-            state.stats.receivedBytes += bytes.byteLength;
-            };
-            state.pollInboundScheduled = function(id, requestFlush) {
-            const entry = state.channels.get(id|0);
-            if (!entry || entry.inboundHead >= entry.inbound.length) return null;
-            requestFlush(entry);
-            const chunk = entry.inbound[entry.inboundHead++];
-            entry.inboundBytes = Math.max(0, entry.inboundBytes - chunk.byteLength);
-            state.stats.inboundQueuedBytes = Math.max(
-              0,
-              state.stats.inboundQueuedBytes - chunk.byteLength
-            );
-            if (entry.inboundHead >= entry.inbound.length) {
-              entry.inbound = [];
-              entry.inboundHead = 0;
-            }
-            return new Int8Array(chunk.buffer, chunk.byteOffset || 0, chunk.byteLength);
-            };
-            state.recordPumpTelemetry = function() {};
-            state.recordDecodedSliceScheduled = function() {};
-            state.finishDecodedSliceScheduled = function() {};
-            state.recordDecodedPacketQueueScheduled = function() {};
-            state.recordInlineDecodedPacketScheduled = function() {};
-            state.hasPendingInboundScheduled = function(id) {
-            const entry = state.channels.get(id|0);
-            return !!entry && entry.inboundHead < entry.inbound.length;
-            };
-            state.hasPumpableInboundScheduled = function(id) {
-            const entry = state.channels.get(id|0);
-            return !!entry && !entry.disposed && !state.exactPacketQueuePaused &&
-              entry.inboundHead < entry.inbound.length;
-            };
+            race.installBridgeDefaults(state);
             state.setInboundPaused = setInboundPaused;
             state.failInbound = fail;
             localPortMap();
@@ -3439,7 +3864,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
               entry.outboundFlushHandle = 0;
               entry.outboundFlushKind = '';
             }
-            function queueControl(entry, message, target, closeAfterSend, generation) {
+            function queueControl(entry, message, target, closeAfterSend, generation, trace) {
               if (!entry || !target) return;
               const serialized = JSON.stringify(message);
               const byteLength = encodedBytes(serialized);
@@ -3462,6 +3887,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                 closeAfterSend: !!closeAfterSend,
                 generation: generation === undefined ? entry.webSocketGeneration : generation
               });
+              if (trace) entry.outboundControls[entry.outboundControls.length - 1].trace = trace;
               entry.queuedControlBytes += byteLength;
               state.stats.queuedControlBytes += byteLength;
               state.stats.peakQueuedControlBytes = Math.max(
@@ -3513,6 +3939,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                     }
                   } else {
                     item.target.send(item.payload);
+                    if (item.trace) item.trace.connectSentAt = now();
                     state.stats.webSocketSends++;
                   }
                 } catch (error) {
@@ -4137,7 +4564,7 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
                   entry.pendingInboundHead++;
                   continue;
                 }
-                const byteLength = Math.min(maximumInboundSliceBytes, remaining);
+                const byteLength = entry.eagler ? remaining : Math.min(maximumInboundSliceBytes, remaining);
                 const chunk = frame.bytes.subarray(frame.offset, frame.offset + byteLength);
                 frame.offset += byteLength;
                 entry.pendingInboundBytes = Math.max(0, entry.pendingInboundBytes - byteLength);
@@ -5003,10 +5430,18 @@ public final class BrowserWebSocketChannel extends AbstractChannel {
             """)
     private static native int aggregatePumpableInputState();
 
-    @JSBody(params = {"id", "host", "port"}, script = """
-            globalThis.__gaiusNettyBridge.open(id, host, port);
+    @JSBody(params = {"id", "host", "port", "warmupAttempt", "eaglerUrl"}, script = """
+            globalThis.__gaiusNettyBridge.open(id, host, port, warmupAttempt, eaglerUrl);
             """)
-    private static native void openSocket(int id, String host, int port);
+    private static native void openSocket(int id, String host, int port, int warmupAttempt, String eaglerUrl);
+
+    @JSBody(params = {"id"}, script = """
+            const entry = globalThis.__gaiusNettyBridge.channels.get(id|0);
+            const candidate = entry && entry.connected && entry.currentCandidate;
+            return candidate ? (entry.eagler ? 'eagler' : candidate.raw ? 'wsproxy'
+                : candidate.direct ? 'plugin' : 'relay') : null;
+            """)
+    private static native String selectedRemoteTransport(int id);
 
     @JSBody(params = {"id", "data"}, script = """
             return !!globalThis.__gaiusNettyBridge.send(id, data);

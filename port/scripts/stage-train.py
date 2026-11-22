@@ -162,8 +162,11 @@ def frozen_receipt(directory: Path, wasm_client: Path | None = None) -> dict[str
 def stage_profile(train: Path, profile: str, staged: Path,
                   scratch: Path, allow_mixed_provenance: bool = False,
                   js_role: str = "built", frozen_js_source: str | None = None,
-                  frozen: Path | None = None) -> dict[str, object]:
+                  frozen: Path | None = None,
+                  require_atlas_prebake: bool = False) -> dict[str, object]:
     client, server = wasm_paths(train, profile)
+    if require_atlas_prebake and not (client / "gaius-atlas-prebake.bin.gz").is_file():
+        raise RuntimeError(f"{profile}: required atlas prebake is missing from {client}")
     input_dir = prepare_input(profile, client, scratch / profile, frozen)
     fallback_flags = ["--no-js-fallback"] if frozen is None else ["--frozen-js"]
     site = staged / f"site-{profile}"
@@ -225,6 +228,8 @@ def main(argv: list[str]) -> int:
                         help="accept a client and server built from different commits (test trains only)")
     parser.add_argument("--js-role", choices=("built", "frozen", "missing"),
                         help="record whether this train built JS, stages a frozen JS role, or omits JS")
+    parser.add_argument("--require-atlas-prebake", action="store_true",
+                        help="require a generated atlas prebake in every staged Wasm client")
     parser.add_argument("--frozen-js-source",
                         help="explicit source directory recorded when --js-role=frozen")
     args = parser.parse_args(argv)
@@ -273,7 +278,8 @@ def main(argv: list[str]) -> int:
                 freeze_path.write_text(json.dumps(frozen_set, indent=2) + "\n", encoding="utf-8")
             results.append(stage_profile(train, profile, staged, scratch, args.allow_mixed_provenance,
                                          "frozen" if frozen is not None else "missing",
-                                         str(frozen.resolve()) if frozen is not None else None, frozen))
+                                         str(frozen.resolve()) if frozen is not None else None, frozen,
+                                         args.require_atlas_prebake))
         except RuntimeError as error:
             pending.append(str(error))
     receipt_path = staged / "STAGED.txt"

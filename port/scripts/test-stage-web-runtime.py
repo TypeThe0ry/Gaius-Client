@@ -49,6 +49,20 @@ def boot_list(name: str) -> list[str]:
 
 
 class WebRuntimeDistributionTest(unittest.TestCase):
+    def test_kernel_skip_ignores_inherited_translator_and_removes_stale_copy(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gaius-stage-skip-kernels-") as temporary:
+            dist = Path(temporary)
+            staged_translator = dist / STAGE.WEBGPU_TRANSLATOR
+            staged_translator.parent.mkdir(parents=True)
+            staged_translator.write_bytes(b"stale")
+            inherited = dist / "inherited.wasm"
+            inherited.write_bytes(b"inherited")
+            with patch.dict("os.environ", {"GAIUS_SKIP_KERNELS": "1", "GAIUS_SHADERXLAT_WASM": str(inherited)}), \
+                    patch.object(STAGE, "DEFAULT_TRANSLATOR", inherited):
+                self.assertNotIn(STAGE.WEBGPU_TRANSLATOR, STAGE.stage_webgpu(dist, None))
+                self.assertFalse(staged_translator.exists())
+                self.assertTrue(inherited.is_file())
+
     def test_png_is_wasmgc_only_and_optional(self) -> None:
         with tempfile.TemporaryDirectory(prefix="gaius-stage-png-") as temporary:
             directory = Path(temporary)

@@ -1070,6 +1070,7 @@
     releaseSurfaceGate();
     surfaceParts.length = 0;
     lastSurfaceViewHandle = 0;
+    submittedSurfaceViewHandle = 0;
     surfaceAcquired = false;
     encoder = null;
     uploadEncoder = null;
@@ -1346,6 +1347,7 @@
     pass = null; foldedPass = null; encoder = null; uploadEncoder = null; lastPass = null;
     colorAttachments = []; depthAttachment = null; bindEntries = [];
     surfaceParts = []; surfaceAcquired = false; blit = null; lastSurfaceViewHandle = 0;
+    submittedSurfaceViewHandle = 0;
     if (surfaceRafPending && typeof root.cancelAnimationFrame === "function" && surfaceRafId !== null) {
       try { root.cancelAnimationFrame(surfaceRafId); } catch (_) {}
     }
@@ -2326,6 +2328,7 @@
     var fragmentShader = entry.fs;
     // Never bind a pipeline until both its device validation and shader diagnostics settle.
     entry.valid = false;
+    entry.validating = true;
     G.device.pushErrorScope("validation");
     try {
       pipeline = G.device.createRenderPipeline(pipelineDescriptor(entry));
@@ -2337,6 +2340,7 @@
       vertexShader.validation || Promise.resolve(null),
       fragmentShader.validation || Promise.resolve(null)
     ]).then(function (results) {
+      entry.validating = false;
       if (terminated || callbackGeneration !== generation) {
         entry.validationError = "WebGPU device changed during pipeline validation";
         return false;
@@ -2350,6 +2354,7 @@
       }
       return entry.valid;
     }, function (error) {
+      entry.validating = false;
       pipelineRejected(entry, String(error && error.message ? error.message : error));
       return false;
     });
@@ -2490,8 +2495,12 @@
 
   G.awaitPipelineValidation = function (handle, callback) {
     var entry = get(handle);
-    if (!entry || !callback) return;
-    if (entry.state === "pending" || entry.state === "creating" || !entry.validation) {
+    if (!callback) return;
+    if (!entry || !deviceUsable()) {
+      callback(false, "WebGPU pipeline unavailable");
+      return;
+    }
+    if (entry.state === "pending" || entry.state === "creating") {
       // RenderPearl's Pending.finish() is part of resource reload. Create its native pipeline
       // here and hold that reload activation until WebGPU reports descriptor and WGSL errors.
       createPipelineNow(entry);
@@ -2511,6 +2520,7 @@
       layouts: null,
       label: d.label,
       valid: true,
+      validating: false,
       validation: null,
       validationError: "",
       state: "pending",
@@ -2935,9 +2945,13 @@
   };
 
   G.setPipeline = function (handle) {
-    if (!deviceUsable()) return;
+    if (!deviceUsable()) return false;
     if (pass === null && foldedPass !== null) openFoldedPass();
     var entry = get(handle);
+    if (pass === null || !entry) {
+      currentPipelineValid = false;
+      return false;
+    }
     var pipeline = entry.pipeline;
     if (pipeline === null && entry.state !== "failed") {
       pipeline = createPipelineNow(entry);
@@ -2947,6 +2961,7 @@
       pass.setPipeline(pipeline);
       boundPipelineHandle = handle | 0;
     }
+    return entry.validating && pipeline !== null;
   };
 
   G.setVertexBuffer = function (slot, bufferHandle, offset, size) {
@@ -3923,6 +3938,7 @@
       if (buffers.length > 0) {
         G.queue.submit(buffers);
         if (surfaceEncoded) {
+          submittedSurfaceViewHandle = lastSurfaceViewHandle;
           noteSurfaceSubmission();
         }
       }
@@ -4997,6 +5013,7 @@
   // The source view is retained for harness readback. It is the texture that the surface blit
   // samples, so this path verifies the real rendered frame without depending on the compositor.
   var lastSurfaceViewHandle = 0;
+  var submittedSurfaceViewHandle = 0;
 
   // Surface window diagnostics: from vanilla's acquire to the submit that carries the blit (or
   // the present), whether the game thread suspended (a microtask ran) or an animation frame ran.
@@ -5319,6 +5336,12 @@
     return readTextureBytes(textureHandle, 0, 0, x, y, width, height, 4);
   };
 
+  function canSubmitDiagnosticReadback() {
+    // A host task can inspect pixels while the Wasm main thread is suspended inside a
+    // logical render pass. Only a held, already-ended pass may be retired by submit().
+    return endPending || (lastPass === null && foldedPass === null);
+  }
+
   /**
    * Harness diagnostics (atlas prebake readback gate): the SHA-256 of every mip level and layer of
    * every live texture whose label contains `labelPart`, as [{label, width, height, format, mip,
@@ -5326,6 +5349,9 @@
    */
   G.textureLevelDigests = function (labelPart) {
     if (!deviceUsable()) return Promise.reject(new Error("WebGPU device unavailable"));
+    if (!canSubmitDiagnosticReadback()) {
+      return Promise.reject(new Error("texture digests require a closed render pass"));
+    }
     var subtle = root.crypto && root.crypto.subtle;
     if (!subtle) return Promise.reject(new Error("WebCrypto SHA-256 unavailable"));
     if (encoder !== null || uploadEncoder !== null || surfaceParts.length > 0) G.submit();
@@ -5374,10 +5400,16 @@
    * screenshots that can be black even when the GPU render target contains pixels.
    */
   G.captureSurfaceReadback = function () {
-    if (!deviceUsable() || !lastSurfaceViewHandle) {
+    if (!deviceUsable()) return Promise.reject(new Error("WebGPU device unavailable"));
+    // If the game has a logical pass open, copy the last submitted source on a separate
+    // encoder. Flushing the game's encoder here would silently end its open pass.
+    if (canSubmitDiagnosticReadback() && (encoder !== null || uploadEncoder !== null || surfaceParts.length > 0)) {
+      G.submit();
+    }
+    if (!submittedSurfaceViewHandle) {
       return Promise.reject(new Error("no presented WebGPU source texture"));
     }
-    var viewRecord = resourceRecords[lastSurfaceViewHandle];
+    var viewRecord = resourceRecords[submittedSurfaceViewHandle];
     if (!viewRecord || viewRecord.kind !== "view") {
       return Promise.reject(new Error("presented surface view record unavailable"));
     }
@@ -5396,9 +5428,6 @@
     }
     var textureHandle = viewRecord.textureHandle;
     var mip = viewRecord.baseMip;
-    // A harness request can arrive between a draw and the normal present boundary. Submit the
-    // encoded frame first so the following copy observes the source the canvas blit would use.
-    if (encoder !== null || uploadEncoder !== null || surfaceParts.length > 0) G.submit();
     return readTextureBytes(textureHandle, mip, 0, 0, 0, width, height, 4).then(function (bytes) {
       // Render targets use the WebGPU bottom-left convention used by the surface shader. PNG
       // rows are top-down, so flip the rows while preserving the exact rendered texels.

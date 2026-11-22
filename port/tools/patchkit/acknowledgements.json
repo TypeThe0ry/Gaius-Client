@@ -899,7 +899,7 @@
       "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
       "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "reviewer": "vanilla-semantics review",
-      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
     },
     {
       "profile": "1.21.11",
@@ -908,7 +908,7 @@
       "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
       "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "reviewer": "vanilla-semantics review",
-      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
     },
     {
       "profile": "26.2",
@@ -917,7 +917,7 @@
       "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
       "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "reviewer": "vanilla-semantics review",
-      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
     },
     {
       "profile": "26.2",
@@ -926,7 +926,7 @@
       "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
       "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "reviewer": "vanilla-semantics review",
-      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
     },
     {
       "profile": "26.3",
@@ -935,7 +935,7 @@
       "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
       "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "reviewer": "vanilla-semantics review",
-      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
     },
     {
       "profile": "26.3",
@@ -944,7 +944,7 @@
       "previousTargetDigest": "c83b6dd4fc394b21bf72c94ca6a22258a15e934a4bb62cf54aab2f585ce8efa7",
       "currentTargetDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "reviewer": "vanilla-semantics review",
-      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
+      "reason": "Owner decision, 2026-10-14: restore vanilla duplicate-UUID handling, so patchPersistentEntityUuidBrowserRecovery is removed on every profile and target. It rewrote PersistentEntitySectionManager.addEntityUuid to re-randomize a duplicate entity's UUID (up to 8 tries) and keep the entity, where vanilla rejects it with the 'UUID of added entity already exists' warning. It was added for duplicates that came from a TeaVM stream spliterator bug which loaded the last entity of each NBT entity list twice (<work-dir>/dupent/REPORT.md); that bug is fixed in the integration branch, so the patch now only hides real duplicates. The vanilla class is no longer rewritten; frozen JavaScript output changes by this removal and is rebuilt at release."
     },
     {
       "profile": "26.3",
@@ -971,7 +971,7 @@
       "previousTargetDigest": "822c4e7de4b03f6a03ac954c24ee7fd178a725660be1a3513464f3d8a6b5a15f",
       "currentTargetDigest": "828c976f10cd58404b3ffabd13fc0dd7f9a82fde583cb8131a0fb13cde2a4fd6",
       "reviewer": "vanilla-semantics review",
-      "reason": "Recorded 2026-10-22: the worldgen kernel patch now also rewrites NoiseStack to dispatch its layers through BrowserNoiseStack for RenderPearl. The dispatch change preceded the manifest refresh; the digest change is theirs, not the w12-tboot3 merge. The browser worldgen kernel stays default-off pending the release gate."
+      "reason": "Recorded 2026-10-22: the worldgen kernel patch now also rewrites NoiseStack to dispatch its layers through BrowserNoiseStack for the RenderPearl profile. The digest records that earlier source change. The browser worldgen kernel stays default-off pending the release gate."
     },
     {
       "profile": "26.3",
@@ -980,7 +980,7 @@
       "previousTargetDigest": "822c4e7de4b03f6a03ac954c24ee7fd178a725660be1a3513464f3d8a6b5a15f",
       "currentTargetDigest": "828c976f10cd58404b3ffabd13fc0dd7f9a82fde583cb8131a0fb13cde2a4fd6",
       "reviewer": "vanilla-semantics review",
-      "reason": "Recorded 2026-10-22: the worldgen kernel patch now also rewrites NoiseStack to dispatch its layers through BrowserNoiseStack for RenderPearl. The dispatch change preceded the manifest refresh; the digest change is theirs, not the w12-tboot3 merge. The browser worldgen kernel stays default-off pending the release gate."
+      "reason": "Recorded 2026-10-22: the worldgen kernel patch now also rewrites NoiseStack to dispatch its layers through BrowserNoiseStack for the RenderPearl profile. The digest records that earlier source change. The browser worldgen kernel stays default-off pending the release gate."
     },
     {
       "profile": "1.21.11",
@@ -1591,7 +1591,7 @@
       "id": "MinecraftClientPatcher.patchMinecraftServer",
       "previousTargetDigest": "581c06bc0f012805627fefab5f5c10eecf6f67f93b78a380f3fd056ee562c27d",
       "currentTargetDigest": "8d3f1e97ddad1e27dadd977429ff272b4034fe164a924eddd2961a9f801a2f5e",
-      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. The production patch was checked with 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
+      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. For this change, 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
       "reviewer": "TT"
     },
     {
@@ -1618,7 +1618,7 @@
       "id": "MinecraftClientPatcher.patchMinecraftServer",
       "previousTargetDigest": "581c06bc0f012805627fefab5f5c10eecf6f67f93b78a380f3fd056ee562c27d",
       "currentTargetDigest": "8d3f1e97ddad1e27dadd977429ff272b4034fe164a924eddd2961a9f801a2f5e",
-      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. The production patch was checked with 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
+      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. For this change, 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
       "reviewer": "TT"
     },
     {
@@ -1645,7 +1645,7 @@
       "id": "MinecraftClientPatcher.patchMinecraftServer",
       "previousTargetDigest": "2d1840b511e47a970bf84262af0febdd2867204a17b29979c25e6bce3894d6d8",
       "currentTargetDigest": "f80baf7dd77795ab2f86e378a5b596d76fac50edee05abb1020f33738497002b",
-      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. The production patch was checked with 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
+      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. For this change, 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
       "reviewer": "TT"
     },
     {
@@ -1672,7 +1672,7 @@
       "id": "MinecraftClientPatcher.patchMinecraftServer",
       "previousTargetDigest": "2d1840b511e47a970bf84262af0febdd2867204a17b29979c25e6bce3894d6d8",
       "currentTargetDigest": "f80baf7dd77795ab2f86e378a5b596d76fac50edee05abb1020f33738497002b",
-      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. The production patch was checked with 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
+      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. For this change, 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
       "reviewer": "TT"
     },
     {
@@ -1699,7 +1699,7 @@
       "id": "MinecraftClientPatcher.patchMinecraftServer",
       "previousTargetDigest": "cd4d992d17915100282c2ff436f2e7a24ed47860a0a37378e91b44b1f82b4388",
       "currentTargetDigest": "fe61fb7d77582dda3842a2c65f194dac684a5e206bbacbbbbb869b52e297cb89",
-      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. The production patch was checked with 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
+      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. For this change, 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
       "reviewer": "TT"
     },
     {
@@ -1735,7 +1735,7 @@
       "id": "MinecraftClientPatcher.patchMinecraftServer",
       "previousTargetDigest": "cd4d992d17915100282c2ff436f2e7a24ed47860a0a37378e91b44b1f82b4388",
       "currentTargetDigest": "fe61fb7d77582dda3842a2c65f194dac684a5e206bbacbbbbb869b52e297cb89",
-      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. The production patch was checked with 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
+      "reason": "Preserve the vanilla prepareLevels initial ChunkLoadCounter wait instead of returning before forced chunks finish. For this change, 26.3 valid item-frame and water-movement JVM scenarios pass. Accurate-source 26.2 rerun initially found an invalid reference and one reload chunk NBT divergence; confirmation passes but the intermittent extra Y=-5 section remains unresolved. Browser JSPI progress and cancellation still require candidate acceptance.",
       "reviewer": "TT"
     },
     {
@@ -1863,6 +1863,250 @@
       "currentTargetDigest": "9f1230d0614670139c7dafcc28f63fcc44b2397e6cbe9d1eaa392ef85ee9df56",
       "reviewer": "Claude (delegated by TypeThe0ry, 2026-11-15)",
       "reason": "Reviewed 2026-11-15 (delegated by TypeThe0ry, who said: 这个为什么需要我同意呢 你自己做不行吗): independent audit by Claude: the worker patch now consumes the earlier patchServerCommandPacketErrorDiagnostics output instead of overwriting it from the vanilla jar (origin/main #7), so the command error report is no longer dropped; its footprint loses lambda$handleChatCommand$0 which is still rewritten (same hash) by the diagnostics patch; no new vanilla method is rewritten and the other targets are unchanged. Review packet: out/train26ci/REVIEW-PACKET-serverworker-chatcmd.md."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchEaglerConnectionStatusUi",
+      "previousTargetDigest": "dc045e897787a2c9828513de57a5fc4a1c4231740822eacb9a735d81d169f42f",
+      "currentTargetDigest": "c14aa14c3fe2993b7df35cc0b03bd01360d46c8977d1d383204e372490724bb0",
+      "reviewStatus": "reviewed",
+      "reviewer": "gpt-6.2-astra audit-eaglerx2",
+      "reason": "2026-11-19 独立审计。对本地 26.3 client-named.jar 按生产顺序应用恢复补丁和状态 UI 补丁。旧实现从 JAR 重读 ConnectScreen，覆盖 startConnecting 的 beginConnection 调用，updateStatus 未通过 ASM 栈验证。修复后从已有输出读取，10 个方法中仅 updateStatus 的指令发生变化，恢复调用保留，状态装饰调用与 ASM 栈验证通过。确认上述 26.3 WasmGC 历史目标摘要对。"
+    },
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "982b3224a7a9518807f6eb71056dd00634052fdffc28a2cde13fb90862874436",
+      "currentTargetDigest": "f8e35cdfa30238c3e34ec3a2217ed86be6065f6c1df15eefc392e688f88160e2",
+      "reviewer": "pending independent audit",
+      "reason": "PENDING independent audit (entered by the implementing unit; not reviewed) Tie warmup activation and teardown to the multiplayer list lifecycle."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchConnectScreenBrowserRecovery",
+      "previousTargetDigest": "d8637f479ff75a5acc2f4884614f41cdb7d240c9432967a18afc9acfb45ee21c",
+      "currentTargetDigest": "9ca2e812df518a8cbd4f51e7df8a39bfc0e76665ac998c2c6fe22d4b7103234e",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对 ConnectScreen 与连接线程的预留 ID 传递和退出释放，三版补丁组合及成员、栈帧校验通过，状态 UI 仍保留恢复入口。 独立技术复核：复核 CONNECT 启动线程前绑定预留 ID，线程以该 ID 打开远程连接，移除和线程返回/异常均释放未接手预留。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchConnectionBrowserWebSocket",
+      "previousTargetDigest": "8fe36fb0b54c9fc40fee3e652353c98daf917c53804cb47bdf4bf8df2dabd8da",
+      "currentTargetDigest": "2199a65e334e97d5b2df000e019d1221c9c48efd884eae66367056bcf2c37e47",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对远程新增的带预留 ID 入口、默认远程传零及本地 MessagePort 分支，固定 RelayNode PR #2 回环验证接手同一条 WebSocket。 独立技术复核：复核带 ID 的入口只给当前 Bootstrap 绑定预留，默认远程传 0，单机仍走 MessagePort。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "982b3224a7a9518807f6eb71056dd00634052fdffc28a2cde13fb90862874436",
+      "currentTargetDigest": "f8e35cdfa30238c3e34ec3a2217ed86be6065f6c1df15eefc392e688f88160e2",
+      "reviewer": "pending independent audit",
+      "reason": "PENDING independent audit (entered by the implementing unit; not reviewed) Tie warmup activation and teardown to the multiplayer list lifecycle."
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchConnectScreenBrowserRecovery",
+      "previousTargetDigest": "d8637f479ff75a5acc2f4884614f41cdb7d240c9432967a18afc9acfb45ee21c",
+      "currentTargetDigest": "9ca2e812df518a8cbd4f51e7df8a39bfc0e76665ac998c2c6fe22d4b7103234e",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对 ConnectScreen 与连接线程的预留 ID 传递和退出释放，三版补丁组合及成员、栈帧校验通过，状态 UI 仍保留恢复入口。 独立技术复核：复核 CONNECT 启动线程前绑定预留 ID，线程以该 ID 打开远程连接，移除和线程返回/异常均释放未接手预留。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchConnectionBrowserWebSocket",
+      "previousTargetDigest": "8fe36fb0b54c9fc40fee3e652353c98daf917c53804cb47bdf4bf8df2dabd8da",
+      "currentTargetDigest": "2199a65e334e97d5b2df000e019d1221c9c48efd884eae66367056bcf2c37e47",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对远程新增的带预留 ID 入口、默认远程传零及本地 MessagePort 分支，固定 RelayNode PR #2 回环验证接手同一条 WebSocket。 独立技术复核：复核带 ID 的入口只给当前 Bootstrap 绑定预留，默认远程传 0，单机仍走 MessagePort。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "9b3d5bc5a2858be80f32434e0c3300b20b0eefa0bef1a1a47cfdeb24191fcfcb",
+      "currentTargetDigest": "ad83c27030f73b9b9727575794fd864f8bb7d3de5c5ce66f6a22e26d6e8b07f0",
+      "reviewer": "pending independent audit",
+      "reason": "PENDING independent audit (entered by the implementing unit; not reviewed) Tie warmup activation and teardown to the multiplayer list lifecycle."
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchConnectScreenBrowserRecovery",
+      "previousTargetDigest": "34d5ca944f65be8017d61d000dec755dd2313ab3ce03949231f6f1350c8bf193",
+      "currentTargetDigest": "587379953417e010bd1dfa0ab9eb7791659bd9bff2edb3560e8ca8d6fb9e45c7",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对 ConnectScreen 与连接线程的预留 ID 传递和退出释放，三版补丁组合及成员、栈帧校验通过，状态 UI 仍保留恢复入口。 独立技术复核：复核 CONNECT 启动线程前绑定预留 ID，线程以该 ID 打开远程连接，移除和线程返回/异常均释放未接手预留。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchConnectionBrowserWebSocket",
+      "previousTargetDigest": "8fe36fb0b54c9fc40fee3e652353c98daf917c53804cb47bdf4bf8df2dabd8da",
+      "currentTargetDigest": "7933d25f376deefab3684b96c751372fef1df4603c06ea70edb78374d90bdc6e",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对远程新增的带预留 ID 入口、默认远程传零及本地 MessagePort 分支，固定 RelayNode PR #2 回环验证接手同一条 WebSocket。 独立技术复核：复核带 ID 的入口只给当前 Bootstrap 绑定预留，默认远程传 0，单机仍走 MessagePort。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "9b3d5bc5a2858be80f32434e0c3300b20b0eefa0bef1a1a47cfdeb24191fcfcb",
+      "currentTargetDigest": "ad83c27030f73b9b9727575794fd864f8bb7d3de5c5ce66f6a22e26d6e8b07f0",
+      "reviewer": "pending independent audit",
+      "reason": "PENDING independent audit (entered by the implementing unit; not reviewed) Tie warmup activation and teardown to the multiplayer list lifecycle."
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchConnectScreenBrowserRecovery",
+      "previousTargetDigest": "34d5ca944f65be8017d61d000dec755dd2313ab3ce03949231f6f1350c8bf193",
+      "currentTargetDigest": "587379953417e010bd1dfa0ab9eb7791659bd9bff2edb3560e8ca8d6fb9e45c7",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对 ConnectScreen 与连接线程的预留 ID 传递和退出释放，三版补丁组合及成员、栈帧校验通过，状态 UI 仍保留恢复入口。 独立技术复核：复核 CONNECT 启动线程前绑定预留 ID，线程以该 ID 打开远程连接，移除和线程返回/异常均释放未接手预留。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchConnectionBrowserWebSocket",
+      "previousTargetDigest": "8fe36fb0b54c9fc40fee3e652353c98daf917c53804cb47bdf4bf8df2dabd8da",
+      "currentTargetDigest": "7933d25f376deefab3684b96c751372fef1df4603c06ea70edb78374d90bdc6e",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对远程新增的带预留 ID 入口、默认远程传零及本地 MessagePort 分支，固定 RelayNode PR #2 回环验证接手同一条 WebSocket。 独立技术复核：复核带 ID 的入口只给当前 Bootstrap 绑定预留，默认远程传 0，单机仍走 MessagePort。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "09a38dab9719ef4bc3a7476575cc1c07526ebe29e9d322c64f3925ecc552e03e",
+      "currentTargetDigest": "dae3e101366978b0ae7b972add6d4a9b812a6f78a862726a8db934e6802ef2d3",
+      "reviewer": "pending independent audit",
+      "reason": "PENDING independent audit (entered by the implementing unit; not reviewed) Tie warmup activation and teardown to the multiplayer list lifecycle."
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchConnectScreenBrowserRecovery",
+      "previousTargetDigest": "34d5ca944f65be8017d61d000dec755dd2313ab3ce03949231f6f1350c8bf193",
+      "currentTargetDigest": "587379953417e010bd1dfa0ab9eb7791659bd9bff2edb3560e8ca8d6fb9e45c7",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对 ConnectScreen 与连接线程的预留 ID 传递和退出释放，三版补丁组合及成员、栈帧校验通过，状态 UI 仍保留恢复入口。 独立技术复核：复核 CONNECT 启动线程前绑定预留 ID，线程以该 ID 打开远程连接，移除和线程返回/异常均释放未接手预留。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchConnectionBrowserWebSocket",
+      "previousTargetDigest": "8fe36fb0b54c9fc40fee3e652353c98daf917c53804cb47bdf4bf8df2dabd8da",
+      "currentTargetDigest": "d0cf00a351bb1b3b01ec50875dbf9d29138a71986f20297f3bce671ae451c88a",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对远程新增的带预留 ID 入口、默认远程传零及本地 MessagePort 分支，固定 RelayNode PR #2 回环验证接手同一条 WebSocket。 独立技术复核：复核带 ID 的入口只给当前 Bootstrap 绑定预留，默认远程传 0，单机仍走 MessagePort。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "09a38dab9719ef4bc3a7476575cc1c07526ebe29e9d322c64f3925ecc552e03e",
+      "currentTargetDigest": "dae3e101366978b0ae7b972add6d4a9b812a6f78a862726a8db934e6802ef2d3",
+      "reviewer": "pending independent audit",
+      "reason": "PENDING independent audit (entered by the implementing unit; not reviewed) Tie warmup activation and teardown to the multiplayer list lifecycle."
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchConnectScreenBrowserRecovery",
+      "previousTargetDigest": "34d5ca944f65be8017d61d000dec755dd2313ab3ce03949231f6f1350c8bf193",
+      "currentTargetDigest": "587379953417e010bd1dfa0ab9eb7791659bd9bff2edb3560e8ca8d6fb9e45c7",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对 ConnectScreen 与连接线程的预留 ID 传递和退出释放，三版补丁组合及成员、栈帧校验通过，状态 UI 仍保留恢复入口。 独立技术复核：复核 CONNECT 启动线程前绑定预留 ID，线程以该 ID 打开远程连接，移除和线程返回/异常均释放未接手预留。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchConnectionBrowserWebSocket",
+      "previousTargetDigest": "8fe36fb0b54c9fc40fee3e652353c98daf917c53804cb47bdf4bf8df2dabd8da",
+      "currentTargetDigest": "d0cf00a351bb1b3b01ec50875dbf9d29138a71986f20297f3bce671ae451c88a",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。核对远程新增的带预留 ID 入口、默认远程传零及本地 MessagePort 分支，固定 RelayNode PR #2 回环验证接手同一条 WebSocket。 独立技术复核：复核带 ID 的入口只给当前 Bootstrap 绑定预留，默认远程传 0，单机仍走 MessagePort。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "1.21.11",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "982b3224a7a9518807f6eb71056dd00634052fdffc28a2cde13fb90862874436",
+      "currentTargetDigest": "bb02fa7d185b2b7ca368ececa01c04c01351a4a984e772c6ae731978b73ff80d",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。三版 JVM 验证列表激活、选择、离屏和返回的预热边界，核对 ServerSelectionList 和 JoinMultiplayerScreen 的方法归属与 Eagler 条目绕过预热。 独立技术复核：复核服务器列表激活、移除、选中和刷新钩子，以及 Join 对当前保存条目的预留接手。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "1.21.11",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "982b3224a7a9518807f6eb71056dd00634052fdffc28a2cde13fb90862874436",
+      "currentTargetDigest": "bb02fa7d185b2b7ca368ececa01c04c01351a4a984e772c6ae731978b73ff80d",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。三版 JVM 验证列表激活、选择、离屏和返回的预热边界，核对 ServerSelectionList 和 JoinMultiplayerScreen 的方法归属与 Eagler 条目绕过预热。 独立技术复核：复核服务器列表激活、移除、选中和刷新钩子，以及 Join 对当前保存条目的预留接手。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.2",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "9b3d5bc5a2858be80f32434e0c3300b20b0eefa0bef1a1a47cfdeb24191fcfcb",
+      "currentTargetDigest": "70f41731a4c2c0ad58b614cb76511fd84d90605c665b8828b6b62d69d292eed8",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。三版 JVM 验证列表激活、选择、离屏和返回的预热边界，核对 ServerSelectionList 和 JoinMultiplayerScreen 的方法归属与 Eagler 条目绕过预热。 独立技术复核：复核服务器列表激活、移除、选中和刷新钩子，以及 Join 对当前保存条目的预留接手。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.2",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "9b3d5bc5a2858be80f32434e0c3300b20b0eefa0bef1a1a47cfdeb24191fcfcb",
+      "currentTargetDigest": "70f41731a4c2c0ad58b614cb76511fd84d90605c665b8828b6b62d69d292eed8",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。三版 JVM 验证列表激活、选择、离屏和返回的预热边界，核对 ServerSelectionList 和 JoinMultiplayerScreen 的方法归属与 Eagler 条目绕过预热。 独立技术复核：复核服务器列表激活、移除、选中和刷新钩子，以及 Join 对当前保存条目的预留接手。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.3",
+      "target": "js",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "09a38dab9719ef4bc3a7476575cc1c07526ebe29e9d322c64f3925ecc552e03e",
+      "currentTargetDigest": "cf12ad0775a74d84eb9c92122a47d2df43e2c43c9e4b0f93dbc59f68d88dd355",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。三版 JVM 验证列表激活、选择、离屏和返回的预热边界，核对 ServerSelectionList 和 JoinMultiplayerScreen 的方法归属与 Eagler 条目绕过预热。 独立技术复核：复核服务器列表激活、移除、选中和刷新钩子，以及 Join 对当前保存条目的预留接手。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
+    },
+    {
+      "profile": "26.3",
+      "target": "wasmgc",
+      "id": "MinecraftClientPatcher.patchJoinMultiplayerScreenRelays",
+      "previousTargetDigest": "09a38dab9719ef4bc3a7476575cc1c07526ebe29e9d322c64f3925ecc552e03e",
+      "currentTargetDigest": "cf12ad0775a74d84eb9c92122a47d2df43e2c43c9e4b0f93dbc59f68d88dd355",
+      "reviewer": "Codex audit-eaglerx6b (2026-11-21)",
+      "reason": "本会话独立技术审阅。三版 JVM 验证列表激活、选择、离屏和返回的预热边界，核对 ServerSelectionList 和 JoinMultiplayerScreen 的方法归属与 Eagler 条目绕过预热。 独立技术复核：复核服务器列表激活、移除、选中和刷新钩子，以及 Join 对当前保存条目的预留接手。 对应组严格 --compare 通过，候选锁与重生成文件逐字节一致。",
+      "reviewStatus": "reviewed"
     }
   ]
 }

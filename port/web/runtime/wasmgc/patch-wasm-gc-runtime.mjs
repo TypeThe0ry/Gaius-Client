@@ -29,7 +29,7 @@
 //    without allocating a Date for every clock read.
 // 7. Lazy @JSBody functions.  TeaVM's start function creates every @JSBody function up front
 //    (teavmJso.createFunctionN: one `new Function` per JSBody method, ~640 in the client, ~30 ms
-//    of the start function in the Linux profiling run).  createFunctionN now returns a function of
+//    of the start function in a Linux measurement).  createFunctionN now returns a function of
 //    the same arity that compiles the body on its first call and then calls it with the same
 //    receiver (the global object, as the bound function had) and the same leading
 //    wrapCallFromJavaToJs argument; the returned function is the one per call site that TeaVM
@@ -39,7 +39,7 @@
 //    one more frame.  options.lazyJsBodies === false keeps the eager form.
 // 8. Deferred string weak references.  StringInternPool interns every string literal in the
 //    start function, and each one gets a WeakRef and a FinalizationRegistry registration (~65k,
-//    20-25 ms in the Linux profiling run, mostly WeakRef creation).  With
+//    20-25 ms in a Linux measurement, mostly WeakRef creation).  With
 //    options.deferStartStringRegistrations === true, createStringWeakRef returns, while the start
 //    function runs, a DeferredStringRef that holds the string strongly and answers deref() like a
 //    WeakRef; after instantiation, in idle slices (requestIdleCallback, 60 s timeout; setTimeout

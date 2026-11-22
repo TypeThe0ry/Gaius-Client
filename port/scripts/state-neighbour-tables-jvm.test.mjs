@@ -24,7 +24,7 @@
 //      including the wildcard, i.e. through the first multi-property definition (afterwards JVM-only
 //      first-use hashes of the vanilla body shift the sequence, which changes hash-dependent Guava
 //      cache eviction on the JVM; TeaVM has no such requests);
-//    - mutants of the helper are caught: no value hashes, no wildcard hash, unshared rows,
+//    - mutants of the BrowserBridges class are caught: no value hashes, no wildcard hash, unshared rows,
 //      reversed rows.
 //
 //   node port/scripts/state-neighbour-tables-jvm.test.mjs --profile <id> [--keep <dir>]
@@ -32,11 +32,11 @@
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
-import {cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
-import {delimiter, dirname, join} from "node:path";
+import {delimiter, join} from "node:path";
 import {fileURLToPath} from "node:url";
-import {sourceFile} from "../tools/sourcesets/sourcesets.mjs";
+import {generateBrowserBridges} from "./browser-bridge-classes.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const argument = name => {
@@ -59,7 +59,7 @@ asm.push(join(m2, "org/teavm/teavm-core/0.15.0/teavm-core-0.15.0.jar"));
 for (const file of asm) assert.ok(existsSync(file), `missing ${file}`);
 
 const STATE = "net/minecraft/world/level/block/state";
-const HELPER = `${STATE}/GaiusStateNeighbourTables.java`;
+const HELPER = `${STATE}/GaiusStateNeighbourTables`;
 const GAME = /^(net\/minecraft\/|com\/mojang\/)/;
 
 function run(command, args, options = {}) {
@@ -120,20 +120,23 @@ try {
 function gate() {
   const tools = join(out, "tools");
   const patchRoot = join(out, "patch");
-  const sources = join(out, "src");
-  for (const dir of [tools, patchRoot, sources]) mkdirSync(dir, {recursive: true});
+  const bridges = join(out, "bridges");
+  for (const dir of [tools, patchRoot]) mkdirSync(dir, {recursive: true});
 
   run(exe("javac"), ["-nowarn", "-proc:none", "--release", "21", "-cp", asm.join(delimiter),
     "-sourcepath", join(root, "port/tools/src/main/java"), "-d", tools,
-    join(root, "port/mc/fixtures/StateNeighbourTablesPatchCheck.java")]);
+    join(root, "port/mc/fixtures/StateNeighbourTablesPatchCheck.java"),
+    join(root, "port/scripts/fixtures/StateNeighbourTablesMutator.java")]);
   const initializerList = join(out, "clinit-classes.txt");
   const patch = run(exe("java"), ["-cp", [tools, ...asm].join(delimiter), "StateNeighbourTablesPatchCheck", jar,
     patchRoot, initializerList]);
   const patchLine = patch.trim().split("\n").at(-1);
   console.log(patchLine);
-  if (/STATE_NEIGHBOUR_PATCH_DROPPED/.test(patchLine)) {
-    const helper = sourceFile(profile, "src", HELPER, {target: "wasmgc", root});
-    assert.ok(!helper, `profile ${profile} has no StateCollection but compiles ${HELPER}`);
+  const dropped = /STATE_NEIGHBOUR_PATCH_DROPPED/.test(patchLine);
+  generateBrowserBridges({root, profile, role: "src", scratch: out, out: bridges,
+    owners: dropped ? undefined : [HELPER], java: exe("java"), javac: exe("javac"), maven: m2});
+  if (dropped) {
+    assert.ok(!existsSync(join(bridges, `${HELPER}.class`)), `profile ${profile} has no StateCollection but emits ${HELPER}`);
     const report = {profile, outcome: "dropped (no StateDefinition$StateCollection)"};
     mkdirSync(out, {recursive: true});
     writeFileSync(join(out, "report.json"), JSON.stringify(report, null, 2) + "\n");
@@ -143,31 +146,21 @@ function gate() {
   assert.match(patchLine, /STATE_NEIGHBOUR_PATCH_OK .* prologue=11 idempotent=true negative=3/);
   const initializers = new Set(readFileSync(initializerList, "utf8").split("\n").filter(Boolean));
 
-  // The helper as the profile's wasmgc build compiles it (source sets, relocations).
-  const helper = sourceFile(profile, "src", HELPER, {target: "wasmgc", root});
-  assert.ok(helper, `profile ${profile} compiles no ${HELPER}`);
   const classpath = [jar, ...libraries].join(delimiter);
   const vanillaDefinition = join(out, "vanilla-definition");
   mkdirSync(vanillaDefinition, {recursive: true});
   run("unzip", ["-q", "-o", jar, `${STATE}/StateDefinition.class`, "-d", vanillaDefinition]);
 
-  function classes(name, helperText) {
-    const dir = join(out, `classes-${name}`);
-    const src = join(sources, name);
-    mkdirSync(dirname(join(src, HELPER)), {recursive: true});
-    writeFileSync(join(src, HELPER), helperText);
-    run(exe("javac"), ["-nowarn", "-proc:none", "-encoding", "UTF-8", "-cp", classpath, "-d", dir,
-      join(src, HELPER), join(root, "port/mc/fixtures/StateNeighbourTablesBootstrapCheck.java")]);
-    return dir;
-  }
+  const harness = join(out, "harness");
+  run(exe("javac"), ["-nowarn", "-proc:none", "-encoding", "UTF-8", "-cp", [bridges, classpath].join(delimiter),
+    "-d", harness, join(root, "port/mc/fixtures/StateNeighbourTablesBootstrapCheck.java")]);
 
   function runGate(name, dir, definitionRoot, mode) {
     const runDir = join(out, `run-${name}`);
     mkdirSync(runDir, {recursive: true});
-    cpSync(join(definitionRoot, `${STATE}/StateDefinition.class`), join(dir, `${STATE}/StateDefinition.class`));
     const stdout = run(exe("java"), ["-Xmx4g", "-Djava.awt.headless=true", "-XX:+UnlockExperimentalVMOptions",
       "-XX:hashCode=3", `-Xlog:class+init=info:file=${join(runDir, "init.log")}`,
-      "-cp", [dir, classpath].join(delimiter), "StateNeighbourTablesBootstrapCheck", name, runDir, mode],
+      "-cp", [definitionRoot, dir, harness, classpath].join(delimiter), "StateNeighbourTablesBootstrapCheck", name, runDir, mode],
     {cwd: runDir, timeout: 900_000});
     const summary = stdout.split("\n").map(line => /STATE_NEIGHBOUR_GATE .*/.exec(line)?.[0]).find(Boolean);
     assert.ok(summary, `no summary from ${name}:\n${stdout.slice(-2000)}`);
@@ -178,17 +171,15 @@ function gate() {
     return {name, summary, ...files, init: readInit(runDir)};
   }
 
-  const vanillaClasses = classes("vanilla", helper.text);
-  const patchedClasses = classes("patched", helper.text);
   const runs = {};
-  for (const [name, dir, definition, mode] of [
-    ["vanilla-primed", vanillaClasses, vanillaDefinition, "primed"],
-    ["vanilla-primed-2", vanillaClasses, vanillaDefinition, "primed"],
-    ["patched-primed", patchedClasses, patchRoot, "primed"],
-    ["vanilla-cold", vanillaClasses, vanillaDefinition, "cold"],
-    ["patched-cold", patchedClasses, patchRoot, "cold"],
+  for (const [name, definition, mode] of [
+    ["vanilla-primed", vanillaDefinition, "primed"],
+    ["vanilla-primed-2", vanillaDefinition, "primed"],
+    ["patched-primed", patchRoot, "primed"],
+    ["vanilla-cold", vanillaDefinition, "cold"],
+    ["patched-cold", patchRoot, "cold"],
   ]) {
-    runs[name] = runGate(name, dir, definition, mode);
+    runs[name] = runGate(name, bridges, definition, mode);
     console.log(runs[name].summary);
   }
 
@@ -232,20 +223,22 @@ function gate() {
 
   // Mutants of the helper: each must change what the primed gate compares.
   const mutants = [
-    ["no value hashes", "                values[p][digits[p]].hashCode();\n", "", "identity"],
-    ["no wildcard hash", "        wildcard.hashCode();\n", "", "identity"],
-    ["unshared rows", "tables[base + k * stride][p] = row;", "tables[base + k * stride][p] = row.clone();", "states"],
-    ["reversed rows", "row[k] = states[base + k * stride];", "row[k] = states[base + (size - 1 - k) * stride];", "states"],
+    ["no-value-hashes", "identity"],
+    ["no-wildcard-hash", "identity"],
+    ["unshared-rows", "states"],
+    ["reversed-rows", "states"],
   ];
   const caught = [];
-  for (const [what, from, to, file] of mutants) {
-    assert.ok(helper.text.includes(from), `mutant ${what}: pattern not found`);
-    const dir = classes(`mutant-${caught.length}`, helper.text.replace(from, to));
+  for (const [what, file] of mutants) {
+    const dir = join(out, `classes-mutant-${caught.length}`);
+    run(exe("java"), ["-cp", [tools, ...asm].join(delimiter), "StateNeighbourTablesMutator",
+      join(bridges, `${HELPER}.class`), what, join(dir, `${HELPER}.class`)]);
     let mutant = null;
     try {
       mutant = runGate(`mutant-${caught.length}`, dir, patchRoot, "primed");
     } catch (error) {
-      if (!(error instanceof assert.AssertionError) || !/ failed\n/.test(error.message)) throw error;
+      if (!(error instanceof assert.AssertionError) || !/ failed\n/.test(error.message)
+          || /VerifyError|ClassFormatError|LinkageError/.test(error.message)) throw error;
     }
     if (mutant) assert.notEqual(mutant[file], vanilla[file], `mutant not caught: ${what}`);
     caught.push(mutant ? `${what} (${file})` : `${what} (bootstrap fails)`);

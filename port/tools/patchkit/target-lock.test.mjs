@@ -30,6 +30,22 @@ test("body-only changes are blocking despite identical class lists", () => {
     [{...acknowledgement(before, after), target: "wasmgc"}])), false);
 });
 
+test("pending audits stay blocking after reviewer normalization", () => {
+  const before = patch();
+  const after = patch({methodTargets: [target({targetHash: hash("b")})]});
+  const ack = acknowledgement(before, after);
+  for (const entry of [
+    {...ack, reviewer: "pending independent audit"},
+    {...ack, reviewer: " ＰＥＮＤＩＮＧ  Independent\tAudit "},
+    {...ack, reason: "PENDING independent audit (entered by the implementing unit; not reviewed)"},
+  ]) {
+    const diff = diffManifests(manifest(before), manifest(after), [entry]);
+    assert.deepEqual(diff.blocking, [after.id]);
+    assert.equal(diffIsClean(diff), false);
+    assert.match(diff["target-changed"][0].description, /pending independent audit/);
+  }
+});
+
 test("rewrite, whole-class override and static initializers require exact review digests", () => {
   for (const row of [target(), target({operation: "injected"}),
     target({method: "<class>", descriptor: "", operation: "override"}),

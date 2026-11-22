@@ -136,6 +136,15 @@
       }
     },
     {
+      "path": "port/scripts/fixtures/RealSectionPackedDiff.java",
+      "symbols": {
+        "net.minecraft.nbt.CompoundTag": 1,
+        "net.minecraft.nbt.ListTag": 1,
+        "net.minecraft.nbt.NbtAccounter": 1,
+        "net.minecraft.nbt.NbtIo": 1
+      }
+    },
+    {
       "path": "port/scripts/fixtures/WorldgenPriorityJvmFixture.java",
       "symbols": {
         "net.minecraft.util.thread.PriorityConsecutiveExecutor": 1,

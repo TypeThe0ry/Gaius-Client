@@ -360,7 +360,16 @@ public final class MeshKernelHooks {
         MeshJobBuffers b = BUFFERS;
         boolean captured;
         try {
-            captured = SectionSnapshot.capture(b, region, node, current, camera, blockEntities, blend);
+            if (MeshKernelBridge.snapshotCheckEnabled()) {
+                captured = SectionSnapshot.captureChecked(b, region, node, current, camera, blockEntities, blend);
+            } else if (MeshKernelBridge.snapshotTimingEnabled()) {
+                boolean fast = MeshKernelBridge.fastSnapshotEnabled();
+                long captureStarted = System.nanoTime();
+                captured = SectionSnapshot.capture(b, region, node, current, camera, blockEntities, blend, fast);
+                MeshKernelBridge.noteSnapshotPathNanos(fast, System.nanoTime() - captureStarted);
+            } else {
+                captured = SectionSnapshot.capture(b, region, node, current, camera, blockEntities, blend);
+            }
         } catch (RuntimeException error) {
             BrowserChunkPipelineTelemetry.snapshotEnd(ticket, false);
             BrowserChunkPipelineTelemetry.discard(ticket, "snapshot-error");
@@ -394,12 +403,16 @@ public final class MeshKernelHooks {
         h[MeshKernelBridge.H_DISTANCE] = distance;
         h[MeshKernelBridge.H_BLEND] = blend;
         boolean sent;
+        long bridgeSubmitStarted = BrowserChunkPipelineTelemetry.isEnabled() ? System.nanoTime() : 0L;
         try {
             sent = MeshKernelBridge.submit(h, b.ids16, b.ids32, b.light, b.quarts, b.palette, b.swamp, b.floats,
                     b.packedStates, b.packedStateLength);
         } catch (RuntimeException error) {
             BrowserMeshInstallQueue.cancel(node, requestSeq);
             throw error;
+        }
+        if (bridgeSubmitStarted != 0L) {
+            BrowserChunkPipelineTelemetry.bridgeSubmitDuration(ticket, System.nanoTime() - bridgeSubmitStarted);
         }
         if (!sent) {
             BrowserMeshInstallQueue.cancel(node, requestSeq);

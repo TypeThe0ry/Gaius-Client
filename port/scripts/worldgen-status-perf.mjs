@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {sourceFile} from '../tools/sourcesets/sourcesets.mjs';
 import {evaluateProfile} from '../tools/kernelmirror/kernelmirror.mjs';
 import {correctnessHarness, waitJvmHeadroom} from './worldgen-correctness-support.mjs';
+import {generateBrowserBridges} from './browser-bridge-classes.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const [destination, selected, seedText = '12345,987654321', sideText = '20', backend = 'off', artifact,
@@ -71,7 +72,8 @@ for (const profile of manifests) {
   const libraries = text.split(text.startsWith('/') ? ':' : delimiter).filter(Boolean).map(nativePath)
     .filter(path => !/client-(named|original)\.jar$/.test(path));
   for (const path of [jar, ...libraries, ...asm]) if (!existsSync(path)) throw new Error(`Offline input missing: ${path}`);
-  let source = readFileSync(join(root, 'port/scripts/worldgen-seed-parity/WorldgenSeedParity.java'), 'utf8');
+  let source = readFileSync(join(root, 'port/scripts/worldgen-seed-parity/WorldgenSeedParity.java'), 'utf8')
+    .replaceAll('\r\n', '\n');
   const replace = (previous, next) => {
     if (source.split(previous).length !== 2) throw new Error('Harness anchor mismatch: ' + previous);
     source = source.replace(previous, next);
@@ -79,7 +81,12 @@ for (const profile of manifests) {
   replace('deleteRecursively(options.universe().resolve(worldName));',
     'if (Files.exists(options.universe().resolve(worldName))) throw new IllegalStateException("Use a fresh universe");');
   replace('false, !"full".equals(options.mode()));', 'false, true);');
-  replace('                for (ChunkPos position : positions) {',
+  // Seed parity predecorates every target and its neighbours. This profiler must observe
+  // generation as the target chunks are requested, and correctness mode prepares its own halo.
+  const decoration = /^ {16}if \(status == ChunkStatus\.FULL\) \{\n[\s\S]*?^ {16}\}\n(?= {16}for \(ChunkPos position : positions\) \{)/m;
+  const setup = decoration.exec(source)?.[0];
+  if (!setup) throw new Error('Harness anchor mismatch: seed parity feature preparation');
+  replace(setup + '                for (ChunkPos position : positions) {',
     '                for (int warmZ = 0; warmZ < ' + warmupSide + '; warmZ++) {\n'
     + '                    for (int warmX = 0; warmX < ' + warmupSide + '; warmX++) {\n'
     + '                        chunks.getChunk(ParityCompat.x(origin) + 1024 + warmX,\n'
@@ -93,8 +100,9 @@ for (const profile of manifests) {
     + '                    ChunkAccess chunk;\n'
     + '                    try { chunk = chunks.getChunk(x, z, status, true); }\n'
     + '                    finally { dev.gaius.wgperf.StatusProfiler.endChunk(); }');
-  replace('                    addChunk(chunkLines, blocksAggregate, biomesAggregate, x, z,\n'
-    + '                            chunk.getPersistedStatus().getName(),',
+  const hashChunk = '                    Heightmap.primeHeightmaps(chunk, java.util.EnumSet.of(\n'
+    + '                            Heightmap.Types.WORLD_SURFACE_WG, Heightmap.Types.OCEAN_FLOOR_WG));';
+  replace(hashChunk,
     '                    completed.add(chunk);\n'
     + '                }\n'
     + '                for (int index = 0; index < positions.size(); index++) {\n'
@@ -102,17 +110,15 @@ for (const profile of manifests) {
     + '                    int x = ParityCompat.x(position);\n'
     + '                    int z = ParityCompat.z(position);\n'
     + '                    ChunkAccess chunk = completed.get(index);\n'
-    + '                    CompoundTag generatedTag = SerializableChunkData.copyOf(level, chunk).write();\n'
-    + '                    addChunk(chunkLines, blocksAggregate, biomesAggregate, x, z,\n'
-    + '                            chunk.getPersistedStatus().getName(),');
+    + hashChunk);
   replace('String blocks = HexFormat.of().formatHex(blocksAggregate.digest());',
     'try { dev.gaius.wgperf.StatusProfiler.write(System.getProperty("gaius.perf.report")); }\n'
     + '            catch (Exception error) { throw new IOException(error); }\n'
     + '            String blocks = HexFormat.of().formatHex(blocksAggregate.digest());');
   if (correctness) source = correctnessHarness(source);
   const harness = join(sources, 'WorldgenSeedParity.java');
-  writeFileSync(harness, source.replaceAll('\r\n', '\n'));
-  const classpath = [jar, ...libraries, ...asm].join(delimiter);
+  writeFileSync(harness, source);
+  const classpath = [classes, jar, ...libraries, ...asm].join(delimiter);
   const extra = [];
   const hooks = profile.worldgenReference.jvmHooks ?? [];
   if (correctness && correctnessHooks === 'noise' && profile.kernelSemantics.densityGraph === 'sampler-f32') {
@@ -134,9 +140,12 @@ for (const profile of manifests) {
     }
   }
   if (enabled) {
+    const owners = ['net/minecraft/world/level/chunk/GaiusKernelSections'];
+    if (profile.worldgenReference.exporterBridge) owners.push(profile.worldgenReference.exporterBridge);
+    generateBrowserBridges({root, profile, role: 'src', scratch: directory, out: classes,
+      owners, java: tool('java'), javac: tool('javac')});
     for (const helper of [...hooks, 'dev/gaius/browser/kernel/worldgen/WorldgenIr.java',
-      'dev/gaius/browser/kernel/KernelStatusFrontier.java',
-      'net/minecraft/world/level/chunk/GaiusKernelSections.java']) {
+      'dev/gaius/browser/kernel/KernelStatusFrontier.java']) {
       const resolved = sourceFile(profile, 'src', helper, {root, target: 'wasmgc'});
       if (!resolved) throw new Error('Missing JVM hook source ' + helper);
       const path = join(sources, helper);
@@ -157,7 +166,7 @@ for (const profile of manifests) {
     join(root, 'port/scripts/worldgen-status-perf/StatusProfiler.java'),
     join(root, 'port/scripts/worldgen-status-perf/KernelHost.java'),
     join(root, 'port/scripts/worldgen-status-perf/OreShadow.java'), ...extra], directory, join(directory, 'compile.log'));
-  if (enabled) await run(tool('java'), ['-Xmx3g', '-cp', [classes, classpath].join(delimiter),
+  if (enabled) await run(tool('java'), ['-Xmx3g', '-cp', classpath,
     'dev.gaius.wgperf.PatchKernel', jar, classes], directory, join(directory, 'patch.log'));
   const manifest = join(directory, 'agent.mf');
   writeFileSync(manifest, 'Manifest-Version: 1.0\nPremain-Class: dev.gaius.wgperf.StatusAgent\n\n');
@@ -189,7 +198,7 @@ for (const profile of manifests) {
       '-Dgaius.correctness.stage=' + correctnessStage,
       '-Dgaius.correctness.halo=2',
       '-Dgaius.correctness.snapshots=' + join(directory, 'snapshots-' + seed),
-      '-cp', [classes, classpath].join(delimiter), 'dev.gaius.parity.WorldgenSeedParity',
+      '-cp', classpath, 'dev.gaius.parity.WorldgenSeedParity',
       '--seed', seed, '--mode', 'full', '--side', String(side), '--universe', universe,
       '--out', join(directory, `chunks-${seed}.json`)], directory, join(directory, `run-${seed}.log`));
     const report = JSON.parse(readFileSync(join(directory, `status-${seed}.json`), 'utf8'));

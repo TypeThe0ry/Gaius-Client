@@ -121,8 +121,14 @@ build_modules() {
     export EM_CONFIG
     export EMSDK="$(native_path "$emsdk")"
     emsdk="$(posix_path "$emsdk")"
-    node_dir="$(find "$emsdk/node" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1)"
-    python_dir="$(find "$emsdk/python" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 1)"
+    node_dir=""
+    python_dir=""
+    if [[ -d "$emsdk/node" ]]; then
+      node_dir="$(find "$emsdk/node" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+    fi
+    if [[ -d "$emsdk/python" ]]; then
+      python_dir="$(find "$emsdk/python" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+    fi
     PATH="$emsdk/upstream/emscripten${node_dir:+:$node_dir/bin:$node_dir}${python_dir:+:$python_dir}:$PATH"
     export PATH
     if [[ -n "$python_dir" ]]; then

@@ -1,34 +1,12 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import {readFile} from "node:fs/promises";
 import {MessageChannel} from "node:worker_threads";
 import vm from "node:vm";
+import {extractJsBody, loadBridgeSmokeSource} from "./browser-bridge-smoke-source.mjs";
 
-const sourcePath = new URL(
-  "../overrides/libraries/netty-transport/src/main/java/" +
-    "io/netty/channel/browser/BrowserWebSocketChannel.java",
-  import.meta.url,
-);
-const source = await readFile(sourcePath, "utf8");
-
-function jsBodyBefore(marker) {
-  const markerOffset = source.indexOf(marker);
-  const annotationOffset = source.lastIndexOf('@JSBody(script = """', markerOffset);
-  const scriptOffset = source.indexOf('"""', annotationOffset) + 3;
-  const scriptEnd = source.lastIndexOf('""")', markerOffset);
-  assert.ok(markerOffset > 0 && annotationOffset > 0 && scriptEnd > scriptOffset,
-    `JSBody could not be extracted for ${marker}`);
-  const body = source.slice(scriptOffset, scriptEnd).replaceAll("\\\\", "\\");
-  if (marker === "private static native void initBridge();") {
-    return "{\n" + body + "\n}\n{\n" +
-      jsBodyBefore("private static native void initBridgeTail();") + "\n}";
-  }
-  return body;
-}
-
-const bridgeScript = jsBodyBefore("private static native void initBridge();");
-const outboundSchedulerScript = jsBodyBefore(
+const {source, bridgeScript} = await loadBridgeSmokeSource();
+const outboundSchedulerScript = extractJsBody(source,
   "private static native void initOutboundScheduler();",
 );
 assert.match(source, /maximumOutboundFramesPerTurn = 32/);

@@ -279,6 +279,7 @@ public final class BrowserMeshInstallQueue {
                 removeFirstReady();
             }
             boolean done;
+            long installStarted = BrowserChunkPipelineTelemetry.isEnabled() ? System.nanoTime() : 0L;
             try {
                 done = next.install();
             } catch (RuntimeException failure) {
@@ -297,6 +298,9 @@ public final class BrowserMeshInstallQueue {
                 }
                 retries++;
                 break;
+            }
+            if (installStarted != 0L) {
+                BrowserChunkPipelineTelemetry.installDuration(next.telemetryTicket(), System.nanoTime() - installStarted);
             }
             BrowserChunkPipelineTelemetry.installComplete(
                     next.telemetryTicket(), next.telemetryMeshInstalled());

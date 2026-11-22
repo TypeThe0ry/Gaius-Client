@@ -64,7 +64,7 @@ files over, and point `canonicalRenderSeam` at it, so the relocation chain stays
 
 ## Single-source ops
 
-`BrowserProfile`, `MeshKernelHooks`, `BrowserTerrainBatchGlue`, `BrowserUnihexLoader`,
+`BrowserProfile`, `MeshKernelHooks`, `BrowserTerrainBatchGlue`,
 `MeshProfile` and the light kernel bridge (`BrowserLightKernel`, `BrowserLightStateTable`) each
 have one canonical source. The three ops interfaces have statically selected instances: the
 canonical factory type is relocated to the generation implementation, while the source-set

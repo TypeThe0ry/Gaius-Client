@@ -16,12 +16,14 @@ import dev.gaius.tools.ModernSymbols;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.zip.ZipFile;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.IntInsnNode;
@@ -49,20 +51,28 @@ public final class NetworkPatches {
     private NetworkPatches() {
     }
 
-    /**
-     * Adds the vanilla-styled "Edit Profile" button (BrowserProfileScreen) to the modern (26.2
-     * and 26.3) title screen and lets its tick open the editor once on first launch. Both
-     * profiles have one RETURN in {@code init()V}, a {@code tick()V} and the
-     * {@code extractRenderState} GUI that selects these hooks.
-     */
-    /**
-     * Adds the "Relays" button (BrowserRelaysScreen) to the top-right corner of the vanilla
-     * multiplayer screen, like the title screen's Edit Profile button. Every supported profile
-     * (1.21.11, 26.2, 26.3) has the class with one RETURN in {@code init()V}; a client without
-     * it is left unchanged.
-     */
+    private static final String SCREEN = "net/minecraft/client/gui/screens/Screen";
+    private static final String JOIN_SCREEN = "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen";
+    private static final String SERVER_SELECTION = "net/minecraft/client/gui/screens/multiplayer/ServerSelectionList";
+    private static final String SERVER_SELECTION_DESC = "L" + SERVER_SELECTION + ";";
+    private static final String CONNECT_SCREEN = "net/minecraft/client/gui/screens/ConnectScreen";
+    private static final String RELAY_SCREEN = "dev/gaius/browser/BrowserRelaysScreen";
+    private static final String SERVER_DATA = "Lnet/minecraft/client/multiplayer/ServerData;";
+    private static final String SERVER_ADDRESS = "Lnet/minecraft/client/multiplayer/resolver/ServerAddress;";
+    private static final String TRANSFER_STATE = "Lnet/minecraft/client/multiplayer/TransferState;";
+    private static final String MINECRAFT = "Lnet/minecraft/client/Minecraft;";
+    private static final String START_CONNECT = "(L" + SCREEN + ";" + MINECRAFT + SERVER_ADDRESS
+            + SERVER_DATA + "Z" + TRANSFER_STATE + ")V";
+    private static final String CONNECTION = "net/minecraft/network/Connection";
+    private static final String REMOTE_CONNECT_ARGS = "(Ljava/net/InetSocketAddress;"
+            + "Lnet/minecraft/server/network/EventLoopGroupHolder;L" + CONNECTION + ";";
+    private static final String CHANNEL_FUTURE = ")Lio/netty/channel/ChannelFuture;";
+    private static final String RELAY_CONNECT = "gaius$connectWithRelayWarmup";
+    private static final String ATTEMPT_ID = "gaius$relayWarmupAttempt";
+
+    /** Adds the Relays button and scopes warmup to each successful activation of the saved list. */
     public static void patchJoinMultiplayerScreenRelays(String jar, Path output) throws IOException {
-        String owner = "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen";
+        String owner = JOIN_SCREEN;
         boolean present;
         try (ZipFile input = new ZipFile(jar)) {
             present = input.getEntry(owner + ".class") != null;
@@ -95,15 +105,102 @@ public final class NetworkPatches {
                             + "Lnet/minecraft/client/gui/components/events/GuiEventListener;",
                     false));
             button.add(new InsnNode(Opcodes.POP));
+            button.add(relayScreenHook("serverListInitialized", JOIN_SCREEN));
+            button.add(serverListTargetHook(JOIN_SCREEN));
             init.instructions.insertBefore(instruction, button);
             returns++;
         }
         if (returns != 1) {
             throw new IllegalStateException("JoinMultiplayerScreen.init return shape changed: " + returns);
         }
-        init.maxStack = Math.max(init.maxStack, 3);
+        // Screen.init(II) calls protected init only once, and repositionElements on return.
+        MethodNode added = new MethodNode(Opcodes.ACC_PUBLIC, "added", "()V", null, null);
+        if (findNullable(node, "added", "()V") != null) {
+            throw new IllegalStateException("JoinMultiplayerScreen now overrides added");
+        }
+        added.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        added.instructions.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, node.superName, "added", "()V", false));
+        added.instructions.add(relayScreenHook("serverListAdded", JOIN_SCREEN));
+        added.instructions.add(new InsnNode(Opcodes.RETURN));
+        node.methods.add(added);
+        MethodNode reposition = find(node, "repositionElements", "()V");
+        for (AbstractInsnNode instruction : reposition.instructions.toArray()) {
+            if (instruction.getOpcode() == Opcodes.RETURN) {
+                InsnList hook = relayScreenHook("serverListRepositioned", JOIN_SCREEN);
+                hook.add(serverListTargetHook(JOIN_SCREEN));
+                reposition.instructions.insertBefore(instruction, hook);
+            }
+        }
+        find(node, "onClose", "()V").instructions.insert(relayScreenHook("serverListRemoved", JOIN_SCREEN));
+        find(node, "removed", "()V").instructions.insert(relayScreenHook("serverListRemoved", JOIN_SCREEN));
+
+        MethodNode join = find(node, "join", "(" + SERVER_DATA + ")V");
+        MethodInsnNode start = onlyCall(join, CONNECT_SCREEN, "startConnecting", START_CONNECT);
+        start.owner = RELAY_SCREEN;
+        patchServerListTarget(jar, output.resolveSibling("ServerSelectionList.class"));
         writeComputeFrames(node, output);
-        System.out.println("Added the Relays button to JoinMultiplayerScreen");
+        System.out.println("Added the Relays button and warmup lifecycle to JoinMultiplayerScreen");
+    }
+
+    private static void patchServerListTarget(String jar, Path output) throws IOException {
+        ClassNode list = Files.exists(output) ? read(output) : read(jar, SERVER_SELECTION + ".class");
+        // Both mouse and keyboard selection converge on the typed setter (including via its bridge).
+        // refreshEntries may clear the selected field while replacing entries without calling the setter.
+        for (MethodNode method : List.of(find(list, "setSelected", "(L" + SERVER_SELECTION + "$Entry;)V"),
+                find(list, "refreshEntries", "()V"))) {
+            int returns = 0;
+            for (AbstractInsnNode instruction : method.instructions.toArray()) {
+                if (instruction.getOpcode() == Opcodes.RETURN) {
+                    method.instructions.insertBefore(instruction, serverListTargetHook(SERVER_SELECTION));
+                    returns++;
+                }
+            }
+            if (returns != 1) {
+                throw new IllegalStateException("ServerSelectionList." + method.name + " return shape changed: " + returns);
+            }
+        }
+        writeComputeFrames(list, output);
+    }
+
+    private static InsnList serverListTargetHook(String owner) {
+        InsnList hook = new InsnList();
+        hook.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        hook.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "minecraft", MINECRAFT));
+        hook.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        if (owner.equals(SERVER_SELECTION)) {
+            hook.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "screen", "L" + JOIN_SCREEN + ";"));
+        }
+        hook.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        if (owner.equals(JOIN_SCREEN)) {
+            hook.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "serverSelectionList", SERVER_SELECTION_DESC));
+        }
+        hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC, RELAY_SCREEN, "serverListTargetChanged",
+                "(" + MINECRAFT + "L" + JOIN_SCREEN + ";" + SERVER_SELECTION_DESC + ")V", false));
+        return hook;
+    }
+
+    private static InsnList relayScreenHook(String name, String screenType) {
+        InsnList hook = new InsnList();
+        hook.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        hook.add(new MethodInsnNode(Opcodes.INVOKESTATIC, RELAY_SCREEN, name, "(L" + screenType + ";)V", false));
+        return hook;
+    }
+
+    private static MethodInsnNode onlyCall(MethodNode method, String owner, String name, String desc) {
+        MethodInsnNode match = null;
+        for (AbstractInsnNode instruction : method.instructions) {
+            if (instruction instanceof MethodInsnNode call && call.owner.equals(owner)
+                    && call.name.equals(name) && call.desc.equals(desc)) {
+                if (match != null) {
+                    throw new IllegalStateException("Duplicate " + owner + "." + name + " in " + method.name);
+                }
+                match = call;
+            }
+        }
+        if (match == null) {
+            throw new IllegalStateException("Missing " + owner + "." + name + " in " + method.name);
+        }
+        return match;
     }
 
     public static void patchNetworkEncoderMatchers(String jar, Path root) throws IOException {
@@ -591,9 +688,9 @@ public final class NetworkPatches {
     public static void patchConnectionBrowserWebSocket(String jar, Path output)
             throws IOException {
         ClassNode node = read(jar, "net/minecraft/network/Connection.class");
-        MethodNode connect = find(node, "connect",
-                "(Ljava/net/InetSocketAddress;Lnet/minecraft/server/network/EventLoopGroupHolder;"
-                        + "Lnet/minecraft/network/Connection;)Lio/netty/channel/ChannelFuture;");
+        MethodNode connect = find(node, "connect", REMOTE_CONNECT_ARGS + CHANNEL_FUTURE);
+        MethodNode relayConnect = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
+                RELAY_CONNECT, REMOTE_CONNECT_ARGS + "I" + CHANNEL_FUTURE, null, null);
         InsnList code = new InsnList();
         code.add(new TypeInsnNode(Opcodes.NEW, "io/netty/bootstrap/Bootstrap"));
         code.add(new InsnNode(Opcodes.DUP));
@@ -649,14 +746,21 @@ public final class NetworkPatches {
                 "()Lio/netty/bootstrap/Bootstrap;",
                 false));
         code.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        code.add(new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                "io/netty/bootstrap/Bootstrap",
-                "connect",
-                "(Ljava/net/SocketAddress;)Lio/netty/channel/ChannelFuture;",
-                false));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, RELAY_SCREEN, "connectChannel",
+                "(Lio/netty/bootstrap/Bootstrap;Ljava/net/SocketAddress;I" + CHANNEL_FUTURE, false));
         code.add(new InsnNode(Opcodes.ARETURN));
-        replace(connect, code, 4, 3);
+        replace(relayConnect, code, 4, 4);
+        node.methods.add(relayConnect);
+
+        InsnList normalConnect = new InsnList();
+        normalConnect.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        normalConnect.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        normalConnect.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        normalConnect.add(new InsnNode(Opcodes.ICONST_0));
+        normalConnect.add(new MethodInsnNode(Opcodes.INVOKESTATIC, CONNECTION, RELAY_CONNECT, relayConnect.desc, false));
+        normalConnect.add(new InsnNode(Opcodes.ARETURN));
+        replace(connect, normalConnect, 4, 3);
 
         // The integrated-server entry point does not call the remote
         // Connection.connect(InetSocketAddress, ... ) helper above.  It calls
@@ -763,6 +867,58 @@ public final class NetworkPatches {
         // local variables or exception table.
         replace(local, localCode, 5, 2);
 
+        writeComputeFrames(node, output);
+    }
+
+    /** Adds the Eagler pre-Minecraft handshake to the shared connection initializer. */
+    public static void patchEaglerConnectionInitializer(String jar, Path output, Path pingerOutput) throws IOException {
+        String owner = "net/minecraft/network/Connection$1";
+        ClassNode node = Files.exists(output) ? read(output) : read(jar, owner + ".class");
+        MethodNode init = find(node, "initChannel", "(Lio/netty/channel/Channel;)V");
+        for (AbstractInsnNode instruction : init.instructions.toArray()) {
+            if (!(instruction instanceof MethodInsnNode call)
+                    || !call.owner.equals("net/minecraft/network/Connection")
+                    || !call.name.equals("configurePacketHandler")) {
+                continue;
+            }
+            InsnList insert = new InsnList();
+            insert.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            insert.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            insert.add(new FieldInsnNode(Opcodes.GETFIELD, owner, "val$connection",
+                    "Lnet/minecraft/network/Connection;"));
+            insert.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                    "dev/gaius/browser/transport/ConnectionTransports", "install",
+                    "(Lio/netty/channel/Channel;Lnet/minecraft/network/Connection;)V", false));
+            init.instructions.insert(call, insert);
+            init.maxStack = Math.max(init.maxStack, 4);
+            writeComputeFrames(node, output);
+            skipEaglerVanillaStatusPing(jar, pingerOutput);
+            return;
+        }
+        throw new IOException("Connection initializer no longer configures the packet handler");
+    }
+
+    private static void skipEaglerVanillaStatusPing(String jar, Path output) throws IOException {
+        String serverData = "net/minecraft/client/multiplayer/ServerData";
+        ClassNode node = read(jar, "net/minecraft/client/multiplayer/ServerStatusPinger.class");
+        MethodNode ping = find(node, "pingServer", "(L" + serverData
+                + ";Ljava/lang/Runnable;Ljava/lang/Runnable;Lnet/minecraft/server/network/EventLoopGroupHolder;)V");
+        LabelNode vanilla = new LabelNode();
+        InsnList code = new InsnList();
+        code.add(new LdcInsnNode("eagler"));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, serverData, "gaiusProtocol", "Ljava/lang/String;"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String", "equals",
+                "(Ljava/lang/Object;)Z", false));
+        code.add(new JumpInsnNode(Opcodes.IFEQ, vanilla));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, serverData + "$State", "UNREACHABLE",
+                "L" + serverData + "$State;"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, serverData, "setState",
+                "(L" + serverData + "$State;)V", false));
+        code.add(new InsnNode(Opcodes.RETURN));
+        code.add(vanilla);
+        ping.instructions.insert(code);
         writeComputeFrames(node, output);
     }
 
@@ -1223,30 +1379,114 @@ public final class NetworkPatches {
         writeComputeFrames(node, output);
     }
 
-    public static void patchConnectScreenBrowserRecovery(String jar, Path output)
+    /**
+     * Lets the Add Server screen accept ws:// and wss:// addresses: ServerAddress.isValidAddress and
+     * parseString first pass their argument through BrowserServerAddress, which strips the scheme.
+     */
+    public static void patchServerAddressWebSocketScheme(String jar, Path output)
             throws IOException {
-        ClassNode node = read(jar, "net/minecraft/client/gui/screens/ConnectScreen.class");
-        MethodNode startConnecting = find(
-                node,
-                "startConnecting",
-                "(Lnet/minecraft/client/gui/screens/Screen;Lnet/minecraft/client/Minecraft;"
-                        + "Lnet/minecraft/client/multiplayer/resolver/ServerAddress;"
-                        + "Lnet/minecraft/client/multiplayer/ServerData;Z"
-                        + "Lnet/minecraft/client/multiplayer/TransferState;)V");
-        if (startConnecting == null) {
-            throw new IOException("ConnectScreen browser recovery entry point was not found");
+        ClassNode node = read(jar, "net/minecraft/client/multiplayer/resolver/ServerAddress.class");
+        String[][] entries = {
+            {"isValidAddress", "(Ljava/lang/String;)Z", "normalize"},
+            {"parseString", "(Ljava/lang/String;)"
+                    + "Lnet/minecraft/client/multiplayer/resolver/ServerAddress;",
+                    "normalizeAndRemember"},
+        };
+        for (String[] entry : entries) {
+            MethodNode method = find(node, entry[0], entry[1]);
+            if (method == null) {
+                throw new IOException("ServerAddress." + entry[0] + " patch point was not found");
+            }
+            InsnList prologue = new InsnList();
+            prologue.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            prologue.add(new MethodInsnNode(
+                    Opcodes.INVOKESTATIC,
+                    "dev/gaius/browser/BrowserServerAddress",
+                    entry[2],
+                    "(Ljava/lang/String;)Ljava/lang/String;",
+                    false));
+            prologue.add(new VarInsnNode(Opcodes.ASTORE, 0));
+            method.instructions.insert(prologue);
+            method.maxStack = Math.max(method.maxStack, 1);
         }
+        writeComputeFrames(node, output);
+    }
+
+    public static void patchConnectScreenBrowserRecovery(String jar, Path root) throws IOException {
+        ClassNode node = read(jar, CONNECT_SCREEN + ".class");
+        MethodNode startConnecting = find(node, "startConnecting", START_CONNECT);
         InsnList beginAttempt = new InsnList();
         beginAttempt.add(new VarInsnNode(Opcodes.ALOAD, 3));
-        beginAttempt.add(new MethodInsnNode(
-                Opcodes.INVOKESTATIC,
-                "dev/gaius/browser/BrowserMultiplayerRecovery",
-                "beginConnection",
-                "(Lnet/minecraft/client/multiplayer/ServerData;)V",
-                false));
+        beginAttempt.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "dev/gaius/browser/BrowserMultiplayerRecovery",
+                "beginConnection", "(" + SERVER_DATA + ")V", false));
         startConnecting.instructions.insert(beginAttempt);
-        startConnecting.maxStack = Math.max(startConnecting.maxStack, 1);
-        writeComputeFrames(node, output);
+
+        node.fields.add(new FieldNode(Opcodes.ACC_SYNTHETIC, ATTEMPT_ID, "I", null, null));
+        MethodNode connect = find(node, "connect", "(" + MINECRAFT + SERVER_ADDRESS + SERVER_DATA + TRANSFER_STATE + ")V");
+        // Capture the scoped attempt before starting the connector thread. Its identity then
+        // travels on this ConnectScreen and the Bootstrap's channel, including async registration.
+        InsnList bind = new InsnList();
+        bind.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        bind.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        bind.add(new FieldInsnNode(Opcodes.GETFIELD, CONNECT_SCREEN, "parent", "L" + SCREEN + ";"));
+        bind.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        bind.add(new VarInsnNode(Opcodes.ALOAD, 3));
+        bind.add(new MethodInsnNode(Opcodes.INVOKESTATIC, RELAY_SCREEN, "connectingAttempt",
+                "(L" + SCREEN + ";" + SERVER_ADDRESS + SERVER_DATA + ")I", false));
+        bind.add(new FieldInsnNode(Opcodes.PUTFIELD, CONNECT_SCREEN, ATTEMPT_ID, "I"));
+        connect.instructions.insert(bind);
+
+        MethodNode removed = findNullable(node, "removed", "()V");
+        if (removed == null) {
+            removed = new MethodNode(Opcodes.ACC_PUBLIC, "removed", "()V", null, null);
+            removed.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            removed.instructions.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, node.superName, "removed", "()V", false));
+            removed.instructions.add(new InsnNode(Opcodes.RETURN));
+            node.methods.add(removed);
+        }
+        removed.instructions.insert(releaseAttempt(false));
+
+        ClassNode connector = read(jar, CONNECT_SCREEN + "$1.class");
+        MethodNode run = find(connector, "run", "()V");
+        MethodInsnNode open = onlyCall(run, CONNECTION, "connect", REMOTE_CONNECT_ARGS + CHANNEL_FUTURE);
+        run.instructions.insertBefore(open, loadAttempt(true));
+        open.name = RELAY_CONNECT;
+        open.desc = REMOTE_CONNECT_ARGS + "I" + CHANNEL_FUTURE;
+        // Cover failed DNS, aborted connectors and exceptions leaving vanilla's own handlers.
+        // A consumed reservation has a channel owner and this release then does nothing.
+        LabelNode start = new LabelNode();
+        LabelNode end = new LabelNode();
+        LabelNode failure = new LabelNode();
+        run.instructions.insert(start);
+        for (AbstractInsnNode instruction : run.instructions.toArray()) {
+            if (instruction.getOpcode() == Opcodes.RETURN) {
+                run.instructions.insertBefore(instruction, releaseAttempt(true));
+            }
+        }
+        run.instructions.add(end);
+        run.instructions.add(failure);
+        run.instructions.add(releaseAttempt(true));
+        run.instructions.add(new InsnNode(Opcodes.ATHROW));
+        run.tryCatchBlocks.add(new TryCatchBlockNode(start, end, failure, null));
+
+        writeComputeFrames(node, root.resolve(node.name + ".class"));
+        writeComputeFrames(connector, root.resolve(connector.name + ".class"));
+    }
+
+    private static InsnList loadAttempt(boolean connector) {
+        InsnList code = new InsnList();
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        if (connector) {
+            code.add(new FieldInsnNode(Opcodes.GETFIELD, CONNECT_SCREEN + "$1", "this$0", "L" + CONNECT_SCREEN + ";"));
+        }
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, CONNECT_SCREEN, ATTEMPT_ID, "I"));
+        return code;
+    }
+
+    private static InsnList releaseAttempt(boolean connector) {
+        InsnList code = loadAttempt(connector);
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, RELAY_SCREEN, "releaseRelayWarmup", "(I)V", false));
+        return code;
     }
 
     private static boolean allExactlyOne(int[] values) {
@@ -1717,6 +1957,250 @@ public final class NetworkPatches {
         patchPacketProcessorCloseAccounting(node, owner);
         verifyPacketProcessorAccounting(node);
         writeComputeFrames(node, output);
+    }
+
+    /** Persists the selected browser transport on multiplayer server entries. */
+    public static void patchServerDataTransportProtocol(String jar, Path output)
+            throws IOException {
+        String owner = "net/minecraft/client/multiplayer/ServerData";
+        ClassNode node = read(jar, owner + ".class");
+        String protocolField = "gaiusProtocol";
+        String protocolDescriptor = "Ljava/lang/String;";
+        for (var field : node.fields) {
+            if (field.name.equals(protocolField)) {
+                if (!field.desc.equals(protocolDescriptor)) {
+                    throw new IOException("ServerData.gaiusProtocol has an unexpected descriptor");
+                }
+                throw new IOException("ServerData transport protocol patch was already applied");
+            }
+        }
+        node.fields.add(new org.objectweb.asm.tree.FieldNode(
+                Opcodes.ACC_PUBLIC, protocolField, protocolDescriptor, null, null));
+
+        MethodNode constructor = find(node, "<init>",
+                "(Ljava/lang/String;Ljava/lang/String;"
+                        + "Lnet/minecraft/client/multiplayer/ServerData$Type;)V");
+        int constructorReturns = 0;
+        for (AbstractInsnNode instruction : constructor.instructions.toArray()) {
+            if (instruction.getOpcode() != Opcodes.RETURN) continue;
+            InsnList initialize = new InsnList();
+            initialize.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            initialize.add(new LdcInsnNode("relay"));
+            initialize.add(new FieldInsnNode(Opcodes.PUTFIELD, owner,
+                    protocolField, protocolDescriptor));
+            constructor.instructions.insertBefore(instruction, initialize);
+            constructorReturns++;
+        }
+        if (constructorReturns == 0) {
+            throw new IOException("ServerData constructor return was not found");
+        }
+        constructor.maxStack = Math.max(constructor.maxStack, 2);
+
+        MethodNode write = find(node, "write", "()Lnet/minecraft/nbt/CompoundTag;");
+        int writeReturns = 0;
+        for (AbstractInsnNode instruction : write.instructions.toArray()) {
+            if (instruction.getOpcode() != Opcodes.ARETURN) continue;
+            InsnList persist = new InsnList();
+            persist.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            persist.add(new LdcInsnNode("protocol"));
+            persist.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            persist.add(new FieldInsnNode(Opcodes.GETFIELD, owner,
+                    protocolField, protocolDescriptor));
+            persist.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                    "dev/gaius/browser/transport/TransportKind", "fromProtocol",
+                    "(Ljava/lang/String;)Ldev/gaius/browser/transport/TransportKind;", false));
+            persist.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                    "dev/gaius/browser/transport/TransportKind", "protocol",
+                    "()Ljava/lang/String;", false));
+            persist.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                    "net/minecraft/nbt/CompoundTag", "putString",
+                    "(Ljava/lang/String;Ljava/lang/String;)V", false));
+            write.instructions.insertBefore(instruction, persist);
+            writeReturns++;
+        }
+        if (writeReturns == 0) {
+            throw new IOException("ServerData.write return was not found");
+        }
+        write.maxStack = Math.max(write.maxStack, 4);
+
+        MethodNode read = find(node, "read",
+                "(Lnet/minecraft/nbt/CompoundTag;)Lnet/minecraft/client/multiplayer/ServerData;");
+        int readReturns = 0;
+        for (AbstractInsnNode instruction : read.instructions.toArray()) {
+            if (instruction.getOpcode() != Opcodes.ARETURN) continue;
+            InsnList restore = new InsnList();
+            restore.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            restore.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            restore.add(new LdcInsnNode("protocol"));
+            restore.add(new LdcInsnNode("relay"));
+            restore.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                    "net/minecraft/nbt/CompoundTag", "getStringOr",
+                    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false));
+            restore.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                    "dev/gaius/browser/transport/TransportKind", "fromProtocol",
+                    "(Ljava/lang/String;)Ldev/gaius/browser/transport/TransportKind;", false));
+            restore.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                    "dev/gaius/browser/transport/TransportKind", "protocol",
+                    "()Ljava/lang/String;", false));
+            restore.add(new FieldInsnNode(Opcodes.PUTFIELD, owner,
+                    protocolField, protocolDescriptor));
+            restore.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            read.instructions.insertBefore(instruction, restore);
+            readReturns++;
+        }
+        if (readReturns == 0) {
+            throw new IOException("ServerData.read return was not found");
+        }
+        read.maxStack = Math.max(read.maxStack, 4);
+
+        MethodNode copyFrom = find(node, "copyFrom",
+                "(Lnet/minecraft/client/multiplayer/ServerData;)V");
+        int copyReturns = 0;
+        for (AbstractInsnNode instruction : copyFrom.instructions.toArray()) {
+            if (instruction.getOpcode() != Opcodes.RETURN) continue;
+            InsnList copy = new InsnList();
+            copy.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            copy.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            copy.add(new FieldInsnNode(Opcodes.GETFIELD, owner,
+                    protocolField, protocolDescriptor));
+            copy.add(new FieldInsnNode(Opcodes.PUTFIELD, owner,
+                    protocolField, protocolDescriptor));
+            copyFrom.instructions.insertBefore(instruction, copy);
+            copyReturns++;
+        }
+        if (copyReturns == 0) {
+            throw new IOException("ServerData.copyFrom return was not found");
+        }
+        copyFrom.maxStack = Math.max(copyFrom.maxStack, 2);
+        writeComputeFrames(node, output);
+    }
+
+    /** Stores transport metadata on the active Connection and binds it before handshake. */
+    public static void patchConnectionTransportMetadata(String jar, Path connectionOutput,
+            Path connectThreadOutput) throws IOException {
+        String connectionOwner = "net/minecraft/network/Connection";
+        ClassNode connection = Files.isRegularFile(connectionOutput)
+                ? read(connectionOutput) : read(jar, connectionOwner + ".class");
+        if (connection.fields.stream().anyMatch(field -> field.name.equals("gaiusTransport"))) {
+            throw new IOException("Connection.gaiusTransport is already present");
+        }
+        connection.fields.add(new org.objectweb.asm.tree.FieldNode(Opcodes.ACC_PRIVATE,
+                "gaiusTransport", "Ljava/lang/String;", null, null));
+        MethodNode constructor = find(connection, "<init>",
+                "(Lnet/minecraft/network/protocol/PacketFlow;)V");
+        for (AbstractInsnNode instruction : constructor.instructions.toArray()) {
+            if (instruction.getOpcode() != Opcodes.RETURN) continue;
+            InsnList initialize = new InsnList();
+            initialize.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            initialize.add(new LdcInsnNode("relay"));
+            initialize.add(new FieldInsnNode(Opcodes.PUTFIELD, connectionOwner,
+                    "gaiusTransport", "Ljava/lang/String;"));
+            constructor.instructions.insertBefore(instruction, initialize);
+        }
+        connection.fields.add(new org.objectweb.asm.tree.FieldNode(Opcodes.ACC_PRIVATE,
+                "gaiusTransportAddress", "Ljava/lang/String;", null, null));
+        MethodNode address = new MethodNode(Opcodes.ACC_PUBLIC, "getGaiusTransportAddress",
+                "()Ljava/lang/String;", null, null);
+        address.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        address.instructions.add(new FieldInsnNode(Opcodes.GETFIELD, connectionOwner,
+                "gaiusTransportAddress", "Ljava/lang/String;"));
+        address.instructions.add(new InsnNode(Opcodes.ARETURN));
+        address.maxStack = address.maxLocals = 1;
+        connection.methods.add(address);
+
+        String loginOwner = "net/minecraft/network/protocol/login/ClientboundLoginFinishedPacket";
+        ClassNode loginClass = read(jar, loginOwner + ".class");
+        String sessionCtor = "(Lcom/mojang/authlib/GameProfile;Ljava/util/UUID;)V";
+        boolean hasSession = loginClass.methods.stream().anyMatch(m -> m.name.equals("<init>")
+                && m.desc.equals(sessionCtor));
+        MethodNode loginFactory = new MethodNode(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+                "gaiusEaglerLoginFinished", "(Lcom/mojang/authlib/GameProfile;)L" + loginOwner + ";", null, null);
+        loginFactory.instructions.add(new TypeInsnNode(Opcodes.NEW, loginOwner));
+        loginFactory.instructions.add(new InsnNode(Opcodes.DUP));
+        loginFactory.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        if (hasSession) {
+            loginFactory.instructions.add(new TypeInsnNode(Opcodes.NEW, "java/util/UUID"));
+            loginFactory.instructions.add(new InsnNode(Opcodes.DUP));
+            loginFactory.instructions.add(new InsnNode(Opcodes.LCONST_0));
+            loginFactory.instructions.add(new InsnNode(Opcodes.LCONST_0));
+            loginFactory.instructions.add(new MethodInsnNode(Opcodes.INVOKESPECIAL,
+                    "java/util/UUID", "<init>", "(JJ)V", false));
+        }
+        loginFactory.instructions.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, loginOwner, "<init>",
+                hasSession ? sessionCtor : "(Lcom/mojang/authlib/GameProfile;)V", false));
+        loginFactory.instructions.add(new InsnNode(Opcodes.ARETURN));
+        loginFactory.maxStack = 9;
+        loginFactory.maxLocals = 1;
+        connection.methods.add(loginFactory);
+
+        MethodNode getter = new MethodNode(Opcodes.ACC_PUBLIC, "getGaiusTransport",
+                "()Ljava/lang/String;", null, null);
+        getter.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        getter.instructions.add(new FieldInsnNode(Opcodes.GETFIELD, connectionOwner,
+                "channel", "Lio/netty/channel/Channel;"));
+        getter.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        getter.instructions.add(new FieldInsnNode(Opcodes.GETFIELD, connectionOwner,
+                "gaiusTransport", "Ljava/lang/String;"));
+        getter.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "dev/gaius/browser/transport/ConnectionTransports", "active",
+                "(Lio/netty/channel/Channel;Ljava/lang/String;)Ljava/lang/String;", false));
+        getter.instructions.add(new InsnNode(Opcodes.ARETURN));
+        getter.maxStack = 2;
+        getter.maxLocals = 1;
+        connection.methods.add(getter);
+        MethodNode binder = new MethodNode(Opcodes.ACC_PUBLIC, "bindGaiusTransport",
+                "(Ljava/lang/String;Ljava/lang/String;)V", null, null);
+        binder.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        binder.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        binder.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "dev/gaius/browser/transport/TransportKind", "fromProtocol",
+                "(Ljava/lang/String;)Ldev/gaius/browser/transport/TransportKind;", false));
+        binder.instructions.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                "dev/gaius/browser/transport/TransportKind", "protocol",
+                "()Ljava/lang/String;", false));
+        binder.instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, connectionOwner,
+                "gaiusTransport", "Ljava/lang/String;"));
+        binder.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        binder.instructions.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        binder.instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, connectionOwner,
+                "gaiusTransportAddress", "Ljava/lang/String;"));
+        binder.instructions.add(new InsnNode(Opcodes.RETURN));
+        binder.maxStack = 2;
+        binder.maxLocals = 3;
+        connection.methods.add(binder);
+        writeComputeFrames(connection, connectionOutput);
+
+        String threadOwner = "net/minecraft/client/gui/screens/ConnectScreen$1";
+        ClassNode thread = Files.isRegularFile(connectThreadOutput)
+                ? read(connectThreadOutput) : read(jar, threadOwner + ".class");
+        MethodNode run = find(thread, "run", "()V");
+        int constructors = 0;
+        for (AbstractInsnNode instruction : run.instructions.toArray()) {
+            if (!(instruction instanceof MethodInsnNode call)
+                    || call.getOpcode() != Opcodes.INVOKESPECIAL
+                    || !call.owner.equals(connectionOwner) || !call.name.equals("<init>")) continue;
+            InsnList bind = new InsnList();
+            bind.add(new InsnNode(Opcodes.DUP));
+            bind.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            bind.add(new FieldInsnNode(Opcodes.GETFIELD, threadOwner, "val$server",
+                    "Lnet/minecraft/client/multiplayer/ServerData;"));
+            bind.add(new FieldInsnNode(Opcodes.GETFIELD,
+                    "net/minecraft/client/multiplayer/ServerData", "gaiusProtocol",
+                    "Ljava/lang/String;"));
+            bind.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            bind.add(new FieldInsnNode(Opcodes.GETFIELD, threadOwner, "val$server",
+                    "Lnet/minecraft/client/multiplayer/ServerData;"));
+            bind.add(new FieldInsnNode(Opcodes.GETFIELD,
+                    "net/minecraft/client/multiplayer/ServerData", "ip", "Ljava/lang/String;"));
+            bind.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, connectionOwner,
+                    "bindGaiusTransport", "(Ljava/lang/String;Ljava/lang/String;)V", false));
+            run.instructions.insert(call, bind);
+            constructors++;
+        }
+        if (constructors != 1) throw new IOException(
+                "ConnectScreen connection construction shape changed: " + constructors);
+        run.maxStack = Math.max(run.maxStack, 5);
+        writeComputeFrames(thread, connectThreadOutput);
     }
 
     /**

@@ -48,6 +48,10 @@ import net.minecraft.world.phys.Vec3;
  * listeners' own lookups.
  */
 final class SectionSnapshot {
+    private static final class CaptureScratch {
+        private static final BlockPos.MutableBlockPos POSITION = new BlockPos.MutableBlockPos();
+    }
+
     private static final Direction[] DIRECTIONS = Direction.values();
     private static final int SWAMP_BELOW_COLOR = 0x4C763C;
     private static final Comparator<BlockEntity> BLOCK_ENTITY_ORDER = Comparator
@@ -60,6 +64,8 @@ final class SectionSnapshot {
 
     /** Non-air blocks of the center section in the last capture. */
     static int lastNonAir;
+    private static MeshJobBuffers checkBuffer;
+    private static List<BlockEntity> checkBlockEntities;
 
     /**
      * Fills {@code b} for the section {@code node}; returns false when the region cannot be
@@ -67,6 +73,38 @@ final class SectionSnapshot {
      */
     static boolean capture(MeshJobBuffers b, RenderSectionRegion region, long node, MeshModelTable table,
             Vec3 camera, List<BlockEntity> blockEntities, int blend) {
+        return capture(b, region, node, table, camera, blockEntities, blend, MeshKernelBridge.fastSnapshotEnabled());
+    }
+
+    /** Compares both paths synchronously while leaving the legacy result in the submitted buffers. */
+    static boolean captureChecked(MeshJobBuffers legacy, RenderSectionRegion region, long node, MeshModelTable table,
+            Vec3 camera, List<BlockEntity> blockEntities, int blend) {
+        if (checkBuffer == null) {
+            checkBuffer = new MeshJobBuffers();
+            checkBlockEntities = new java.util.ArrayList<>();
+        }
+        MeshJobBuffers fast = checkBuffer;
+        List<BlockEntity> fastEntities = checkBlockEntities;
+        fastEntities.clear();
+        boolean timeCapture = MeshKernelBridge.snapshotTimingEnabled();
+        long fastStarted = timeCapture ? System.nanoTime() : 0;
+        boolean fastCaptured = capture(fast, region, node, table, camera, fastEntities, blend, true);
+        if (timeCapture) MeshKernelBridge.noteSnapshotPathNanos(true, System.nanoTime() - fastStarted);
+        long legacyStarted = timeCapture ? System.nanoTime() : 0;
+        boolean legacyCaptured = capture(legacy, region, node, table, camera, blockEntities, blend, false);
+        if (timeCapture) MeshKernelBridge.noteSnapshotPathNanos(false, System.nanoTime() - legacyStarted);
+        int sx = SectionPos.x(node), sy = SectionPos.y(node), sz = SectionPos.z(node);
+        int firstDifference = fastCaptured && legacyCaptured
+                ? firstDifference(legacy, fast, blockEntities, fastEntities) : -1;
+        int legacyLength = legacyCaptured ? snapshotLength(legacy, blockEntities) : 0;
+        int fastLength = fastCaptured ? snapshotLength(fast, fastEntities) : 0;
+        MeshKernelBridge.recordSnapshotCheck(sx, sy, sz,
+                fastCaptured == legacyCaptured ? firstDifference : 0, legacyLength, fastLength);
+        return legacyCaptured;
+    }
+
+    static boolean capture(MeshJobBuffers b, RenderSectionRegion region, long node, MeshModelTable table,
+            Vec3 camera, List<BlockEntity> blockEntities, int blend, boolean fast) {
         MeshKernelAccess.Region access = (MeshKernelAccess.Region) (Object) region;
         SectionCopy[] copies = access.gaius$sections();
         ClientLevel level = access.gaius$level();
@@ -76,7 +114,6 @@ final class SectionSnapshot {
         int sx = SectionPos.x(node);
         int sy = SectionPos.y(node);
         int sz = SectionPos.z(node);
-        boolean fast = MeshKernelBridge.fastSnapshotEnabled();
         if (copies == null || copies.length != 27 || level == null || minX != sx - 1 || minY != sy - 1
                 || minZ != sz - 1 || level.isDebug()) {
             return false;
@@ -100,11 +137,56 @@ final class SectionSnapshot {
         return true;
     }
 
+    private static int snapshotLength(MeshJobBuffers b, List<BlockEntity> blockEntities) {
+        return (b.wide ? b.ids32.length * 4 : b.ids16.length * 2) + b.light.length + b.quarts.length
+                + b.biomeCount * MeshJobBuffers.PALETTE_INTS * 4 + b.swamp.length + b.floats.length * 4
+                + 12 + (b.packedStateLength == 0 ? 0 : b.packedStateLength * 4) + blockEntities.size() * 12;
+    }
+
+    private static int firstDifference(MeshJobBuffers a, MeshJobBuffers b, List<BlockEntity> aEntities,
+            List<BlockEntity> bEntities) {
+        int offset = 0;
+        if (a.wide != b.wide) return 0;
+        if (a.wide) {
+            for (int i = 0; i < a.ids32.length; i++, offset += 4) if (a.ids32[i] != b.ids32[i]) return offset;
+        } else {
+            for (int i = 0; i < a.ids16.length; i++, offset += 2) if (a.ids16[i] != b.ids16[i]) return offset;
+        }
+        for (int i = 0; i < a.light.length; i++, offset++) if (a.light[i] != b.light[i]) return offset;
+        for (int i = 0; i < a.quarts.length; i++, offset++) if (a.quarts[i] != b.quarts[i]) return offset;
+        int paletteLength = Math.min(a.biomeCount, b.biomeCount) * MeshJobBuffers.PALETTE_INTS;
+        for (int i = 0; i < paletteLength; i++, offset += 4) if (a.palette[i] != b.palette[i]) return offset;
+        if (a.biomeCount != b.biomeCount) return offset;
+        for (int i = 0; i < a.swamp.length; i++, offset++) if (a.swamp[i] != b.swamp[i]) return offset;
+        for (int i = 0; i < a.floats.length; i++, offset += 4) {
+            if (Float.floatToRawIntBits(a.floats[i]) != Float.floatToRawIntBits(b.floats[i])) return offset;
+        }
+        if (a.header[MeshKernelBridge.H_SEED_HI] != b.header[MeshKernelBridge.H_SEED_HI]) return offset;
+        offset += 4;
+        if (a.header[MeshKernelBridge.H_SEED_LO] != b.header[MeshKernelBridge.H_SEED_LO]) return offset;
+        offset += 4;
+        if (a.header[MeshKernelBridge.H_PALETTE_COUNT] != b.header[MeshKernelBridge.H_PALETTE_COUNT]) return offset;
+        offset += 4;
+        int packedLength = Math.min(a.packedStateLength, b.packedStateLength);
+        for (int i = 0; i < packedLength; i++, offset += 4) if (a.packedStates[i] != b.packedStates[i]) return offset;
+        if (a.packedStateLength != b.packedStateLength) return offset;
+        int entityCount = Math.min(aEntities.size(), bEntities.size());
+        for (int i = 0; i < entityCount; i++, offset += 12) {
+            BlockEntity left = aEntities.get(i), right = bEntities.get(i);
+            if (left != right) return offset;
+            BlockPos leftPos = left.getBlockPos(), rightPos = right.getBlockPos();
+            if (leftPos.getX() != rightPos.getX() || leftPos.getY() != rightPos.getY()
+                    || leftPos.getZ() != rightPos.getZ()) return offset;
+        }
+        return aEntities.size() == bEntities.size() ? -1 : offset;
+    }
+
     // --- states ---------------------------------------------------------------------------------
 
     private static boolean captureStates(MeshJobBuffers b, SectionCopy[] copies, int minX, int minY, int minZ,
             int sx, int sy, int sz, MeshModelTable table, boolean fast) {
-        if (fast && capturePackedStates(b, copies, minX, minY, minZ, sx, sy, sz, table)) {
+        if (fast && MeshProfile.PROFILE != 2
+                && capturePackedStates(b, copies, minX, minY, minZ, sx, sy, sz, table)) {
             return true;
         }
         int air = table.airId;
@@ -156,15 +238,32 @@ final class SectionSnapshot {
                     }
                     boolean center = dx == 0 && dy == 0 && dz == 0;
                     if (fast && storage.getSize() == 4096 && raw != null) {
+                        int valuesPerLong = bits == 0 ? 1 : 64 / bits;
+                        long mask = bits == 0 ? 0L : (1L << bits) - 1L;
                         for (int y = y0; y <= y1; y++) {
                             for (int z = z0; z <= z1; z++) {
                                 int at = MeshJobBuffers.regionIndex(dx * 16 + x0, dy * 16 + y, dz * 16 + z);
+                                int row = (y << 8) | (z << 4);
+                                int index = row | x0;
+                                int wordIndex = bits == 0 ? 0 : index / valuesPerLong;
+                                int shift = bits == 0 ? 0 : (index - wordIndex * valuesPerLong) * bits;
+                                int slotsLeft = bits == 0 ? 0 : valuesPerLong - index % valuesPerLong;
+                                long word = bits == 0 ? 0L : raw[wordIndex];
                                 for (int x = x0; x <= x1; x++) {
-                                    int id = map(packed(raw, bits, (y << 8) | (z << 4) | x), ids, paletteSize,
-                                            air, table.stateCount);
+                                    int value = bits == 0 ? 0 : (int) ((word >>> shift) & mask);
+                                    int id = map(value, ids, paletteSize, air, table.stateCount);
                                     b.setId(at++, id);
                                     if (center && !table.isAir(id)) {
                                         nonAir++;
+                                    }
+                                    if (bits != 0 && x < x1) {
+                                        if (--slotsLeft == 0) {
+                                            word = raw[++wordIndex];
+                                            shift = 0;
+                                            slotsLeft = valuesPerLong;
+                                        } else {
+                                            shift += bits;
+                                        }
                                     }
                                 }
                             }
@@ -213,7 +312,7 @@ final class SectionSnapshot {
         return true;
     }
 
-    /** Copies palette metadata and raw section words; the Worker expands the 20^3 region. */
+    /** Preserves the earlier non-RD32 worker-side decoder path. */
     private static boolean capturePackedStates(MeshJobBuffers b, SectionCopy[] copies,
             int minX, int minY, int minZ, int sx, int sy, int sz, MeshModelTable table) {
         b.beginPackedStates();
@@ -326,7 +425,7 @@ final class SectionSnapshot {
         LightEngine<?, ?> skyEngine = GaiusLightColumnAccess.engine(engine, LightLayer.SKY);
         LayerLightEventListener blockLight = engine.getLayerListener(LightLayer.BLOCK);
         LayerLightEventListener skyLight = engine.getLayerListener(LightLayer.SKY);
-        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos cursor = CaptureScratch.POSITION;
         for (int dy = -1; dy <= 1; dy++) {
             for (int dz = -1; dz <= 1; dz++) {
                 for (int dx = -1; dx <= 1; dx++) {
@@ -340,6 +439,8 @@ final class SectionSnapshot {
                     boolean skyHomogeneous = skyLayer != null && skyLayer.isDefinitelyHomogenous();
                     int skyUniform = skyHomogeneous ? skyLayer.get(0, 0, 0) & 15 : 0;
                     byte[] skyRaw = skyLayer != null && !skyHomogeneous ? skyLayer.getData() : null;
+                    boolean skyFallback = skyEngine == null || skyLayer == null;
+                    boolean blockFallback = blockEngine == null;
                     int x0 = dx < 0 ? -1 : dx > 0 ? 16 : 0;
                     int x1 = dx < 0 ? -1 : dx > 0 ? 16 : 15;
                     int y0 = dy < 0 ? -1 : dy > 0 ? 16 : 0;
@@ -350,9 +451,11 @@ final class SectionSnapshot {
                         for (int z = z0; z <= z1; z++) {
                             int at = MeshJobBuffers.regionIndex(x0, y, z);
                             for (int x = x0; x <= x1; x++) {
-                                cursor.set((sx << 4) + x, (sy << 4) + y, (sz << 4) + z);
+                                if (skyFallback || blockFallback) {
+                                    cursor.set((sx << 4) + x, (sy << 4) + y, (sz << 4) + z);
+                                }
                                 int sky;
-                                if (skyEngine == null || skyLayer == null) {
+                                if (skyFallback) {
                                     // Missing sky data keeps vanilla's top-section default and upward fallback.
                                     sky = skyLight.getLightValue(cursor) & 15;
                                 } else if (skyHomogeneous) {
@@ -363,7 +466,7 @@ final class SectionSnapshot {
                                     sky = (packed >> ((localIndex & 1) << 2)) & 15;
                                 }
                                 int block;
-                                if (blockEngine == null) {
+                                if (blockFallback) {
                                     block = blockLight.getLightValue(cursor) & 15;
                                 } else if (layer == null) {
                                     block = 0;
@@ -386,7 +489,7 @@ final class SectionSnapshot {
     private static void captureVanillaLight(MeshJobBuffers b, LevelLightEngine engine, int sx, int sy, int sz) {
         LayerLightEventListener blockLight = engine.getLayerListener(LightLayer.BLOCK);
         LayerLightEventListener skyLight = engine.getLayerListener(LightLayer.SKY);
-        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos cursor = CaptureScratch.POSITION;
         for (int y = -1; y <= 16; y++) {
             for (int z = -1; z <= 16; z++) {
                 int out = MeshJobBuffers.regionIndex(-1, y, z);
@@ -464,10 +567,11 @@ final class SectionSnapshot {
                 int first = out.size();
                 for (Map.Entry<BlockPos, BlockEntity> entry : entities.entrySet()) {
                     BlockPos p = entry.getKey();
-                    if ((p.getX() >> 4) == sx && (p.getY() >> 4) == sy && (p.getZ() >> 4) == sz) {
-                        int x = p.getX() - (sx << 4);
-                        int y = p.getY() - (sy << 4);
-                        int z = p.getZ() - (sz << 4);
+                    int px = p.getX(), py = p.getY(), pz = p.getZ();
+                    if ((px >> 4) == sx && (py >> 4) == sy && (pz >> 4) == sz) {
+                        int x = px - (sx << 4);
+                        int y = py - (sy << 4);
+                        int z = pz - (sz << 4);
                         if (table.hasBlockEntity(b.id(MeshJobBuffers.regionIndex(x, y, z)))) {
                             out.add(entry.getValue());
                         }
@@ -477,7 +581,7 @@ final class SectionSnapshot {
             }
             return;
         }
-        BlockPos.MutableBlockPos pos = null;
+        BlockPos.MutableBlockPos pos = CaptureScratch.POSITION;
         int baseX = sx << 4;
         int baseY = sy << 4;
         int baseZ = sz << 4;
@@ -487,9 +591,6 @@ final class SectionSnapshot {
                 for (int x = 0; x < 16; x++) {
                     if (!table.hasBlockEntity(b.id(at + x))) {
                         continue;
-                    }
-                    if (pos == null) {
-                        pos = new BlockPos.MutableBlockPos();
                     }
                     pos.set(baseX + x, baseY + y, baseZ + z);
                     BlockEntity entity = region.getBlockEntity(pos);

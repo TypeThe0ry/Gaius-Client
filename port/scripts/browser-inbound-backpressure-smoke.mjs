@@ -4,14 +4,10 @@ import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
 import {MessageChannel} from "node:worker_threads";
 import vm from "node:vm";
+import {extractJsBody as jsBodyBeforeIn, loadBridgeSmokeSource} from "./browser-bridge-smoke-source.mjs";
 import {patcherSource} from "./patcher-sources.mjs";
 
-const sourcePath = new URL(
-  "../overrides/libraries/netty-transport/src/main/java/" +
-    "io/netty/channel/browser/BrowserWebSocketChannel.java",
-  import.meta.url,
-);
-const source = await readFile(sourcePath, "utf8");
+const {source, bridgeScript} = await loadBridgeSmokeSource();
 // A patcher step with its domain classes (port/tools/patchkit/README.md, "Domains").
 const clientPatcher = patcherSource("MinecraftClientPatcher");
 const clientNetwork = await readFile(new URL(
@@ -22,29 +18,6 @@ const packetScheduler = await readFile(new URL(
   "../src/main/java/dev/gaius/browser/BrowserPacketScheduler.java",
   import.meta.url,
 ), "utf8");
-function jsBodyBefore(marker) {
-  const markerOffset = source.indexOf(marker);
-  const annotationOffset = source.lastIndexOf('@JSBody(script = """', markerOffset);
-  const scriptOffset = source.indexOf('"""', annotationOffset) + 3;
-  const scriptEnd = source.lastIndexOf('""")', markerOffset);
-  assert.ok(markerOffset > 0 && annotationOffset > 0 && scriptEnd > scriptOffset,
-    `JSBody could not be extracted for ${marker}`);
-  const body = source.slice(scriptOffset, scriptEnd).replaceAll("\\\\", "\\");
-  if (marker === "private static native void initBridge();") {
-    return "{\n" + body + "\n}\n{\n" +
-      jsBodyBefore("private static native void initBridgeTail();") + "\n}";
-  }
-  return body;
-}
-function jsBodyBeforeIn(javaSource, marker) {
-  const markerOffset = javaSource.indexOf(marker);
-  const annotationOffset = javaSource.lastIndexOf("@JSBody", markerOffset);
-  const scriptOffset = javaSource.indexOf('"""', annotationOffset) + 3;
-  const scriptEnd = javaSource.lastIndexOf('""")', markerOffset);
-  assert.ok(markerOffset > 0 && annotationOffset > 0 && scriptEnd > scriptOffset,
-    `JSBody could not be extracted for ${marker}`);
-  return javaSource.slice(scriptOffset, scriptEnd).replaceAll("\\\\", "\\");
-}
 assert.match(source, /maximumInboundSliceBytes = 4 \* 1024/);
 assert.match(source, /decodedSliceHighWatermark = 256/);
 assert.match(source, /decodedSliceLowWatermark = 64/);
@@ -198,11 +171,10 @@ assert.match(clientPatcher,
   /scheduledPacketBoundaries != 1[\s\S]*method\.instructions\.set\(scheduledPacketBoundary, frameBoundaryWrapper\)[\s\S]*wrapperCalls != 1 \|\| directPacketProcessorCalls != 0/,
   "Minecraft.runTick no longer replaces its one vanilla PacketProcessor call in place");
 
-const bridgeScript = jsBodyBefore("private static native void initBridge();");
-const outboundSchedulerScript = jsBodyBefore(
+const outboundSchedulerScript = jsBodyBeforeIn(source,
   "private static native void initOutboundScheduler();",
 );
-const schedulerScript = jsBodyBefore("private static native void initInboundScheduler();");
+const schedulerScript = jsBodyBeforeIn(source, "private static native void initInboundScheduler();");
 // Exercise the real source-level scheduleSlices implementation in a tiny deterministic VM.
 // The full bridge workload below is intentionally timing-realistic and may legitimately finish
 // every turn at the 256-slice high watermark before it needs a non-immediate continuation.  This

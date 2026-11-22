@@ -15,7 +15,7 @@
       "patcher": "MinecraftClientPatcher",
       "registry": true,
       "summary": [
-        "PATCH_SUMMARY applied=215 dropped=0 bringupSkipped=0 targetSkipped=11"
+        "PATCH_SUMMARY applied=221 dropped=0 bringupSkipped=0 targetSkipped=11"
       ],
       "status": "ok"
     },
@@ -42,7 +42,7 @@
     }
   ],
   "outcomes": {
-    "APPLIED": 257,
+    "APPLIED": 263,
     "NOT_APPLICABLE": 14,
     "DISABLED": 0,
     "FAILED": 0,
@@ -54,7 +54,7 @@
       "NOT_APPLICABLE": 2
     },
     "FEATURE": {
-      "APPLIED": 28
+      "APPLIED": 34
     },
     "PERF": {
       "APPLIED": 59,
@@ -3617,15 +3617,48 @@
       "profiles": "*",
       "outcome": "APPLIED",
       "rewrites": [
+        "net/minecraft/client/gui/screens/ConnectScreen$1.class",
         "net/minecraft/client/gui/screens/ConnectScreen.class"
       ],
       "methodTargets": [
+        {
+          "className": "net/minecraft/client/gui/screens/ConnectScreen",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "structure",
+          "targetHash": "3f549d652cc7bc97d8abab5ec6f62922163a2d69d27ffdda198b708150316190",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/ConnectScreen",
+          "method": "connect",
+          "descriptor": "(Lnet/minecraft/client/Minecraft;Lnet/minecraft/client/multiplayer/resolver/ServerAddress;Lnet/minecraft/client/multiplayer/ServerData;Lnet/minecraft/client/multiplayer/TransferState;)V",
+          "operation": "rewrite",
+          "targetHash": "ea107685c90904b8212eda3c659c2385639645a06a1e2305c36582ad418e6aea",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/ConnectScreen",
+          "method": "removed",
+          "descriptor": "()V",
+          "operation": "injected",
+          "targetHash": "589a1d0d46ea8b07e07979a17858314aaaa5d2cdc0abfd1958c6b977eaec9869",
+          "vanillaPresent": false
+        },
         {
           "className": "net/minecraft/client/gui/screens/ConnectScreen",
           "method": "startConnecting",
           "descriptor": "(Lnet/minecraft/client/gui/screens/Screen;Lnet/minecraft/client/Minecraft;Lnet/minecraft/client/multiplayer/resolver/ServerAddress;Lnet/minecraft/client/multiplayer/ServerData;ZLnet/minecraft/client/multiplayer/TransferState;)V",
           "operation": "rewrite",
           "targetHash": "7d743f58d9ce7923f9b6829c358ec69db84b9fc3477db32c006f6ffd80c1bddc",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/ConnectScreen$1",
+          "method": "run",
+          "descriptor": "()V",
+          "operation": "rewrite",
+          "targetHash": "74fea31b47549251eb609c9d7d1adecea1048b92978a3c81260a1f0c1469151c",
           "vanillaPresent": true
         }
       ]
@@ -3646,6 +3679,14 @@
       "methodTargets": [
         {
           "className": "net/minecraft/network/Connection",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "structure",
+          "targetHash": "c1ba15c6ec464be025cf3b6fbb5495a58ca21e22dc5e6ef993478f6d67f17984",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/network/Connection",
           "method": "connect",
           "descriptor": "(Ljava/net/InetSocketAddress;Lnet/minecraft/server/network/EventLoopGroupHolder;Lnet/minecraft/network/Connection;)Lio/netty/channel/ChannelFuture;",
           "operation": "rewrite",
@@ -3659,6 +3700,14 @@
           "operation": "rewrite",
           "targetHash": "3e4bce3f1096fad8ea914a5d88c9c757f27c0594395d9118d779e24e65d48239",
           "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/network/Connection",
+          "method": "gaius$connectWithRelayWarmup",
+          "descriptor": "(Ljava/net/InetSocketAddress;Lnet/minecraft/server/network/EventLoopGroupHolder;Lnet/minecraft/network/Connection;I)Lio/netty/channel/ChannelFuture;",
+          "operation": "injected",
+          "targetHash": "f36ef5922c08d1c3911f98b0cc9defeffcdc0fe20a64f26adab849bbffe9c3ae",
+          "vanillaPresent": false
         }
       ]
     },
@@ -3683,6 +3732,79 @@
           "operation": "rewrite",
           "targetHash": "6429a637d1df70323c10862bda71c7a3b784e35db547ba7aa30627a908cd6eda",
           "vanillaPresent": true
+        }
+      ]
+    },
+    {
+      "id": "MinecraftClientPatcher.patchConnectionTransportMetadata",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "FEATURE",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/client/gui/screens/ConnectScreen$1.class",
+        "net/minecraft/network/Connection.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/client/gui/screens/ConnectScreen$1",
+          "method": "run",
+          "descriptor": "()V",
+          "operation": "rewrite",
+          "targetHash": "74fea31b47549251eb609c9d7d1adecea1048b92978a3c81260a1f0c1469151c",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/network/Connection",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "structure",
+          "targetHash": "c1ba15c6ec464be025cf3b6fbb5495a58ca21e22dc5e6ef993478f6d67f17984",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/network/Connection",
+          "method": "<init>",
+          "descriptor": "(Lnet/minecraft/network/protocol/PacketFlow;)V",
+          "operation": "rewrite",
+          "targetHash": "675d4e8883b58694b5341889bc25efa1b3b20fe18581402cd8d8a2159de2a64b",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/network/Connection",
+          "method": "bindGaiusTransport",
+          "descriptor": "(Ljava/lang/String;Ljava/lang/String;)V",
+          "operation": "injected",
+          "targetHash": "6785702d9b83d2d447996bd9121c91bc5b2722072495cec3f78a301fe56e52e0",
+          "vanillaPresent": false
+        },
+        {
+          "className": "net/minecraft/network/Connection",
+          "method": "gaiusEaglerLoginFinished",
+          "descriptor": "(Lcom/mojang/authlib/GameProfile;)Lnet/minecraft/network/protocol/login/ClientboundLoginFinishedPacket;",
+          "operation": "injected",
+          "targetHash": "bdb968d2a7f61840c9f6915d1283bbbfa450eda58231a7748ac9595c66797eff",
+          "vanillaPresent": false
+        },
+        {
+          "className": "net/minecraft/network/Connection",
+          "method": "getGaiusTransport",
+          "descriptor": "()Ljava/lang/String;",
+          "operation": "injected",
+          "targetHash": "c0f0f8b1371c28136309597790cad05c7141842cb27797224157036c4b1a5784",
+          "vanillaPresent": false
+        },
+        {
+          "className": "net/minecraft/network/Connection",
+          "method": "getGaiusTransportAddress",
+          "descriptor": "()Ljava/lang/String;",
+          "operation": "injected",
+          "targetHash": "3e94b9d29627eaaf520be1a5cdcba1370c9d39fba59cc07912bef8d73a86f113",
+          "vanillaPresent": false
         }
       ]
     },
@@ -4298,6 +4420,103 @@
           "descriptor": "()V",
           "operation": "rewrite",
           "targetHash": "fe1abcc9d461769cf75dda5412598073c818aaa9ef028a6edfaf59aa5040e349",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
+      "id": "MinecraftClientPatcher.patchEaglerConnectionInitializer",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "FEATURE",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/client/multiplayer/ServerStatusPinger.class",
+        "net/minecraft/network/Connection$1.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/client/multiplayer/ServerStatusPinger",
+          "method": "pingServer",
+          "descriptor": "(Lnet/minecraft/client/multiplayer/ServerData;Ljava/lang/Runnable;Ljava/lang/Runnable;Lnet/minecraft/server/network/EventLoopGroupHolder;)V",
+          "operation": "rewrite",
+          "targetHash": "d7a57595ff351c9ddc85a4cec157d6de9d4620e6c87ad06a9100ca8594ec246e",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/network/Connection$1",
+          "method": "initChannel",
+          "descriptor": "(Lio/netty/channel/Channel;)V",
+          "operation": "rewrite",
+          "targetHash": "6a1ad382933a09288d9d33033930fe25be4a01a0a1ca8680b47ca75d94372a06",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
+      "id": "MinecraftClientPatcher.patchEaglerConnectionStatusUi",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "FEATURE",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/client/gui/screens/ConnectScreen.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/client/gui/screens/ConnectScreen",
+          "method": "updateStatus",
+          "descriptor": "(Lnet/minecraft/network/chat/Component;)V",
+          "operation": "rewrite",
+          "targetHash": "d50748f0d352d4e72c1befb926a2d1b55965196c2e03a45e5c6a23327164c4bb",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
+      "id": "MinecraftClientPatcher.patchEaglerServerProtocolUi",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "FEATURE",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/client/gui/screens/ManageServerScreen.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/client/gui/screens/ManageServerScreen",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "structure",
+          "targetHash": "f17b322314a835f93d204c0a9a6022de284a4efc9ceec3c3617f6a5a53e9489a",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/ManageServerScreen",
+          "method": "gaiusAddProtocolWidget",
+          "descriptor": "(Lnet/minecraft/client/gui/components/events/GuiEventListener;)V",
+          "operation": "injected",
+          "targetHash": "08c80b666336ba846603feb861c490eeb6ebdaeefc91024678dd7dc3d7d23205",
+          "vanillaPresent": false
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/ManageServerScreen",
+          "method": "init",
+          "descriptor": "()V",
+          "operation": "rewrite",
+          "targetHash": "e33e1fa31bec9f6166935e4b53d50003353a976d9387762da6b1550e041df94f",
           "vanillaPresent": true
         }
       ]
@@ -5540,15 +5759,80 @@
       "profiles": "*",
       "outcome": "APPLIED",
       "rewrites": [
-        "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen.class"
+        "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen.class",
+        "net/minecraft/client/gui/screens/multiplayer/ServerSelectionList.class"
       ],
       "methodTargets": [
+        {
+          "className": "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "structure",
+          "targetHash": "442d6f1af3cf77e701d2465a47e81a36637a84407d258d858450540732d2c7b3",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen",
+          "method": "added",
+          "descriptor": "()V",
+          "operation": "injected",
+          "targetHash": "d97dcb530537cbf0ce197c7bc8a2c9cbd60a06f665b1b375dc8629d39b3c9d2e",
+          "vanillaPresent": false
+        },
         {
           "className": "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen",
           "method": "init",
           "descriptor": "()V",
           "operation": "rewrite",
           "targetHash": "f2f5e59f663af2242876c23d9bbf85a18fea0feea868e5416c406a49b0258e6d",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen",
+          "method": "join",
+          "descriptor": "(Lnet/minecraft/client/multiplayer/ServerData;)V",
+          "operation": "rewrite",
+          "targetHash": "c9d9bcf3620e33613102e8eea68199898d33bb87e8a29cfb7a5e78e23f7fd5b9",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen",
+          "method": "onClose",
+          "descriptor": "()V",
+          "operation": "rewrite",
+          "targetHash": "72159c32bf072ace82a440819d4adcf8aec5e822548c3a55583bb6d04d313c1a",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen",
+          "method": "removed",
+          "descriptor": "()V",
+          "operation": "rewrite",
+          "targetHash": "2209c9337d866c94181f618334f38d9f52583ddfe5d3d1996edfc9b73e8f7f8f",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/multiplayer/JoinMultiplayerScreen",
+          "method": "repositionElements",
+          "descriptor": "()V",
+          "operation": "rewrite",
+          "targetHash": "b6ceb4a384c7bfcffd6cefbc93a050372872030b3a538909f0e22fc4f1da4423",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/multiplayer/ServerSelectionList",
+          "method": "refreshEntries",
+          "descriptor": "()V",
+          "operation": "rewrite",
+          "targetHash": "51b58ab3c4bdbbb6842306385ae4b741567227223b4f8858772748d25b6dd264",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/gui/screens/multiplayer/ServerSelectionList",
+          "method": "setSelected",
+          "descriptor": "(Lnet/minecraft/client/gui/screens/multiplayer/ServerSelectionList$Entry;)V",
+          "operation": "rewrite",
+          "targetHash": "ed96a90ef7be93da0d344ef8ad1a6cafb0e71b48e0fb699a872b08fde2ac9f22",
           "vanillaPresent": true
         }
       ]
@@ -8283,6 +8567,38 @@
       ]
     },
     {
+      "id": "MinecraftClientPatcher.patchServerAddressWebSocketScheme",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "FEATURE",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/client/multiplayer/resolver/ServerAddress.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/client/multiplayer/resolver/ServerAddress",
+          "method": "isValidAddress",
+          "descriptor": "(Ljava/lang/String;)Z",
+          "operation": "rewrite",
+          "targetHash": "579d1661f6b2040dd891a067716cc68356d25a714805805240b28cbb62c278da",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/multiplayer/resolver/ServerAddress",
+          "method": "parseString",
+          "descriptor": "(Ljava/lang/String;)Lnet/minecraft/client/multiplayer/resolver/ServerAddress;",
+          "operation": "rewrite",
+          "targetHash": "3208da4dd3ff3d9abe36e9e809ce4098d5c980fc4b297555c2b8a445ffc3c3b3",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
       "id": "MinecraftClientPatcher.patchServerChunkCacheBrowserOffThreadWait",
       "patcher": "MinecraftClientPatcher",
       "kind": "REQUIRED",
@@ -8390,6 +8706,62 @@
           "descriptor": "(Ljava/net/InetAddress;I)V",
           "operation": "rewrite",
           "targetHash": "b92ed1aca898119fa2bf13af40d4e73444adfdb051dafb87a80ab484b6d9b60a",
+          "vanillaPresent": true
+        }
+      ]
+    },
+    {
+      "id": "MinecraftClientPatcher.patchServerDataTransportProtocol",
+      "patcher": "MinecraftClientPatcher",
+      "kind": "FEATURE",
+      "targets": [
+        "js",
+        "wasmgc"
+      ],
+      "profiles": "*",
+      "outcome": "APPLIED",
+      "rewrites": [
+        "net/minecraft/client/multiplayer/ServerData.class"
+      ],
+      "methodTargets": [
+        {
+          "className": "net/minecraft/client/multiplayer/ServerData",
+          "method": "<class>",
+          "descriptor": "",
+          "operation": "structure",
+          "targetHash": "996efae564dafc78677207a049e756ee1686eb8a9769c66424dc04b13b85f5c4",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/multiplayer/ServerData",
+          "method": "<init>",
+          "descriptor": "(Ljava/lang/String;Ljava/lang/String;Lnet/minecraft/client/multiplayer/ServerData$Type;)V",
+          "operation": "rewrite",
+          "targetHash": "8ba7f08147771717dad702c2b29870de086be7690aca47e14515dc1dc92bd9f6",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/multiplayer/ServerData",
+          "method": "copyFrom",
+          "descriptor": "(Lnet/minecraft/client/multiplayer/ServerData;)V",
+          "operation": "rewrite",
+          "targetHash": "27b492ad9c87ad4039bb4556370fa5293d943f24ada82f5ad173908363889208",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/multiplayer/ServerData",
+          "method": "read",
+          "descriptor": "(Lnet/minecraft/nbt/CompoundTag;)Lnet/minecraft/client/multiplayer/ServerData;",
+          "operation": "rewrite",
+          "targetHash": "75ceb1b2e6603ec321eb9953b7bf49b8a4c8c8f27f6aba79e64e7763908e3d37",
+          "vanillaPresent": true
+        },
+        {
+          "className": "net/minecraft/client/multiplayer/ServerData",
+          "method": "write",
+          "descriptor": "()Lnet/minecraft/nbt/CompoundTag;",
+          "operation": "rewrite",
+          "targetHash": "17217b24d7cc3467401d486ca5818b182d1119832f54d9aa33933daabcc0969c",
           "vanillaPresent": true
         }
       ]

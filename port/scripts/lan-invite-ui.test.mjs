@@ -25,7 +25,10 @@ function fixture(writeText) {
   const events = [];
   const document = {body: make('body'), activeElement: previous, createElement: make,
     getElementById(id) { return nodes.find(node => node.id === id && node.isConnected); }};
+  const testTranslations = {lanCopy: 'Copy link', lanClose: 'Close',
+    lanManualCopy: 'Select the link with the keyboard'};
   const window = {__gaiusMinecraftEvents: events,
+    __gaiusTranslate: key => testTranslations[key] || key,
     __gaiusLanInviteProvider: async () => ({url: 'https://host.invalid/?server=client-abc.gaius-local'}),
     prompt() { assert.fail('LAN invite must not pause the page with a native dialog'); }};
   vm.runInNewContext(source, {window, document, navigator: {clipboard: {writeText}}, Promise});

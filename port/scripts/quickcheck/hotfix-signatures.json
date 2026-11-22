@@ -59,7 +59,7 @@
     {
       "id": "swept-block-intersection-traversal",
       "description": "Scalar swept slice traversal preserves vanilla callbacks and distinct mutable cursors",
-      "commit": "codex/w12-fall27",
+      "commit": "release-line hotfix",
       "signatures": [
         {
           "file": "port/tools/src/main/java/dev/gaius/tools/MinecraftClientPatcher.java",
@@ -81,7 +81,7 @@
     {
       "id": "shader-toolchain-wasm-retry",
       "description": "Retry shader toolchain Wasm compilation after transient network aborts",
-      "commit": "historical",
+      "commit": "PR #22",
       "signatures": [
         {
           "file": "port/wasm/shader-toolchain/loader/gaius-shader-toolchain.js",
@@ -134,7 +134,7 @@
     {
       "id": "ios-update-message",
       "description": "Tell iPhone and iPad users to update iOS",
-      "commit": "historical",
+      "commit": "PR #15",
       "signatures": [
         {
           "file": "port/web/boot/gaius-boot.js",
@@ -146,7 +146,7 @@
     {
       "id": "third-party-error-ignore",
       "description": "Ignore third-party script errors in startup overlay",
-      "commit": "historical",
+      "commit": "PR #18",
       "signatures": [
         {
           "file": "port/web/launcher/index.template.html",
@@ -158,7 +158,7 @@
     {
       "id": "hosted-portable-worker",
       "description": "Portable idle worker embeds server bootstrap and payloads",
-      "commit": "historical",
+      "commit": "PR #9",
       "signatures": [
         {
           "file": "port/web/boot/gaius-boot.js",
@@ -183,7 +183,7 @@
     {
       "id": "respawn-ground",
       "description": "Run vanilla spawn search immediately for respawns",
-      "commit": "historical",
+      "commit": "PR #14",
       "signatures": [
         {
           "file": "port/tools/src/main/java/dev/gaius/tools/patches/serverworker/ServerWorkerPatches.java",
@@ -222,7 +222,7 @@
     {
       "id": "insecure-chat-toast",
       "description": "Suppress insecure chat toast without telemetry restoring original bytecode",
-      "commit": "historical",
+      "commit": "PR #7",
       "signatures": [
         {
           "file": "port/tools/src/main/java/dev/gaius/tools/patches/telemetry/TelemetryPatches.java",
@@ -302,7 +302,7 @@
     {
       "id": "sound-event-entries",
       "description": "Preserve referenced sound events in filtered metadata",
-      "commit": "historical",
+      "commit": "PR #8",
       "signatures": [
         {
           "file": "port/scripts/browser-sounds-metadata.jq",
@@ -319,7 +319,7 @@
     {
       "id": "graphics-first-run",
       "description": "Seed vanilla FAST values without GPU-tier overrides",
-      "commit": "historical",
+      "commit": "PR #12",
       "signatures": [
         {
           "file": "port/overrides/classlib/src/main/java/dev/gaius/browser/BrowserFilePersistence.java",
@@ -341,7 +341,7 @@
     {
       "id": "gpu-diagnostics-cleanup",
       "description": "Disable per-frame WebGPU surface and submit timing diagnostics unless debug or diag is enabled",
-      "commit": "codex/w12-e3clock",
+      "commit": "release-line hotfix",
       "signatures": [
         {
           "file": "port/web/runtime/webgpu/gpu-glue.js",
@@ -358,7 +358,7 @@
     {
       "id": "adaptive-latency-surface-gate",
       "description": "Adaptive bounded WebGPU surface back-pressure gate with JSPI stall telemetry",
-      "commit": "codex/w12-p1gate",
+      "commit": "release-line hotfix",
       "signatures": [
         {
           "file": "port/web/runtime/webgpu/gpu-glue.js",
@@ -380,7 +380,7 @@
     {
       "id": "surface-gate-load-window-wake",
       "description": "Apply live surface gate configuration to parked load frames without fabricating retirement",
-      "commit": "codex/w12-p1gate",
+      "commit": "release-line hotfix",
       "signatures": [
         {
           "file": "port/web/runtime/webgpu/gpu-glue.js",
@@ -402,7 +402,7 @@
     {
       "id": "time-based-surface-gate-v2",
       "description": "Time-budget surface admission with refresh observer, exact gap telemetry and readable stats",
-      "commit": "codex/w12-p1gate",
+      "commit": "release-line hotfix",
       "signatures": [
         {
           "file": "port/web/runtime/webgpu/gpu-glue.js",
@@ -424,7 +424,7 @@
     {
       "id": "visual-viewport-canvas-resize",
       "description": "Refresh the game canvas after visual viewport changes that omit a window resize event",
-      "commit": "codex/w12-mpjoinhang",
+      "commit": "release-line hotfix",
       "signatures": [
         {
           "file": "port/overrides/libraries/lwjgl-sdl/src/main/java/org/lwjgl/sdl/BrowserSdlDom.java",
@@ -440,6 +440,45 @@
           "file": "port/scripts/lwjgl-sdl-browser-dom-smoke.mjs",
           "must_exist": true,
           "substring": "visual viewport resize refreshes the canvas backing size"
+        }
+      ]
+    },
+    {
+      "id": "eagler-v5-offline-transport",
+      "commit": "release-line hotfix",
+      "description": "Keep Eagler v5 selection, offline login and WebSocket message boundaries connected to the browser pipeline",
+      "signatures": [
+        {
+          "file": "port/tools/src/main/java/dev/gaius/tools/patches/network/NetworkPatches.java",
+          "must_exist": true,
+          "substring": "\"dev/gaius/browser/transport/ConnectionTransports\", \"install\""
+        },
+        {
+          "file": "port/src/main/java/dev/gaius/browser/transport/EaglerHandshakeHandler.java",
+          "must_exist": true,
+          "substring": "LoginProtocols.CLIENTBOUND.codec().encode"
+        },
+        {
+          "file": "port/overrides/libraries/netty-transport/src/main/java/io/netty/channel/browser/BrowserWebSocketChannel.java",
+          "must_exist": true,
+          "substring": "entry.eagler ? remaining : Math.min(maximumInboundSliceBytes, remaining)"
+        }
+      ]
+    },
+    {
+      "id": "wasm-first-use-pipeline-validation",
+      "commit": "release-line hotfix",
+      "description": "Await WebGPU validation for first-use pipeline variants without discarding a valid draw",
+      "signatures": [
+        {
+          "file": "port/gpu/webgpu-core/src/target-wasmgc/java/dev/gaius/gpu/webgpu/WebGpuGlue.java",
+          "must_exist": true,
+          "substring": "HostLoop.awaitHost(resume -> onPipelineValidated(pipeline, resume::run));"
+        },
+        {
+          "file": "port/web/runtime/webgpu/gpu-glue.js",
+          "must_exist": true,
+          "substring": "return entry.validating && pipeline !== null;"
         }
       ]
     }

@@ -33,7 +33,9 @@ import org.teavm.jso.JSObject;
  * is where the drainer times out jobs the kernel never answered.</p>
  */
 public final class MeshKernelBridge {
-    private static final boolean FAST_SNAPSHOT_ENABLED = fastSnapshotEnabledJs();
+    private static final boolean FAST_SNAPSHOT_ENABLED = fastSnapshotEnabledJs(MeshProfile.PROFILE == 2);
+    private static final boolean SNAPSHOT_CHECK_ENABLED = snapshotCheckEnabledJs(MeshProfile.PROFILE == 2);
+    private static final boolean SNAPSHOT_TIMING_ENABLED = snapshotTimingEnabledJs(MeshProfile.PROFILE == 2);
     /** Header ints of a submitted job (mirrors HEADER in mesh-kernel-job.js). */
     public static final int H_TICKET = 0;
     public static final int H_EPOCH = 1;
@@ -189,11 +191,51 @@ public final class MeshKernelBridge {
         return FAST_SNAPSHOT_ENABLED;
     }
 
-    @JSBody(script = ""
+    public static boolean snapshotCheckEnabled() {
+        return SNAPSHOT_CHECK_ENABLED;
+    }
+
+    public static boolean snapshotTimingEnabled() {
+        return SNAPSHOT_TIMING_ENABLED;
+    }
+
+    public static void recordSnapshotCheck(int sx, int sy, int sz, int firstDifference, int legacyLength,
+            int fastLength) {
+        recordSnapshotCheckJs(sx, sy, sz, firstDifference, legacyLength, fastLength);
+    }
+
+    @JSBody(params = "rd32Profile", script = "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
+            + "return rd32Profile && !!(g.__gaiusLauncherFlags && g.__gaiusLauncherFlags.meshSnapshotCheck === true);")
+    private static native boolean snapshotCheckEnabledJs(boolean rd32Profile);
+
+    @JSBody(params = "rd32Profile", script = "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
+            + "return rd32Profile && !!(g.__gaiusLauncherFlags && g.__gaiusLauncherFlags.meshSnapshotTrace === true);")
+    private static native boolean snapshotTimingEnabledJs(boolean rd32Profile);
+
+    public static void noteSnapshotPathNanos(boolean fast, long nanos) {
+        noteSnapshotPathNanosJs(fast, (double) nanos);
+    }
+
+    @JSBody(params = {"fast", "nanos"}, script = "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
+            + "var t = g.__gaiusRd32Trace;"
+            + "if (t && typeof t.recordSnapshotTiming === 'function') t.recordSnapshotTiming(fast, nanos);")
+    private static native void noteSnapshotPathNanosJs(boolean fast, double nanos);
+
+    @JSBody(params = {"sx", "sy", "sz", "firstDifference", "legacyLength", "fastLength"}, script = ""
+            + "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
+            + "var t = g.__gaiusRd32Trace;"
+            + "var c = t && t.snapshotCheck;"
+            + "if (c && typeof c.recordSnapshotCheck === 'function')"
+            + " c.recordSnapshotCheck(sx, sy, sz, firstDifference, legacyLength, fastLength);")
+    private static native void recordSnapshotCheckJs(int sx, int sy, int sz, int firstDifference,
+            int legacyLength, int fastLength);
+
+    @JSBody(params = "rd32Profile", script = ""
             + "var g = typeof globalThis !== 'undefined' ? globalThis : self;"
             + "var flags = g.__gaiusLauncherFlags;"
-            + "return !!(flags && flags.meshSnapshotFast === true);")
-    private static native boolean fastSnapshotEnabledJs();
+            + "return !!(flags && (rd32Profile ? flags.meshSnapshotFast === true"
+            + " : flags.meshSnapshotFastLegacy === true));")
+    private static native boolean fastSnapshotEnabledJs(boolean rd32Profile);
 
     /**
      * Registers the version-specific result drainer (MeshKernelHooks.drainResults) and hooks

@@ -10,6 +10,133 @@
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
   <link rel="icon" type="image/svg+xml" sizes="any" href="icons/icon.svg">
   <title>Gaius Client template</title>
+  <script id="gaius-relay-origin-warmup">
+    // The multiplayer lifecycle owns this work. Registering the callbacks does not start it.
+    (() => {
+      // This launcher-owned list is the trust anchor. Keep it in sync with the
+      // curated relay-nodes.json. Embedded configuration and the fetched registry
+      // may narrow it, including disabling a node, but may never add an endpoint.
+      // Public source snapshots ship with no built-in hosted relay endpoints; add
+      // your own curated entries here and in relay-nodes.json when deploying.
+      const builtInPublicRelays = [];
+      const maxOrigins = 1;
+      const maxNodes = 64;
+      const timeoutMs = 2500;
+      let active = null;
+
+      function isEnabled(node) {
+        // Missing fields are the legacy encoding for an enabled, dual-use node.
+        return (node.enabled === undefined || node.enabled === true) &&
+          (node.use === undefined || node.use === 'both' || node.use === 'multiplayer') &&
+          !node.token && node.requiresToken !== true;
+      }
+
+      function containsEnabledRelay(nodes, relay) {
+        if (!Array.isArray(nodes) || nodes.length > maxNodes) return false;
+        let enabled = false;
+        for (const node of nodes) {
+          if (!node || node.id !== relay.id || typeof node.url !== 'string' ||
+              !/^wss:\/\/[^/?#@\\]+\//i.test(node.url)) continue;
+          let url;
+          try { url = new URL(node.url); } catch (_) { continue; }
+          // Exact canonical endpoint match excludes other ports and paths, and
+          // rejects credentials, query and fragment instead of forwarding them.
+          if (url.href !== relay.url) continue;
+          if (!isEnabled(node)) return false;
+          enabled = true;
+        }
+        return enabled;
+      }
+
+      function finish(warmup, abort = false) {
+        clearTimeout(warmup.timer);
+        if (abort) warmup.controller.abort();
+        for (const link of warmup.links) link.remove();
+        warmup.links.length = 0;
+      }
+
+      function isCurrent(warmup) {
+        if (active !== warmup || warmup.controller.signal.aborted) return false;
+        if (performance.now() >= warmup.deadline || !warmup.isStillVisible()) {
+          finish(warmup, true);
+          return false;
+        }
+        return true;
+      }
+
+      async function warmConfiguredRelays(warmup, relays, readDisabledRelayUrls) {
+        const signal = warmup.controller.signal;
+        const request = {cache: 'no-store', credentials: 'omit', redirect: 'error',
+          referrerPolicy: 'no-referrer', signal};
+        if (location.protocol === 'http:' || location.protocol === 'https:') {
+          try {
+            const response = await fetch(new URL('relay-nodes.json', location.href), request);
+            if (!isCurrent(warmup)) return;
+            const registry = response.ok ? await response.json() : null;
+            if (!isCurrent(warmup)) return;
+            if (Array.isArray(registry?.nodes)) {
+              relays = relays.filter(relay => containsEnabledRelay(registry.nodes, relay));
+            }
+          } catch (_) { /* Registry unavailable. Use the already vetted packaged list. */ }
+        }
+        if (!isCurrent(warmup)) return;
+        // Settings may have changed while the registry response or its body was pending.
+        const disabled = readDisabledRelayUrls();
+        const origins = new Set();
+        const requests = [];
+        for (const relay of relays) {
+          if (origins.size >= maxOrigins || !isCurrent(warmup)) break;
+          if (disabled.has(relay.url)) continue;
+          const origin = new URL(relay.url.replace(/^wss:/, 'https:')).origin;
+          if (origins.has(origin)) continue;
+          origins.add(origin);
+          const link = document.createElement('link');
+          link.rel = 'preconnect';
+          link.href = origin;
+          link.crossOrigin = 'anonymous';
+          warmup.links.push(link);
+          document.head.appendChild(link);
+          if (!isCurrent(warmup)) break;
+          requests.push(fetch(origin + '/', {...request, method: 'HEAD', mode: 'no-cors'}).catch(() => {}));
+        }
+        await Promise.all(requests);
+      }
+
+      window.__gaiusWarmRelayOrigins = function (isStillVisible = () => true) {
+        const params = new URLSearchParams(location.search);
+        if (params.get('relayWarm') === '0' || params.get('relayBoot') === '0' || !isStillVisible()) return;
+        if (active) return active.promise;
+        const policy = window.__gaiusRelayAddressPolicy;
+        const readDisabledRelayUrls = window.__gaiusRelays?.readDisabledRelayUrls;
+        if (!policy || !readDisabledRelayUrls) return;
+        const configured = window.__gaiusBridgeUrls;
+        const relays = builtInPublicRelays.filter(relay => {
+          const endpoint = new URL(relay.url);
+          return relay.enabled === true && endpoint.protocol === 'wss:' &&
+            policy.isPublicRelayHost(endpoint.hostname) && containsEnabledRelay(configured, relay);
+        });
+        if (!relays.length) return;
+        const disabled = readDisabledRelayUrls();
+        const enabledRelays = relays.filter(relay => !disabled.has(relay.url));
+        if (!enabledRelays.length) return;
+
+        const controller = new AbortController();
+        const warmup = {controller, links: [], isStillVisible, deadline: performance.now() + timeoutMs};
+        active = warmup;
+        const stopped = new Promise(resolve => controller.signal.addEventListener('abort', resolve, {once: true}));
+        warmup.timer = setTimeout(function relayOriginWarmupTimeout() { finish(warmup, true); }, timeoutMs);
+        warmup.promise = Promise.race([warmConfiguredRelays(warmup, enabledRelays, readDisabledRelayUrls), stopped])
+          .catch(() => finish(warmup, true)).finally(() => finish(warmup));
+        return warmup.promise;
+      };
+      window.__gaiusCancelRelayOrigins = function () {
+        if (!active) return;
+        const warmup = active;
+        active = null;
+        finish(warmup, true);
+      };
+    })();
+  </script>
   <style>
     html, body {
       width: 100%;
@@ -745,6 +872,13 @@
       gaiusSurfaceGateCap: Math.max(0, Math.min(16, Math.floor(Number(urlParams.get("gaiusSurfaceGateCap")) || 0)))
     });
     const launcherBoolean = name => /^(1|true|on)$/i.test(urlParams.get(name) || "");
+    // RD32 snapshot A/B: rd32snap=0 is legacy; rd32snap=1 enables the candidate path.
+    const meshSnapshotFastLegacy = launcherBoolean("gaiusMeshSnapshot");
+    const meshSnapshotFast = urlParams.has("rd32snap")
+      ? urlParams.get("rd32snap") !== "0"
+      : meshSnapshotFastLegacy;
+    const meshSnapshotCheck = urlParams.get("rd32snapcheck") === "1";
+    const meshSnapshotTrace = urlParams.get("rd32trace") === "1";
     // Chunk delivery batching is an opt-in transport experiment. Keep the default
     // vanilla-compatible path unchanged and pass only a bounded boolean to the
     // client/server runtimes.
@@ -753,7 +887,10 @@
     // Parse opt-in switches once in the launcher. Runtime Java classes consume this boolean
     // through the global flag object and never parse the query string on their hot path.
     globalThis.__gaiusLauncherFlags = Object.freeze({
-      meshSnapshotFast: launcherBoolean("gaiusMeshSnapshot"),
+      meshSnapshotFast,
+      meshSnapshotFastLegacy,
+      meshSnapshotCheck,
+      meshSnapshotTrace,
       chunkPipelineBatching,
       meshInstallPriority: launcherBoolean("gaiusMeshInstallPriority"),
       meshAdaptiveBudget: launcherBoolean("gaiusMeshAdaptiveBudget"),
@@ -1717,8 +1854,18 @@
         host === "::1";
     }
 
+    function isPublicRelayHost(value) {
+      // Pass a URL-parsed hostname, so noncanonical IP literals have already
+      // been normalized. DNS trust comes from the fixed endpoint allowlist.
+      const host = value.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+      return (host.includes(".") || host.includes(":")) &&
+        !/(?:^|\.)(?:localhost|local|lan|internal|home\.arpa|gaius-local)$/.test(host) &&
+        !isSpecialRelayHost(host);
+    }
+
     globalThis.__gaiusRelayAddressPolicy = {
       isSpecialHost: isSpecialRelayHost,
+      isPublicRelayHost,
       isLoopbackHost: isLoopbackRelayHost,
     };
     globalThis.__gaiusConfirmRelay = function (relayUrl) {
@@ -2012,6 +2159,9 @@
           return [];
         }
       }
+      function readDisabledRelayUrls() {
+        return new Set(readList("gaius.disabledRelays").map(normalize).filter(Boolean));
+      }
       function useOf(value) {
         return value === "multiplayer" || value === "lan" ? value : "both";
       }
@@ -2019,7 +2169,7 @@
         return normalize(value && typeof value === "object" ? (value.url || value.endpoint) : value);
       }
       function entries() {
-        const disabled = new Set(readList("gaius.disabledRelays").map(normalize).filter(Boolean));
+        const disabled = readDisabledRelayUrls();
         const seen = new Set();
         const out = [];
         for (const value of readList("gaius.bridgeNodes")) {
@@ -2044,6 +2194,7 @@
       }
       return {
         normalize: normalize,
+        readDisabledRelayUrls,
         list: function () {
           return JSON.stringify(entries());
         },
@@ -2075,7 +2226,7 @@
         setEnabled: function (url, enabled) {
           const target = normalize(url);
           if (!target) return "Invalid relay address";
-          const disabled = new Set(readList("gaius.disabledRelays").map(normalize).filter(Boolean));
+          const disabled = readDisabledRelayUrls();
           if (enabled) disabled.delete(target); else disabled.add(target);
           try {
             localStorage.setItem("gaius.disabledRelays", JSON.stringify(Array.from(disabled)));

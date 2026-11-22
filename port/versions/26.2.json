@@ -75,13 +75,12 @@
   "worldgenTelemetryMode": "task-pulsed",
   "worldgenReference": {
     "source": "native/golden/worldgen/v26_2/net/minecraft/world/level/levelgen/GaiusWorldgenReference262.java",
-    "exporter": "mc/shared/canonical/src/java/net/minecraft/world/level/levelgen/GaiusWorldgenExport262.java",
+    "exporterBridge": "net/minecraft/world/level/levelgen/GaiusWorldgenExport262",
     "mainClass": "net.minecraft.world.level.levelgen.GaiusWorldgenReference262",
     "jvmHooks": [
       "dev/gaius/browser/kernel/worldgen/WorldgenKernel262.java",
       "dev/gaius/browser/kernel/worldgen/WorldgenKernelHooks262.java",
-      "dev/gaius/browser/kernel/worldgen/WorldgenSeedSource262.java",
-      "net/minecraft/world/level/levelgen/GaiusWorldgenExport262.java"
+      "dev/gaius/browser/kernel/worldgen/WorldgenSeedSource262.java"
     ],
     "oreRules": [
       "BlockMatchTest",

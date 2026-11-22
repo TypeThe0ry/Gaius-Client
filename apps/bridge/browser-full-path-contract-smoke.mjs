@@ -339,7 +339,7 @@ assert.match(fullPathSourceText,
     /ARRIVAL_PRODUCTION_TIMELINE_EVENT_LIMIT\s*=\s*256/u,
     "production bridge timeline limit drifted");
 assert.match(fullPathSourceText,
-    /globalThis\.__gaiusBrowserArrivalTimeline\s*=\s*ARRIVAL_TRACE_ENABLED;[\s\S]*?new Function\(init\)\(\);/u,
+    /globalThis\.__gaiusBrowserArrivalTimeline\s*=\s*ARRIVAL_TRACE_ENABLED;\s*const \{bridgeScript\} = await loadBridgeSmokeSource\(\);\s*new Function\(bridgeScript\)\(\);/u,
     "production bridge timeline switch must latch before bridge JSBody init");
 assert.match(fullPathSourceText,
     /function productionBridgeArrivalTimelineEvidence\(stats\)\s*\{/u,

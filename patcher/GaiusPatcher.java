@@ -22,6 +22,7 @@
  */
 
 import java.io.IOException;
+import java.io.File;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -33,9 +34,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.Charset;
 import java.nio.file.FileStore;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -49,6 +52,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -61,7 +65,6 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -82,7 +85,7 @@ public final class GaiusPatcher {
             parsed = Args.parse(args);
         } catch (PatcherException error) {
             if (Arrays.asList(args).contains("--json-progress")) {
-                Build.errorProgress(error.getMessage());
+                emitProgressError(Arrays.asList(args).contains("tools"), error.getMessage());
             } else {
                 System.err.println("error: " + error.getMessage());
             }
@@ -98,6 +101,7 @@ public final class GaiusPatcher {
                 case "build" -> Build.run(parsed);
                 case "manifest" -> ReproManifest.generate(parsed);
                 case "verify" -> ReproManifest.verify(parsed);
+                case "tools" -> Tools.run(parsed);
                 case "terms" -> Terms.show(parsed);
                 case "selftest" -> SelfTest.run();
                 case "version", "--version" -> {
@@ -118,19 +122,24 @@ public final class GaiusPatcher {
             System.exit(status);
         } catch (PatcherException error) {
             if (parsed.flags.contains("json-progress")) {
-                Build.errorProgress(error.getMessage());
+                emitProgressError(parsed.command.equals("tools"), error.getMessage());
             } else {
                 System.err.println("error: " + error.getMessage());
             }
             System.exit(1);
         } catch (RuntimeException | IOException error) {
             if (parsed.flags.contains("json-progress")) {
-                Build.errorProgress(error.toString());
+                emitProgressError(parsed.command.equals("tools"), error.toString());
             } else {
                 System.err.println("error: " + error);
             }
             System.exit(1);
         }
+    }
+
+    private static void emitProgressError(boolean tools, String message) {
+        if (tools) Tools.errorProgress(message);
+        else Build.errorProgress(message);
     }
 
     static void printHelp() {
@@ -154,6 +163,9 @@ public final class GaiusPatcher {
                   build <version>        Fetch, patch and compile one offline browser build
                   manifest <build-output-dir>  Write a reproduction manifest for the current OS
                   verify <build-output-dir>    Verify the site and portable HTML against a manifest
+                  tools status --json    Report locked build tools and local prerequisites
+                  tools install --json-progress [--only id,...]
+                                         Download and verify missing lock-pinned files
                   terms                  Show the terms of use and whether you accepted them
                   selftest               Run the built-in offline checks
                   version                Print the patcher version
@@ -161,6 +173,7 @@ public final class GaiusPatcher {
                 Options:
                   --minecraft-dir <dir>  Your launcher's game directory (default: the OS location)
                   --profiles <dir>       Directory holding the version profiles (<id>.json)
+                  --verify-files --json  With doctor <version>, stream offline SHA-1 checks as JSON lines
                   --work <dir>           Where fetched files are written (default: per version)
                   --mappings <file>      Use this client_mappings file for 1.21.11 instead of
                                          downloading it from Mojang
@@ -173,6 +186,8 @@ public final class GaiusPatcher {
                   --decompiler <jar>     Use this copy of the pinned decompiler instead of
                                          downloading it from Maven Central
                   --offline              Never use the network
+                  --strict-kernel        Build Wasm kernels and require pinned Rust/Cargo,
+                                         wasm32 target and offline cache (build/tools status)
                   --json-progress       Print one JSON progress object per line to stdout
                   --manifest <file>     Reference manifest to use with verify
                   --out <dir>           Output directory for build or manifest
@@ -181,10 +196,545 @@ public final class GaiusPatcher {
                 """.formatted(TOOL_VERSION, GAIUS_RELEASE, GAIUS_VERSION));
     }
 
+    // --------------------------------------------------------------- tools
+
+    static final class Tools {
+        static final String SCHEMA = "gaius-patcher-tools-v1";
+        static final String PROGRESS_SCHEMA = "gaius-patcher-tools-progress-v1";
+        static final List<String> ALL = List.of("26.3", "26.2", "1.21.11");
+        static final String MAVEN_INVENTORY = "gaius-maven-repository.json";
+        static final String SHADER_RELEASE_HINT = "The Gaius release process prepares this package. This tool cannot download it.";
+        static final String PYTHON_HINT = "Install a working Python 3 or set PYTHON to its executable.";
+
+        record Locked(String id, List<String> versions, ToolchainManager.Artifact artifact, boolean runtimeReady) {}
+
+        record Python(String command, String executable) {}
+
+        record Shell(String command, Path gitBash) {
+            static Shell find() {
+                if (!isWindows()) return new Shell("bash", null);
+                Path gitBash = windowsGitBash();
+                return gitBash == null ? null : new Shell(gitBash.toString(), gitBash);
+            }
+
+            ProcessBuilder process(String... arguments) {
+                var argv = new ArrayList<String>();
+                argv.add(command);
+                argv.addAll(List.of(arguments));
+                ProcessBuilder builder = new ProcessBuilder(argv);
+                var env = builder.environment();
+                env.put("CARGO_NET_OFFLINE", "true");
+                env.put("RUSTUP_AUTO_INSTALL", "0");
+                env.put("GIT_NO_LAZY_FETCH", "1");
+                env.put("GIT_TERMINAL_PROMPT", "0");
+                if (gitBash != null) {
+                    Path root = gitBash.getParent().getParent();
+                    String prefix = String.join(File.pathSeparator, root.resolve("cmd").toString(),
+                            root.resolve("bin").toString(), root.resolve("usr/bin").toString(),
+                            root.resolve("mingw64/bin").toString());
+                    // Preserve Windows' existing Path spelling to avoid duplicate variables.
+                    String pathKey = env.keySet().stream().filter("PATH"::equalsIgnoreCase).findFirst().orElse("PATH");
+                    env.merge(pathKey, prefix, (existing, added) -> added + File.pathSeparator + existing);
+                }
+                return builder;
+            }
+
+            boolean ready() {
+                return probe("-c", gitBash == null ? ":" : "test -n \"$MSYSTEM\" || command -v cygpath >/dev/null");
+            }
+
+            boolean probe(String... arguments) {
+                return runProbe(process(arguments), false) != null;
+            }
+
+            Python resolvePython(Path sourceRoot) {
+                String result = runProbe(process(sourceRoot.resolve("port/scripts/run-python.sh").toString(), "--resolve"), true);
+                if (result == null) return null;
+                List<String> lines = result.lines().toList();
+                if (lines.size() != 2 || lines.get(0).isEmpty() || lines.get(1).isEmpty()) return null;
+                return new Python(lines.get(0), lines.get(1));
+            }
+        }
+
+        static int run(Args args) {
+            if (args.positional.size() != 1) {
+                throw new PatcherException("usage: tools status --json | tools install --json-progress");
+            }
+            Path profiles = Locations.profilesDir(args);
+            Path sourceRoot = Locations.sourceRoot(profiles);
+            ToolchainManager manager = new ToolchainManager(sourceRoot.resolve("patcher/toolchain.lock"), args,
+                    Locations.workRoot(args, profiles));
+            List<Locked> locked = lockedTools(manager);
+            List<ToolchainManager.HostPin> host = hostPins(manager);
+            return switch (args.positional.getFirst()) {
+                case "status" -> {
+                    if (!args.flags.contains("json")) throw new PatcherException("tools status requires --json");
+                    List<Map<String, Object>> rows = status(manager, sourceRoot, args, locked, host);
+                    rows.forEach(row -> System.out.println(Json.compact(row)));
+                    yield 0;
+                }
+                case "install" -> install(args, manager, locked, host);
+                default -> throw new PatcherException("unknown tools action: " + args.positional.getFirst());
+            };
+        }
+
+        private static int install(Args args, ToolchainManager manager, List<Locked> locked,
+                                   List<ToolchainManager.HostPin> host) {
+            if (!args.flags.contains("json-progress")) throw new PatcherException("tools install requires --json-progress");
+            String only = args.options.get("only");
+            Set<String> ids = only == null ? Set.of() : new LinkedHashSet<>(Arrays.asList(only.split(",", -1)));
+            boolean hasClosure = manager.lock.containsKey("mavenRepository");
+            for (String id : ids) {
+                if (!(hasClosure && id.equals("maven-repository")) && locked.stream().noneMatch(tool -> tool.id().equals(id))
+                        && host.stream().noneMatch(tool -> tool.id().equals(id))) {
+                    throw new PatcherException("unknown or non-installable tool ID: " + id);
+                }
+            }
+            var wanted = locked.stream().filter(tool -> ids.isEmpty() || ids.contains(tool.id()))
+                    .filter(tool -> !tool.runtimeReady() && !fileState(manager.artifactLocation(tool.artifact()), tool.artifact()).equals("present"))
+                    .toList();
+            var pendingMaven = hasClosure && (ids.isEmpty() || ids.contains("maven-repository"))
+                    ? manager.lockedMavenArtifacts().stream().filter(entry -> !manager.mavenFileState(entry).equals("present")).toList()
+                    : List.<ToolchainManager.MavenArtifact>of();
+            var wantedHost = host.stream().filter(pin -> ids.isEmpty() || ids.contains(pin.id())).toList();
+            var pendingHost = new LinkedHashSet<ToolchainManager.Artifact>();
+            var verifiedHost = new LinkedHashMap<ToolchainManager.Artifact, Path>();
+            for (var pin : wantedHost) {
+                for (var artifact : pin.artifacts()) {
+                    Path path = manager.hostArtifactLocation(artifact);
+                    if (fileState(path, artifact).equals("present")) {
+                        verifiedHost.put(artifact, path);
+                    } else {
+                        pendingHost.add(artifact);
+                    }
+                }
+            }
+            long total = wanted.stream().mapToLong(tool -> Math.max(0, tool.artifact().bytes())).sum()
+                    + pendingMaven.stream().mapToLong(entry -> entry.artifact().bytes()).sum()
+                    + pendingHost.stream().mapToLong(ToolchainManager.Artifact::bytes).sum();
+            long done = 0;
+            progress("", "starting", 0, total, null);
+            for (Locked tool : wanted) {
+                var artifact = tool.artifact();
+                long previous = done;
+                manager.ensure(artifact, true, received -> progress(tool.id(), "download", previous + received, total, null));
+                done += Math.max(0, artifact.bytes());
+                progress(tool.id(), "verified", done, total, null);
+            }
+            for (var pin : wantedHost) {
+                var files = new LinkedHashMap<ToolchainManager.Artifact, Path>();
+                for (var artifact : pin.artifacts()) {
+                    long previous = done;
+                    if (pendingHost.contains(artifact)) {
+                        files.put(artifact, manager.installHostArtifact(artifact,
+                                received -> progress(pin.id(), "download", previous + received, total, null)));
+                        done += artifact.bytes();
+                        progress(pin.id(), "verified", done, total, null);
+                    } else {
+                        files.put(artifact, verifiedHost.get(artifact));
+                    }
+                }
+                progress(pin.id(), "unpack", done, total, null);
+                manager.resolveHostArchive(pin, files::get).stage(pin.installPath(manager.cache));
+                progress(pin.id(), "installed", done, total, null);
+            }
+            for (var entry : pendingMaven) {
+                long previous = done;
+                manager.ensureMavenArtifact(entry, true,
+                        received -> progress("maven-repository", "download", previous + received, total, null));
+                done += entry.artifact().bytes();
+                progress("maven-repository", "verified", done, total, null);
+            }
+            progress("", "complete", done, total, null);
+            return 0;
+        }
+
+        private static List<Locked> lockedTools(ToolchainManager manager) {
+            var tools = new ArrayList<Locked>();
+            var jdk = Json.object(manager.lock, "jdk");
+            var distributions = Json.object(jdk, "distributions");
+            String os = manager.osArchKey();
+            if (distributions.containsKey(os)) {
+                tools.add(new Locked("jdk-25", List.copyOf(ALL), manager.artifact("JDK " + Json.string(jdk, "version"),
+                        Json.object(distributions, os)), runtimeJdk(25)));
+            }
+            for (String id : List.of("maven", "vineflower")) {
+                var pin = Json.object(manager.lock, id);
+                String label = id.equals("maven") ? "Apache Maven" : "Vineflower";
+                tools.add(new Locked(id, List.copyOf(ALL), manager.artifact(label + " " + Json.string(pin, "version"), pin), false));
+            }
+            boolean hasClosure = manager.lock.containsKey("mavenRepository");
+            if (!hasClosure && manager.lock.containsKey("remapper")) {
+                var pin = Json.object(manager.lock, "remapper");
+                tools.add(new Locked("remapper", List.of("1.21.11"),
+                        manager.artifact("AutoRenamingTool " + Json.string(pin, "version"), pin), false));
+            }
+            for (Object value : hasClosure ? List.of() : Json.array(Json.object(manager.lock, "teavm"), "artifacts")) {
+                var item = Json.asObject(value, "TeaVM artifact");
+                var artifact = manager.mavenArtifact(item);
+                String id = Path.of(artifact.file()).getFileName().toString().replaceFirst("-\\d.*", "");
+                tools.add(new Locked(id, ALL, artifact, false));
+            }
+            return tools;
+        }
+
+        private static List<ToolchainManager.HostPin> hostPins(ToolchainManager manager) {
+            var host = manager.hostTools();
+            String platform = manager.osArchKey();
+            return List.of("llvm", "binaryen").stream()
+                    .filter(id -> host.containsKey(id) && Json.object(Json.object(host, id), "distributions").containsKey(platform))
+                    .map(id -> manager.hostPin(id, platform)).toList();
+        }
+
+        private static Map<String, Object> hostStatus(ToolchainManager manager, ToolchainManager.HostPin pin) {
+            var main = pin.archive();
+            var hosts = new LinkedHashSet<String>();
+            String state = "present";
+            long bytes = 0;
+            Path firstFailed = null;
+            for (var artifact : pin.artifacts()) {
+                bytes += artifact.bytes();
+                String host = URI.create(artifact.url()).getHost();
+                if (host != null) hosts.add(host);
+                Path path = manager.hostArtifactLocation(artifact);
+                String file = fileState(path, artifact);
+                if (file.equals("hash-mismatch") && !state.equals("hash-mismatch")
+                        || file.equals("missing") && state.equals("present")) {
+                    state = file;
+                    firstFailed = path;
+                }
+            }
+            var row = row(pin.id(), main.name(), ALL, state, bytes, main.url(), manager.hostArtifactLocation(main),
+                    main.sha256(), true, "");
+            row.put("sourceHost", String.join(", ", hosts));
+            row.put("platform", manager.osArchKey());
+            row.put("archiveBytes", main.bytes());
+            row.put("installPath", pin.installPath(manager.cache).toString());
+            if (firstFailed != null) row.put("firstFailedPath", firstFailed.toString());
+            return row;
+        }
+
+        private static List<Map<String, Object>> status(ToolchainManager manager, Path sourceRoot, Args args,
+                                                         List<Locked> locked, List<ToolchainManager.HostPin> host) {
+            var rows = new ArrayList<Map<String, Object>>();
+            for (Locked tool : locked) {
+                var artifact = tool.artifact();
+                Path path = manager.artifactLocation(artifact);
+                if (tool.id().equals("vineflower") && args.options.containsKey("decompiler")) {
+                    path = Path.of(args.options.get("decompiler")).toAbsolutePath().normalize();
+                }
+                String state = tool.runtimeReady() ? "present" : fileState(path, artifact);
+                if (tool.runtimeReady()) path = Path.of(System.getProperty("java.home"));
+                rows.add(row(tool.id(), artifact.name(), tool.versions(), state, artifact.bytes(), artifact.url(),
+                        path, artifact.sha256(), true, state.equals("hash-mismatch")
+                                ? "The file does not match the lock. Replace an invalid external cache entry before retrying." : ""));
+            }
+            if (locked.stream().noneMatch(tool -> tool.id().equals("jdk-25"))) {
+                rows.add(row("jdk-25", "JDK 25", ALL, runtimeJdk(25) ? "present" : "unsupported", 0,
+                        "https://adoptium.net/temurin/releases/?version=25", null, "", false,
+                        "Install a platform-compatible JDK and start the patcher with it."));
+            }
+            for (String id : List.of("llvm", "binaryen")) {
+                var pin = host.stream().filter(tool -> tool.id().equals(id)).findFirst();
+                if (pin.isPresent()) {
+                    rows.add(hostStatus(manager, pin.get()));
+                } else if (manager.hostTools().containsKey(id)) {
+                    String version = Json.string(Json.object(manager.hostTools(), id), "version");
+                    rows.add(row(id, (id.equals("llvm") ? "LLVM " : "Binaryen ") + version, ALL, "unsupported",
+                            0, "", null, "", false, "The locked host tools support Linux x86-64 and Windows x86-64."));
+                }
+            }
+            if (manager.lock.containsKey("mavenRepository")) {
+                rows.addAll(mavenStatus(manager));
+            } else {
+                Path repository = manager.mavenRepositoryForTools();
+                for (String version : ALL) {
+                    String issue = repositoryIssue(repository, version);
+                    rows.add(row("maven-repository-" + version, "Offline Maven repository · " + version, List.of(version),
+                            issue == null ? "present" : issue.startsWith("SHA-256") ? "hash-mismatch" : "missing", 0,
+                            "https://maven.apache.org/guides/introduction/introduction-to-repositories.html", repository,
+                            "", false, issue == null ? "" : issue));
+                }
+            }
+            var shader = Json.object(Json.object(manager.lock, "wasm"), "shader");
+            Path shaderPath = manager.shaderDirectory(args);
+            var shaderCheck = manager.inspectShader(shaderPath);
+            var shaderRow = row("shader-toolchain", "Prebuilt shader toolchain", List.of("26.3"), shaderCheck.state(), 0, "",
+                    shaderPath == null ? manager.toolDestination("shader-toolchain") : shaderPath,
+                    Json.string(shader, "manifestSha256"), false, "");
+            if (shaderCheck.state().equals("missing-offline")) {
+                shaderRow.put("hint", SHADER_RELEASE_HINT);
+            }
+            shaderRow.put("expectedFiles", List.copyOf(shaderCheck.pins().keySet()));
+            shaderRow.put("differingFiles", shaderCheck.differingFiles());
+            rows.add(shaderRow);
+            if (shader.containsKey("sdk")) {
+                var sdk = Json.object(shader, "sdk");
+                var sdkRow = row("emscripten-sdk", "Emscripten SDK " + Json.string(sdk, "emscripten"), List.of(),
+                        "informational", 0, "", null, "", false, "");
+                sdkRow.put("sdkPlatforms", Json.array(sdk, "downloads").stream()
+                        .map(value -> Json.string(Json.asObject(value, "SDK download"), "platform")).toList());
+                rows.add(sdkRow);
+            }
+            boolean windows = isWindows();
+            Shell bash = Shell.find();
+            boolean bashReady = bash != null && bash.ready();
+            rows.add(system("bash", windows ? "Git for Windows Bash" : "Bash", ALL, bashReady,
+                    windows ? "https://git-scm.com/download/win" : "https://www.gnu.org/software/bash/",
+                    "Install Bash and ensure it is visible to the patcher."));
+            rows.add(system("node", "Node.js", ALL, bashReady && bash.probe("-c", "node --version"),
+                    "https://nodejs.org/en/download", "Install Node.js and put it on PATH."));
+            Python python = bashReady ? bash.resolvePython(sourceRoot) : null;
+            var pythonRow = system("python", "Python 3", ALL, python != null,
+                    "https://www.python.org/downloads/", PYTHON_HINT);
+            pythonRow.put("resolvedCommand", python == null ? "" : python.command());
+            pythonRow.put("destinationPath", python == null ? "" : python.executable());
+            rows.add(pythonRow);
+            rows.add(system("jq", "jq", ALL, bashReady && bash.probe("-c", "jq --version"),
+                    "https://jqlang.org/download/", "Install jq and put it on PATH."));
+            rows.add(system("shell-tools", "Shell utilities (tar, zip, gzip, coreutils)", ALL,
+                    bashReady && bash.probe("-c", "for tool in tar zip unzip gzip awk sed grep find sort tr cut head tail cmp mkdir cp rm mv sha256sum realpath; do command -v \"$tool\" >/dev/null || exit 1; done")
+                            && (host.isEmpty() || windows || bash.probe("-c", "command -v xz && command -v dpkg-deb")),
+                    windows ? "https://git-scm.com/download/win" : "https://www.gnu.org/software/coreutils/",
+                    "Install the shell utilities required by the release scripts, including zip. Linux host tools also need xz and dpkg-deb."));
+            rows.addAll(kernelStatus(manager, sourceRoot, args, bashReady ? bash : null));
+            return rows;
+        }
+
+        private static List<Map<String, Object>> mavenStatus(ToolchainManager manager) {
+            var entries = manager.lockedMavenArtifacts();
+            long total = 0;
+            int checked = 0;
+            boolean mismatch = false;
+            String firstFailed = null;
+            var hosts = new LinkedHashSet<String>();
+            for (var entry : entries) {
+                total += entry.artifact().bytes();
+                String host = URI.create(entry.artifact().url()).getHost();
+                if (host != null) hosts.add(host);
+                String state = manager.mavenFileState(entry);
+                if (state.equals("present")) {
+                    checked++;
+                } else {
+                    if (firstFailed == null) firstFailed = entry.path().toString().replace('\\', '/');
+                    mismatch |= state.equals("hash-mismatch");
+                }
+            }
+            String state = firstFailed == null ? "present" : mismatch ? "hash-mismatch" : checked == 0 ? "missing" : "partial";
+            var rows = new ArrayList<Map<String, Object>>();
+            for (String profile : manager.mavenProfiles()) {
+                var row = row("maven-repository", "Offline Maven repository", List.of(profile), state, total, "",
+                        manager.workRoot.resolve("maven-repository"), "", true, "");
+                row.put("sourceHost", String.join(", ", hosts));
+                row.put("checkedFiles", checked);
+                row.put("totalFiles", entries.size());
+                if (firstFailed != null) row.put("firstFailedPath", firstFailed);
+                row.put("totalBytes", total);
+                rows.add(row);
+            }
+            return rows;
+        }
+
+        static List<Map<String, Object>> kernelStatus(ToolchainManager manager, Path sourceRoot, Args args, Shell bash) {
+            var kernel = Json.object(Json.object(manager.lock, "wasm"), "kernel");
+            String rust = Json.string(kernel, "rustc");
+            String cargo = Json.string(kernel, "cargo");
+            List<String> required = args.strictKernel() ? ALL : List.of();
+            String nativeDir = sourceRoot.resolve("port/native").toString();
+            boolean rustReady = bash != null && bash.probe("-c", "cd \"$1\" && rustc --version | grep -Fq \"rustc $2 \""
+                    + " && cargo --version | grep -Fq \"cargo $3 \"", "tools", nativeDir, rust, cargo);
+            boolean targetReady = rustReady && bash.probe("-c", "cd \"$1\" && rustup target list --installed | grep -qx wasm32-unknown-unknown",
+                    "tools", nativeDir);
+            boolean cacheReady = rustReady && bash.probe("-c", "cd \"$1\" && cargo metadata --offline --locked --filter-platform wasm32-unknown-unknown --format-version 1",
+                    "tools", nativeDir);
+            var rows = List.of(
+                    system("rust-cargo", "Rust " + rust + " / Cargo " + cargo, required, rustReady,
+                            "https://rustup.rs/", "Install the lock-pinned Rust and Cargo versions."),
+                    system("wasm32-target", "wasm32-unknown-unknown", required, targetReady,
+                            "https://rustup.rs/", "Install wasm32-unknown-unknown for the pinned Rust toolchain."),
+                    system("cargo-cache", "Offline Cargo dependencies", required, cacheReady,
+                            "https://doc.rust-lang.org/cargo/commands/cargo-fetch.html",
+                            "Populate the locked Cargo cache separately to enable Wasm kernels and translation."));
+            if (args.strictKernel()) rows.forEach(row -> row.put("requiredReason", "required-strict-kernel"));
+            return rows;
+        }
+
+        static boolean isWindows() {
+            return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+        }
+
+        static Path windowsGitBash() {
+            var roots = new LinkedHashSet<Path>();
+            for (String key : List.of("HKCU\\SOFTWARE\\GitForWindows", "HKLM\\SOFTWARE\\GitForWindows",
+                    "HKLM\\SOFTWARE\\WOW6432Node\\GitForWindows")) {
+                String root = registryInstallPath(key);
+                if (root != null) roots.add(Paths.get(root));
+            }
+            for (String variable : List.of("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)")) {
+                String value = System.getenv(variable);
+                if (value != null && !value.isBlank()) roots.add(Paths.get(value, "Git"));
+            }
+            String localAppData = System.getenv("LOCALAPPDATA");
+            if (localAppData != null && !localAppData.isBlank()) {
+                roots.add(Paths.get(localAppData, "Programs", "Git"));
+            }
+            return roots.stream().map(root -> root.resolve("bin/bash.exe"))
+                    .filter(Files::isRegularFile).findFirst().orElse(null);
+        }
+
+        private static String registryInstallPath(String key) {
+            Process process = null;
+            try {
+                process = new ProcessBuilder("reg.exe", "query", key, "/v", "InstallPath")
+                        .redirectErrorStream(true).start();
+                if (!process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) || process.exitValue() != 0) return null;
+                String output;
+                try (InputStream stream = process.getInputStream()) {
+                    byte[] bytes = stream.readAllBytes();
+                    output = new String(bytes, StandardCharsets.UTF_8);
+                    if (output.indexOf('\uFFFD') >= 0) output = new String(bytes, Charset.forName("GBK"));
+                }
+                for (String line : output.split("\\R")) {
+                    if (line.contains("InstallPath") && line.contains("REG_SZ")) {
+                        return line.substring(line.indexOf("REG_SZ") + "REG_SZ".length()).trim();
+                    }
+                }
+            } catch (IOException error) {
+                return null;
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                return null;
+            } finally {
+                if (process != null && process.isAlive()) process.destroyForcibly();
+            }
+            return null;
+        }
+
+        private static String repositoryIssue(Path repository, String version) {
+            // This list is supplied with a release-qualified seed. Direct JARs alone do not establish Maven readiness.
+            Path inventory = repository.resolve(MAVEN_INVENTORY);
+            if (!Files.isRegularFile(inventory)) return "Supply a release-qualified offline Maven repository with " + MAVEN_INVENTORY;
+            try {
+                var data = Json.asObject(Json.parse(readString(inventory)), "offline Maven inventory");
+                if (Json.integer(data, "schema") != 1) return "Unsupported offline Maven inventory schema";
+                var entries = Json.object(data, "profiles");
+                if (!entries.containsKey(version)) return "The offline Maven inventory does not cover " + version;
+                var files = Json.object(entries, version);
+                var actualFiles = new LinkedHashSet<String>();
+                try (var walk = Files.walk(repository)) {
+                    walk.filter(Files::isRegularFile).map(repository::relativize)
+                            .map(Path::toString).filter(name -> name.endsWith(".pom") || name.endsWith(".jar"))
+                            .map(name -> name.replace('\\', '/')).forEach(actualFiles::add);
+                } catch (IOException error) {
+                    return "Could not inspect the offline Maven repository: " + error.getMessage();
+                }
+                if (!actualFiles.equals(files.keySet())) {
+                    return "The offline Maven inventory does not cover every JAR and POM in the repository";
+                }
+                if (files.keySet().stream().noneMatch(name -> name.endsWith(".pom"))) return "The offline Maven inventory contains no POM files";
+                for (var file : files.entrySet()) {
+                    String hash = String.valueOf(file.getValue());
+                    if (!hash.matches("[0-9a-f]{64}")) return "Invalid hash in the offline Maven inventory";
+                    ToolchainManager.verifyFile("offline Maven dependency", repository.resolve(Safe.relative(file.getKey())), hash);
+                }
+                return null;
+            } catch (RuntimeException error) {
+                return error.getMessage();
+            }
+        }
+
+        private static boolean runtimeJdk(int feature) {
+            return Runtime.version().feature() >= feature && Files.isRegularFile(ToolchainManager.jdkExecutable(
+                    Path.of(System.getProperty("java.home")), "javac"));
+        }
+
+        static String fileState(Path path, ToolchainManager.Artifact artifact) {
+            if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return "missing";
+            try {
+                ToolchainManager.verifyFile(artifact.name(), path, artifact.sha256());
+                ToolchainManager.verifySize(artifact, path);
+                return "present";
+            } catch (RuntimeException error) {
+                return "hash-mismatch";
+            }
+        }
+
+        private static Map<String, Object> system(String id, String name, List<String> versions, boolean present,
+                                                   String url, String hint) {
+            return row(id, name, versions, present ? "present" : "missing", 0, url, null, "", false, present ? "" : hint);
+        }
+
+        private static Map<String, Object> row(String id, String name, List<String> versions, String state,
+                                                long bytes, String url, Path path, String sha256, boolean installable,
+                                                String hint) {
+            var row = new LinkedHashMap<String, Object>();
+            row.put("schema", SCHEMA);
+            row.put("id", id);
+            row.put("displayName", name);
+            row.put("requiredFor", versions);
+            row.put("required", !versions.isEmpty());
+            row.put("requiredReason", versions.isEmpty() ? "optional" : "required-default");
+            row.put("state", state);
+            row.put("bytes", Math.max(0, bytes));
+            String host = URI.create(url).getHost();
+            row.put("sourceHost", host == null ? "" : host);
+            row.put("sourceUrl", url);
+            row.put("destinationPath", path == null ? "" : path.toString());
+            row.put("expectedSha256", sha256);
+            row.put("installable", installable);
+            row.put("hint", hint);
+            return row;
+        }
+
+        static void progress(String id, String step, long bytes, long total, String error) {
+            var row = new LinkedHashMap<String, Object>();
+            row.put("schema", PROGRESS_SCHEMA);
+            row.put("id", id);
+            row.put("step", step);
+            row.put("pct", step.equals("complete") ? 100 : total == 0 ? 0 : Math.min(100, bytes * 100 / total));
+            row.put("bytes", bytes);
+            row.put("totalBytes", total);
+            row.put("error", error);
+            System.out.println(Json.compact(row));
+        }
+
+        static void errorProgress(String error) {
+            progress("", "error", 0, 0, error);
+        }
+
+        private static String runProbe(ProcessBuilder builder, boolean capture) {
+            Process child = null;
+            try {
+                builder.redirectError(ProcessBuilder.Redirect.DISCARD);
+                if (!capture) builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+                child = builder.start();
+                child.getOutputStream().close();
+                if (!child.waitFor(8, java.util.concurrent.TimeUnit.SECONDS) || child.exitValue() != 0) return null;
+                return capture ? new String(child.getInputStream().readAllBytes(), StandardCharsets.UTF_8) : "";
+            } catch (IOException error) {
+                return null;
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                return null;
+            } finally {
+                if (child != null && child.isAlive()) {
+                    child.descendants().forEach(ProcessHandle::destroyForcibly);
+                    child.destroyForcibly();
+                }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- doctor
 
     static final class Doctor {
         static int run(Args args) {
+            if (args.flags.contains("verify-files")) {
+                if (!args.flags.contains("json")) {
+                    throw new PatcherException("doctor --verify-files requires --json");
+                }
+                return OfficialFileVerification.run(args);
+            }
             int problems = 0;
             int java = Runtime.version().feature();
             System.out.println("Java:      " + Runtime.version() + " (" + System.getProperty("java.vendor") + ")");
@@ -259,6 +809,210 @@ public final class GaiusPatcher {
         }
     }
 
+    /** A read-only check of the launcher installation, independent of terms and staged copies. */
+    static final class OfficialFileVerification {
+        static final String SCHEMA = "gaius-patcher-verify-v1";
+        static final int MAX_FAILURE_DETAILS = 1024;
+
+        static int run(Args args) {
+            Group client = new Group("client");
+            Group libraries = new Group("libraries");
+            Group index = new Group("asset-index");
+            Group objects = new Group("asset-objects");
+            List<Group> groups = List.of(client, libraries, index, objects);
+            if (args.positional.size() != 1) {
+                System.err.println("usage: doctor <version> --verify-files --json [--minecraft-dir <dir>]");
+                return 2;
+            }
+
+            Path profiles;
+            VersionProfile profile;
+            Path minecraftDir;
+            Path work;
+            try {
+                profiles = Locations.profilesDir(args);
+                profile = VersionProfile.load(profiles, args.positional.get(0));
+                minecraftDir = Locations.minecraftDir(args);
+                work = Locations.workDir(args, profiles, profile);
+            } catch (PatcherException | UncheckedIOException | InvalidPathException error) {
+                return blocked(groups, "profiles", "invalid-profile-or-directory");
+            }
+            String metadataPath = relativePath(minecraftDir, Sources.versionMetadataPath(minecraftDir, profile));
+            Map<String, Object> metadata;
+            try {
+                metadata = new Sources(minecraftDir, profile.id, true).versionMetadata(profile);
+            } catch (PatcherException | UncheckedIOException error) {
+                return blocked(groups, metadataPath, "version-metadata-invalid");
+            }
+
+            client.start(profile.needsMappings() ? 2 : 1);
+            client.checkLauncherFile(Fetch.clientJob(profile, minecraftDir, work), minecraftDir);
+            if (profile.needsMappings()) {
+                try {
+                    Job job = Fetch.mappingsJob(args, profile, metadata, work);
+                    // The launcher does not install mappings. Use the same two local sources as Build.
+                    FileCheck result = job.check(job.target);
+                    if (!result.ok() && !job.localCandidates.isEmpty()) {
+                        FileCheck candidate = job.check(job.localCandidates.get(0));
+                        if (candidate.ok() || !"missing".equals(candidate.reason) || "missing".equals(result.reason)) {
+                            result = candidate;
+                        }
+                    }
+                    client.checked("client-mappings.txt", job.sha1, result);
+                } catch (PatcherException | InvalidPathException error) {
+                    client.fail(metadataPath, null, null, "mappings-metadata-invalid");
+                }
+            }
+            client.finish();
+
+            try {
+                Fetch.LibraryJobs plan = Fetch.libraryJobs(metadata, minecraftDir, work.resolve("libraries"));
+                List<Job> installed = new ArrayList<>(plan.required);
+                for (Job job : plan.otherPlatforms) {
+                    if (!Files.notExists(job.localCandidates.get(0))) {
+                        installed.add(job);
+                    }
+                }
+                libraries.scan(installed, minecraftDir);
+            } catch (PatcherException | InvalidPathException error) {
+                libraries.fail(metadataPath, null, null, "libraries-metadata-invalid");
+            }
+            libraries.finish();
+
+            String indexPath = "assets/indexes/" + profile.assetIndexId + ".json";
+            Map<String, Object> indexObjects = null;
+            try {
+                Job job = Fetch.assetIndexJob(profile, metadata, minecraftDir, work.resolve("assets"), false);
+                index.start(1);
+                Path file = job.localCandidates.get(0);
+                FileCheck result = job.check(file);
+                index.checked(indexPath, job.sha1, result);
+                if (result.ok()) {
+                    // Confirm the bytes being parsed still match if the launcher replaced the file.
+                    byte[] bytes = Files.readAllBytes(file);
+                    FileCheck parsed = job.compareSha1(Hashes.sha1(bytes));
+                    if (parsed.ok()) {
+                        indexObjects = Fetch.assetIndexObjects(new String(bytes, StandardCharsets.UTF_8));
+                    } else {
+                        index.fail(indexPath, job.sha1, parsed.actual, parsed.reason);
+                    }
+                }
+            } catch (IOException error) {
+                index.fail(indexPath, null, null, "unreadable");
+            } catch (PatcherException | InvalidPathException error) {
+                index.fail(indexPath, null, null,
+                        index.checked == 0 ? "asset-index-metadata-invalid" : "asset-index-invalid");
+            }
+            index.finish();
+
+            if (indexObjects == null) {
+                objects.fail(indexPath, null, null, "prerequisite-failed");
+            } else {
+                try {
+                    List<String> hashes = new ArrayList<>(indexObjects.size());
+                    for (Map.Entry<String, Object> entry : indexObjects.entrySet()) {
+                        hashes.add(Json.string(Json.asObject(entry.getValue(), entry.getKey()), "hash"));
+                    }
+                    objects.scan(Fetch.assetObjectJobs(hashes, minecraftDir, work.resolve("assets/objects")), minecraftDir);
+                } catch (PatcherException error) {
+                    objects.fail(indexPath, null, null, "asset-objects-metadata-invalid");
+                }
+            }
+            objects.finish();
+            return groups.stream().allMatch(group -> group.failed.isEmpty()) ? 0 : 1;
+        }
+
+        private static int blocked(List<Group> groups, String path, String reason) {
+            for (Group group : groups) {
+                group.fail(path, null, null, reason);
+                group.finish();
+            }
+            return 1;
+        }
+
+        private static String relativePath(Path root, Path file) {
+            return root.relativize(file).toString().replace(File.separatorChar, '/');
+        }
+
+        static final class Group {
+            final String id;
+            final List<Map<String, Object>> failed = new ArrayList<>();
+            int failureCount;
+            int checked;
+            int total;
+            long lastProgress;
+
+            Group(String id) {
+                this.id = id;
+            }
+
+            void start(int count) {
+                total = count;
+                progress();
+            }
+
+            void scan(List<Job> jobs, Path minecraftDir) {
+                start(jobs.size());
+                for (Job job : jobs) {
+                    checkLauncherFile(job, minecraftDir);
+                }
+            }
+
+            void checkLauncherFile(Job job, Path minecraftDir) {
+                Path path = job.localCandidates.get(0);
+                checked(relativePath(minecraftDir, path), job.sha1, job.check(path));
+            }
+
+            void checked(String path, String sha1, FileCheck result) {
+                checked++;
+                if (!result.ok()) {
+                    fail(path, sha1, result.actual, result.reason);
+                }
+                if (checked < total && System.nanoTime() - lastProgress >= 100_000_000L) {
+                    progress();
+                }
+            }
+
+            void fail(String path, String expected, String actual, String reason) {
+                if (++failureCount > MAX_FAILURE_DETAILS) {
+                    return;
+                }
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("path", path);
+                item.put("expected", expected);
+                item.put("actual", actual);
+                item.put("reason", reason);
+                failed.add(item);
+            }
+
+            void progress() {
+                lastProgress = System.nanoTime();
+                emit("progress");
+            }
+
+            void finish() {
+                emit("group");
+            }
+
+            private void emit(String event) {
+                Map<String, Object> record = new LinkedHashMap<>();
+                record.put("schema", SCHEMA);
+                record.put("event", event);
+                record.put("group", id);
+                record.put("checked", checked);
+                record.put("total", total);
+                if ("group".equals(event)) {
+                    record.put("failed", failed);
+                    if (failureCount > failed.size()) {
+                        record.put("failureCount", failureCount);
+                    }
+                }
+                System.out.writeBytes((Json.compact(record) + "\n").getBytes(StandardCharsets.UTF_8));
+                System.out.flush();
+            }
+        }
+    }
+
     // ----------------------------------------------------------------- fetch
 
     /**
@@ -268,10 +1022,13 @@ public final class GaiusPatcher {
      */
     static final class Fetch {
         static int run(Args args) {
-            return run(args, true);
+            collect(args, true);
+            return 0;
         }
 
-        static int run(Args args, boolean provisionTools) {
+        record Result(Path work, List<Path> files) {}
+
+        static Result collect(Args args, boolean provisionTools) {
             if (args.positional.isEmpty()) {
                 throw new PatcherException("usage: fetch <version>");
             }
@@ -295,53 +1052,36 @@ public final class GaiusPatcher {
                     + (Files.isDirectory(minecraftDir) ? "" : " (not found)"));
 
             Map<String, Object> metadata = sources.versionMetadata(profile);
-            writeString(work.resolve("version.json"), Json.write(metadata));
-            Map<String, Object> downloads = Json.object(metadata, "downloads");
-
-            Map<String, Object> client = Json.object(downloads, "client");
-            requireEqual("client jar SHA-1 in the version metadata", profile.clientSha1, Json.string(client, "sha1"));
-            Path clientJar = work.resolve("client-original.jar");
-            sources.obtain(Job.local("the client jar",
-                    minecraftDir.resolve("versions").resolve(profile.id).resolve(profile.id + ".jar"),
-                    profile.clientSha1, clientJar));
+            Path versionMetadata = work.resolve("version.json");
+            writeString(versionMetadata, Json.write(metadata));
+            Job client = clientJob(profile, minecraftDir, work);
+            sources.obtain(client);
+            List<Path> stagedFiles = new ArrayList<>(List.of(versionMetadata, client.target));
 
             if (profile.needsMappings()) {
-                Map<String, Object> mappings = Json.object(downloads, "client_mappings");
-                String sha1 = Json.string(mappings, "sha1");
-                if (profile.clientMappingsSha1 != null) {
-                    requireEqual("client mappings SHA-1", profile.clientMappingsSha1, sha1);
-                }
-                List<Path> candidates = args.options.containsKey("mappings")
-                        ? List.of(Paths.get(args.options.get("mappings")).toAbsolutePath())
-                        : List.of();
-                sources.obtain(new Job("the client mappings", candidates, Json.string(mappings, "url"), sha1,
-                        work.resolve("client-mappings.txt")));
+                Job mappings = mappingsJob(args, profile, metadata, work);
+                sources.obtain(mappings);
+                stagedFiles.add(mappings.target);
             }
 
             List<Path> libraryJars = fetchLibraries(sources, metadata, minecraftDir, work.resolve("libraries"));
+            stagedFiles.addAll(libraryJars);
             writeString(work.resolve("classpath.txt"), Classpath.join(libraryJars) + "\n");
-            extractClientVersion(clientJar, work.resolve("client-version.json"));
+            Path clientVersion = work.resolve("client-version.json");
+            extractClientVersion(client.target, clientVersion);
+            stagedFiles.add(clientVersion);
 
             Path assets = work.resolve("assets");
-            Map<String, Object> indexInfo = Json.object(metadata, "assetIndex");
-            String indexId = Json.string(indexInfo, "id");
-            String indexSha1 = Json.string(indexInfo, "sha1");
-            if (!indexId.equals(profile.assetIndexId)) {
-                throw new PatcherException("asset index " + indexId + " is not the profile's " + profile.assetIndexId
-                        + "; this patcher does not support this game build");
+            Job index = assetIndexJob(profile, metadata, minecraftDir, assets, args.flags.contains("allow-new-asset-index"));
+            sources.obtain(index);
+            stagedFiles.add(index.target);
+            Map<String, Object> objects = assetIndexObjects(readString(index.target));
+            Map<String, String> wanted = AssetSelection.load(profiles).select(objects);
+            List<Job> assetJobs = assetObjectJobs(wanted.values(), minecraftDir, assets.resolve("objects"));
+            sources.obtainAll(assetJobs);
+            for (Job job : assetJobs) {
+                stagedFiles.add(job.target);
             }
-            if (!profile.acceptsAssetIndex(indexSha1) && !args.flags.contains("allow-new-asset-index")) {
-                throw new PatcherException("Mojang published a new asset index (" + indexSha1 + ") that this patcher"
-                        + " has not been checked against. Update the patcher, or pass --allow-new-asset-index.");
-            }
-            Path index = assets.resolve("indexes").resolve(indexId + ".json");
-            sources.obtain(Job.local("the asset index " + indexId,
-                    minecraftDir.resolve("assets").resolve("indexes").resolve(indexId + ".json"), indexSha1, index));
-
-            AssetSelection selection = AssetSelection.load(profiles);
-            Map<String, Object> indexJson = Json.asObject(Json.parse(readString(index)), index.toString());
-            Map<String, String> wanted = selection.select(Json.object(indexJson, "objects"));
-            fetchAssetObjects(sources, wanted, minecraftDir, assets.resolve("objects"));
 
             Map<String, Object> manifest = new LinkedHashMap<>();
             manifest.put("tool", "gaius-patcher " + TOOL_VERSION);
@@ -350,26 +1090,70 @@ public final class GaiusPatcher {
             manifest.put("profile", profile.id);
             manifest.put("fetchedAt", fetchedAt(args));
             manifest.put("clientSha1", profile.clientSha1);
-            manifest.put("assetIndex", indexId);
-            manifest.put("assetIndexSha1", indexSha1);
+            manifest.put("assetIndex", profile.assetIndexId);
+            manifest.put("assetIndexSha1", index.sha1);
             manifest.put("libraries", libraryJars.size());
             manifest.put("assetObjects", wanted.size());
             manifest.put("fromLocalInstallation", sources.localCount.get());
             manifest.put("downloaded", sources.downloadCount.get());
-            writeString(work.resolve("fetch-manifest.json"), Json.write(manifest));
+            Path fetchManifest = work.resolve("fetch-manifest.json");
+            writeString(fetchManifest, Json.write(manifest));
+            stagedFiles.add(fetchManifest);
 
             System.out.println();
             System.out.println("Verified " + profile.id + ": client jar, " + libraryJars.size() + " libraries, "
                     + wanted.size() + " asset objects (" + sources.localCount.get() + " from the local installation, "
                     + sources.downloadCount.get() + " downloaded from Mojang).");
-            return 0;
+            return new Result(work, List.copyOf(stagedFiles));
         }
 
         static String fetchedAt(Args args) {
             return args.flags.contains("reproducible") ? Instant.EPOCH.toString() : Instant.now().toString();
         }
 
-        static List<Path> fetchLibraries(Sources sources, Map<String, Object> metadata, Path minecraftDir, Path out) {
+        static Job clientJob(VersionProfile profile, Path minecraftDir, Path work) {
+            return Job.local("the client jar",
+                    minecraftDir.resolve("versions").resolve(profile.id).resolve(profile.id + ".jar"),
+                    profile.clientSha1, work.resolve("client-original.jar"));
+        }
+
+        static Job mappingsJob(Args args, VersionProfile profile, Map<String, Object> metadata, Path work) {
+            Map<String, Object> mappings = Json.object(Json.object(metadata, "downloads"), "client_mappings");
+            String sha1 = Json.string(mappings, "sha1");
+            if (profile.clientMappingsSha1 != null) {
+                requireEqual("client mappings SHA-1", profile.clientMappingsSha1, sha1);
+            }
+            List<Path> candidates = args.options.containsKey("mappings")
+                    ? List.of(Paths.get(args.options.get("mappings")).toAbsolutePath()) : List.of();
+            return new Job("the client mappings", candidates, Json.string(mappings, "url"), sha1,
+                    work.resolve("client-mappings.txt"));
+        }
+
+        static Job assetIndexJob(VersionProfile profile, Map<String, Object> metadata, Path minecraftDir,
+                                 Path assets, boolean allowNewAssetIndex) {
+            Map<String, Object> indexInfo = Json.object(metadata, "assetIndex");
+            String indexId = Json.string(indexInfo, "id");
+            String indexSha1 = Json.string(indexInfo, "sha1");
+            if (!indexId.equals(profile.assetIndexId)) {
+                throw new PatcherException("asset index " + indexId + " is not the profile's " + profile.assetIndexId
+                        + "; this patcher does not support this game build");
+            }
+            if (!profile.acceptsAssetIndex(indexSha1) && !allowNewAssetIndex) {
+                throw new PatcherException("Mojang published a new asset index (" + indexSha1 + ") that this patcher"
+                        + " has not been checked against. Update the patcher, or pass --allow-new-asset-index.");
+            }
+            Path relative = Path.of("indexes").resolve(Safe.relative(indexId + ".json"));
+            return Job.local("the asset index " + indexId, minecraftDir.resolve("assets").resolve(relative),
+                    indexSha1, assets.resolve(relative));
+        }
+
+        static Map<String, Object> assetIndexObjects(String index) {
+            return Json.object(Json.asObject(Json.parse(index), "asset index"), "objects");
+        }
+
+        record LibraryJobs(List<Job> required, List<Job> otherPlatforms) {}
+
+        static LibraryJobs libraryJobs(Map<String, Object> metadata, Path minecraftDir, Path out) {
             List<Object> libraries = Json.array(metadata, "libraries");
             List<Job> jobs = new ArrayList<>();
             List<Job> otherPlatforms = new ArrayList<>();
@@ -398,11 +1182,17 @@ public final class GaiusPatcher {
                     otherPlatforms.add(job);
                 }
             }
+            return new LibraryJobs(jobs, otherPlatforms);
+        }
+
+        static List<Path> fetchLibraries(Sources sources, Map<String, Object> metadata, Path minecraftDir, Path out) {
+            LibraryJobs plan = libraryJobs(metadata, minecraftDir, out);
+            List<Job> jobs = plan.required;
             sources.obtainAll(jobs);
             // The launcher only installs the libraries of the platform it runs on. Libraries for
             // other platforms are native-only jars; copy them when present so the classpath matches
             // a build on that platform, and skip them otherwise.
-            for (Job job : otherPlatforms) {
+            for (Job job : plan.otherPlatforms) {
                 if (sources.tryLocal(job)) {
                     jobs.add(job);
                 }
@@ -417,10 +1207,9 @@ public final class GaiusPatcher {
             return jars;
         }
 
-        static void fetchAssetObjects(Sources sources, Map<String, String> wanted, Path minecraftDir, Path out) {
+        static List<Job> assetObjectJobs(Collection<String> hashes, Path minecraftDir, Path out) {
             List<Job> jobs = new ArrayList<>();
-            Set<String> hashes = new LinkedHashSet<>(wanted.values());
-            for (String hash : hashes) {
+            for (String hash : new LinkedHashSet<>(hashes)) {
                 if (!hash.matches("[0-9a-f]{40}")) {
                     throw new PatcherException("asset index has a malformed hash: " + hash);
                 }
@@ -428,7 +1217,7 @@ public final class GaiusPatcher {
                 jobs.add(Job.local("asset object " + hash,
                         minecraftDir.resolve("assets").resolve("objects").resolve(relative), hash, out.resolve(relative)));
             }
-            sources.obtainAll(jobs);
+            return jobs;
         }
 
         static void extractClientVersion(Path clientJar, Path out) {
@@ -454,8 +1243,37 @@ public final class GaiusPatcher {
      * the one exception, the 1.21.11 mappings, which the launcher never stores.
      */
     record Job(String label, List<Path> localCandidates, String url, String sha1, Path target) {
+        Job {
+            if (!sha1.matches("[0-9a-f]{40}")) {
+                throw new PatcherException("malformed SHA-1 for " + label);
+            }
+        }
+
         static Job local(String label, Path candidate, String sha1, Path target) {
             return new Job(label, List.of(candidate), null, sha1, target);
+        }
+
+        FileCheck check(Path path) {
+            if (!Files.isRegularFile(path)) {
+                String reason = Files.notExists(path) ? "missing"
+                        : Files.exists(path) ? "not-regular-file" : "unreadable";
+                return new FileCheck(null, reason);
+            }
+            try {
+                return compareSha1(Hashes.sha1(path));
+            } catch (UncheckedIOException error) {
+                return new FileCheck(null, "unreadable");
+            }
+        }
+
+        FileCheck compareSha1(String actual) {
+            return new FileCheck(actual, sha1.equals(actual) ? null : "sha1-mismatch");
+        }
+    }
+
+    record FileCheck(String actual, String reason) {
+        boolean ok() {
+            return reason == null;
         }
     }
 
@@ -479,8 +1297,12 @@ public final class GaiusPatcher {
             this.offline = offline;
         }
 
+        static Path versionMetadataPath(Path minecraftDir, VersionProfile profile) {
+            return minecraftDir.resolve("versions").resolve(profile.id).resolve(profile.id + ".json");
+        }
+
         Map<String, Object> versionMetadata(VersionProfile profile) {
-            Path local = minecraftDir.resolve("versions").resolve(profile.id).resolve(profile.id + ".json");
+            Path local = versionMetadataPath(minecraftDir, profile);
             if (!Files.isRegularFile(local)) {
                 throw notInstalled("the version metadata " + local);
             }
@@ -533,15 +1355,28 @@ public final class GaiusPatcher {
         }
 
         boolean tryLocal(Job job) {
-            return resolveLocally(job);
+            for (Path candidate : job.localCandidates) {
+                if (!job.check(candidate).ok()) {
+                    continue;
+                }
+                createDirectories(job.target.getParent());
+                try {
+                    Files.copy(candidate, job.target, StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException error) {
+                    throw new UncheckedIOException(error);
+                }
+                localCount.incrementAndGet();
+                return true;
+            }
+            return false;
         }
 
         private boolean resolveLocally(Job job) {
-            if (Files.isRegularFile(job.target) && job.sha1.equals(Hashes.sha1(job.target))) {
+            if (job.check(job.target).ok()) {
                 return true;
             }
             for (Path candidate : job.localCandidates) {
-                if (Files.isRegularFile(candidate) && job.sha1.equals(Hashes.sha1(candidate))) {
+                if (job.check(candidate).ok()) {
                     createDirectories(job.target.getParent());
                     try {
                         Files.copy(candidate, job.target, StandardCopyOption.REPLACE_EXISTING);
@@ -567,11 +1402,14 @@ public final class GaiusPatcher {
                     if (response.statusCode() != 200) {
                         throw new IOException("HTTP " + response.statusCode() + " for " + job.url);
                     }
-                    String actual = Hashes.sha1(partial);
-                    if (!actual.equals(job.sha1)) {
+                    FileCheck result = job.check(partial);
+                    if (result.actual == null) {
+                        throw new IOException("could not read downloaded " + job.label + ": " + result.reason);
+                    }
+                    if (!result.ok()) {
                         Files.deleteIfExists(partial);
                         throw new PatcherException("SHA-1 mismatch for " + job.label + " from " + job.url
-                                + ": expected " + job.sha1 + ", got " + actual);
+                                + ": expected " + job.sha1 + ", got " + result.actual);
                     }
                     Files.move(partial, job.target, StandardCopyOption.REPLACE_EXISTING);
                     downloadCount.incrementAndGet();
@@ -841,37 +1679,119 @@ public final class GaiusPatcher {
     // ------------------------------------------------------------- toolchain
 
     static final class ToolchainManager {
-        record Artifact(String name, String file, String url, String sha256, long bytes) {}
+        record Artifact(String name, String file, String url, String sha256, long bytes, String redirectHost) {
+            Artifact(String name, String file, String url, String sha256, long bytes) {
+                this(name, file, url, sha256, bytes, "");
+            }
+        }
         record MavenArtifact(Path path, Artifact artifact) {}
-        record HostArchive(Path file, Path root, List<String> members) {}
-        record HostWasm(HostArchive binaryen, HostArchive llvm, List<Path> linuxRuntime,
-                        String binaryenVersion, String llvmVersion, String suffix) {
+        record HostPin(String id, String version, Artifact archive, Path root, List<String> members,
+                       List<Artifact> runtime) {
+            List<Artifact> artifacts() {
+                var items = new ArrayList<Artifact>();
+                items.add(archive);
+                items.addAll(runtime);
+                return items;
+            }
+
+            Path installPath(Path cache) {
+                String hashes = artifacts().stream().map(Artifact::sha256).collect(java.util.stream.Collectors.joining());
+                return cache.resolve("host-wasm").resolve(id + "-" + Hashes.sha256(hashes.getBytes(StandardCharsets.UTF_8)));
+            }
+        }
+
+        record HostArchive(HostPin pin, Path file, List<Path> runtime) {
             void stage(Path target) {
-                createDirectories(target);
-                for (HostArchive archive : List.of(binaryen, llvm)) {
-                    List<String> command = new ArrayList<>(List.of("tar", "-xf", archive.file().toString(),
-                            "-C", target.toString(), "--"));
-                    command.addAll(archive.members());
-                    runExtraction(command, archive.file());
+                if (Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
+                    verifyLayout(target);
+                    return;
                 }
-                Path runtime = target.resolve("runtime");
-                for (Path packageFile : linuxRuntime) {
-                    runExtraction(List.of("dpkg-deb", "-x", packageFile.toString(), runtime.toString()), packageFile);
+                createDirectories(target.getParent());
+                Path unpack = null;
+                try {
+                    unpack = Files.createTempDirectory(target.getParent(), ".unpack-");
+                    extractMembers(unpack);
+                    for (Path packageFile : runtime) {
+                        runExtraction(List.of("dpkg-deb", "-x", packageFile.toString(), unpack.resolve("runtime").toString()),
+                                packageFile);
+                    }
+                    verifyLayout(unpack);
+                    try {
+                        Files.move(unpack, target, StandardCopyOption.ATOMIC_MOVE);
+                    } catch (IOException concurrent) {
+                        if (!Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) throw concurrent;
+                        verifyLayout(target);
+                    }
+                } catch (IOException error) {
+                    throw new PatcherException("could not unpack " + file + ": " + error.getMessage());
+                } finally {
+                    if (unpack != null && Files.exists(unpack)) Build.deleteTree(unpack);
                 }
+            }
+
+            private void extractMembers(Path unpack) {
+                // Keep tar's traversal protections and extract only the exact locked entries.
+                if (Tools.isWindows()) {
+                    Tools.Shell bash = Tools.Shell.find();
+                    if (bash == null) throw new PatcherException("Git for Windows Bash is required to unpack " + file);
+                    var args = new ArrayList<>(List.of("-c", """
+                            archive=$(cygpath -u "$1") && destination=$(cygpath -u "$2") || exit 1
+                            shift 2
+                            exec tar --no-recursion --no-same-owner --no-same-permissions -xf "$archive" -C "$destination" -- "$@"
+                            """, "unpack", file.toString(), unpack.toString()));
+                    args.addAll(pin.members());
+                    runExtraction(bash.process(args.toArray(String[]::new)), file);
+                } else {
+                    var command = new ArrayList<>(List.of("tar", "--no-recursion", "--no-same-owner",
+                            "--no-same-permissions", "-xf", file.toString(), "-C", unpack.toString(), "--"));
+                    command.addAll(pin.members());
+                    runExtraction(command, file);
+                }
+            }
+
+            private void verifyLayout(Path directory) {
+                try (var files = Files.walk(directory)) {
+                    Path root = directory.toRealPath();
+                    for (Path path : files.toList()) {
+                        if ((!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)
+                                && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path))
+                                || !path.toRealPath().startsWith(root)) {
+                            throw new PatcherException("unsafe extracted tool path: " + path);
+                        }
+                    }
+                    for (String member : pin.members()) {
+                        Path path = directory.resolve(Safe.relative(member));
+                        if (!Files.isRegularFile(path) || !Files.isExecutable(path)) {
+                            throw new PatcherException("missing executable archive member: " + member + " in " + file);
+                        }
+                    }
+                    if (!runtime.isEmpty() && !Files.isDirectory(directory.resolve("runtime/usr/lib/x86_64-linux-gnu"))) {
+                        throw new PatcherException("missing LLVM Linux runtime libraries in " + directory);
+                    }
+                } catch (IOException error) {
+                    throw new PatcherException("invalid extracted tool layout at " + directory + ": " + error.getMessage());
+                }
+            }
+        }
+
+        record HostWasm(HostArchive binaryen, HostArchive llvm, String suffix) {
+            void stage(Path target) {
+                binaryen.stage(target.resolve("binaryen"));
+                llvm.stage(target.resolve("llvm"));
             }
 
             void configure(Path target, Map<String, String> environment) {
                 environment.put("GAIUS_CLANG", executable(target, llvm, "clang"));
                 environment.put("GAIUS_WASM_LD", executable(target, llvm, "wasm-ld"));
                 environment.put("GAIUS_WASM_OPT", executable(target, binaryen, "wasm-opt"));
-                environment.put("GAIUS_LLVM_VERSION", llvmVersion);
-                environment.put("GAIUS_WASM_OPT_VERSION", binaryenVersion);
-                environment.put("GAIUS_LLVM_LIBRARY_DIR", linuxRuntime.isEmpty() ? ""
-                        : target.resolve("runtime/usr/lib/x86_64-linux-gnu").toString());
+                environment.put("GAIUS_LLVM_VERSION", llvm.pin().version());
+                environment.put("GAIUS_WASM_OPT_VERSION", binaryen.pin().version());
+                environment.put("GAIUS_LLVM_LIBRARY_DIR", llvm.runtime().isEmpty() ? ""
+                        : target.resolve("llvm/runtime/usr/lib/x86_64-linux-gnu").toString());
             }
 
             private String executable(Path target, HostArchive archive, String name) {
-                Path path = target.resolve(archive.root()).resolve("bin").resolve(name + suffix);
+                Path path = target.resolve(archive.pin().id()).resolve(archive.pin().root()).resolve("bin").resolve(name + suffix);
                 if (!Files.isRegularFile(path) || !Files.isExecutable(path)) {
                     throw new PatcherException("missing executable " + name + " in pinned " + archive.file());
                 }
@@ -888,7 +1808,6 @@ public final class GaiusPatcher {
         final Path cache;
         final Path externalCache;
         final boolean offline;
-        private HttpClient downloadClient;
 
         ToolchainManager(Path lockFile, Args args, Path workRoot) {
             this.lockFile = lockFile;
@@ -943,6 +1862,13 @@ public final class GaiusPatcher {
 
             Artifact maven = artifact("Maven", Json.object(lock, "maven"));
             Artifact vineflower = artifact("Vineflower", vineflowerPin);
+            if (version.equals("1.21.11") && !lock.containsKey("mavenRepository") && lock.containsKey("remapper")) {
+                var remapper = Json.object(lock, "remapper");
+                if (!Json.string(remapper, "version").equals(Json.string(config, "autoRenamingToolVersion"))) {
+                    throw new PatcherException("toolchain.lock remapper version does not match port/config.json");
+                }
+                ensure(artifact("AutoRenamingTool", remapper));
+            }
             Path mavenArchive = ensure(maven);
             Path mavenHome = ensureMavenHome(maven, mavenArchive);
             Path vineflowerJar = args.options.containsKey("decompiler")
@@ -967,37 +1893,66 @@ public final class GaiusPatcher {
         }
 
         HostWasm prepareHostWasm() {
-            String platform = hostPlatformKey();
-            Map<String, Object> host = Json.object(Json.object(lock, "wasm"), "hostTools");
-            Map<String, Object> binaryen = Json.object(host, "binaryen");
-            Map<String, Object> llvm = Json.object(host, "llvm");
-            String binaryenVersion = Json.string(binaryen, "version");
-            String llvmVersion = Json.string(llvm, "version");
-            HostArchive optimizer = hostArchive("Binaryen " + binaryenVersion, binaryen, platform);
-            HostArchive compiler = hostArchive("LLVM " + llvmVersion, llvm, platform);
-            List<Path> runtime = new ArrayList<>();
-            if (platform.equals("linux-x64")) {
-                for (Object value : Json.array(host, "linuxRuntime")) {
-                    Map<String, Object> pin = Json.asObject(value, "LLVM Linux runtime package");
-                    runtime.add(ensure(artifact("LLVM Linux runtime " + Json.string(pin, "file"), pin)));
-                }
+            String platform = osArchKey();
+            if (platform.isEmpty()) {
+                throw new PatcherException("no pinned host toolchain for " + System.getProperty("os.name")
+                        + " / " + System.getProperty("os.arch") + "; use Linux x86-64 or Windows x86-64");
             }
-            return new HostWasm(optimizer, compiler, List.copyOf(runtime), binaryenVersion, llvmVersion,
+            return new HostWasm(resolveHostArchive(hostPin("binaryen", platform), this::ensure),
+                    resolveHostArchive(hostPin("llvm", platform), this::ensure),
                     platform.equals("windows-x64") ? ".exe" : "");
         }
 
-        private HostArchive hostArchive(String name, Map<String, Object> tool, String platform) {
-            Map<String, Object> pin = Json.object(Json.object(tool, "distributions"), platform);
+        Map<String, Object> hostTools() {
+            var wasm = Json.object(lock, "wasm");
+            return wasm.containsKey("hostTools") ? Json.object(wasm, "hostTools") : Map.of();
+        }
+
+        HostPin hostPin(String id, String platform) {
+            var host = hostTools();
+            var tool = Json.object(host, id);
+            var pin = Json.object(Json.object(tool, "distributions"), platform);
+            String version = Json.string(tool, "version");
+            String name = (id.equals("llvm") ? "LLVM " : "Binaryen ") + version;
             Path root = Safe.relative(Json.string(pin, "root"));
+            if (root.getNameCount() != 1 || root.toString().equals(".")) {
+                throw new PatcherException(lockFile + ": invalid archive root for " + name);
+            }
             List<String> members = new ArrayList<>();
             for (Object member : Json.array(pin, "members")) {
-                if (!(member instanceof String relative)) {
+                if (!(member instanceof String relative) || !relative.matches("bin/[A-Za-z0-9_.+-]+")
+                        || relative.endsWith("/.")) {
                     throw new PatcherException(lockFile + ": invalid archive member for " + name);
                 }
                 members.add(root.resolve(Safe.relative(relative)).toString().replace('\\', '/'));
             }
             if (members.isEmpty()) throw new PatcherException(lockFile + ": no archive members for " + name);
-            return new HostArchive(ensure(artifact(name, pin)), root, List.copyOf(members));
+            var runtime = new ArrayList<Artifact>();
+            if (id.equals("llvm") && platform.equals("linux-x64")) {
+                for (Object value : Json.array(host, "linuxRuntime")) {
+                    Map<String, Object> item = Json.asObject(value, "LLVM Linux runtime package");
+                    runtime.add(artifact("LLVM Linux runtime " + Json.string(item, "file"), item));
+                }
+            }
+            return new HostPin(id, version, artifact(name, pin), root, List.copyOf(members), List.copyOf(runtime));
+        }
+
+        HostArchive resolveHostArchive(HostPin pin, java.util.function.Function<Artifact, Path> resolve) {
+            Path archive = resolve.apply(pin.archive());
+            return new HostArchive(pin, archive, pin.runtime().stream().map(resolve).toList());
+        }
+
+        Path hostArtifactLocation(Artifact artifact) {
+            Path local = cache.resolve(artifact.file());
+            if (Files.exists(local, LinkOption.NOFOLLOW_LINKS)) return local;
+            Path external = findArtifactSource(artifact.file());
+            return external == null ? local : external;
+        }
+
+        Path installHostArtifact(Artifact artifact, java.util.function.LongConsumer progress) {
+            Path source = findArtifactSource(artifact.file());
+            if (source != null && !Tools.fileState(source, artifact).equals("present")) source = null;
+            return ensureAt(artifact, cache.resolve(artifact.file()), true, progress, source, true);
         }
 
         void preflight(String version, Args args) {
@@ -1020,7 +1975,8 @@ public final class GaiusPatcher {
             }
             Map<String, Object> jdk = Json.object(lock, "jdk");
             int lockedFeature = Json.integer(jdk, "feature");
-            String key = hostPlatformKey();
+            String key = osArchKey();
+            if (key.isEmpty()) throw new PatcherException("no pinned JDK package for this platform; install a compatible JDK");
             Map<String, Object> distribution = Json.object(Json.object(jdk, "distributions"), key);
             Artifact artifact = artifact("JDK " + Json.string(jdk, "version"), distribution);
             Path archive = ensure(artifact);
@@ -1046,15 +2002,14 @@ public final class GaiusPatcher {
             }
         }
 
-        private String hostPlatformKey() {
+        private String osArchKey() {
             String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
             String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
             if (arch.equals("amd64") || arch.equals("x86_64")) {
                 if (os.contains("linux")) return "linux-x64";
                 if (os.contains("win")) return "windows-x64";
             }
-            throw new PatcherException("no pinned host toolchain for " + os + " / " + arch
-                    + "; use Linux x86-64 or Windows x86-64");
+            return "";
         }
 
         private static Path jdkExecutable(Path home, String name) {
@@ -1084,29 +2039,207 @@ public final class GaiusPatcher {
             if (!hash.matches("[0-9a-f]{64}")) {
                 throw new PatcherException(lockFile + ": invalid SHA-256 for " + name);
             }
-            return new Artifact(name, file, pin.containsKey("url") ? Json.string(pin, "url") : null, hash, bytes);
+            if (bytes <= 0) throw new PatcherException(lockFile + ": invalid byte count for " + name);
+            return new Artifact(name, file, pin.containsKey("url") ? Json.string(pin, "url") : "", hash, bytes,
+                    String.valueOf(pin.getOrDefault("redirectHost", "")));
+        }
+
+        Path toolDestination(String file) {
+            return (externalCache == null ? cache : externalCache).resolve(Safe.relative(file));
+        }
+
+        boolean isMavenArtifact(Artifact artifact) {
+            return artifact.file().contains("/");
+        }
+
+        Path artifactLocation(Artifact artifact) {
+            if (isMavenArtifact(artifact)) return mavenRepositoryForTools().resolve(Safe.relative(artifact.file()));
+            Path internal = cache.resolve(artifact.file());
+            if (Files.exists(internal, LinkOption.NOFOLLOW_LINKS)) return internal;
+            Path source = findArtifactSource(artifact.file());
+            return source == null ? toolDestination(artifact.file()) : source;
         }
 
         Path ensure(Artifact artifact) {
-            return ensure(artifact, () -> missingTool(artifact.name(), artifact.sha256(),
-                    cache.resolve(artifact.file())));
+            Path internal = cache.resolve(artifact.file());
+            if (Files.exists(internal, LinkOption.NOFOLLOW_LINKS)) {
+                verifyArtifact(artifact, internal);
+                return internal;
+            }
+            return ensureAt(artifact, internal, false, ignored -> {}, findArtifactSource(artifact.file()));
         }
 
-        private Path ensure(Artifact artifact, Supplier<PatcherException> missing) {
-            Path target = cache.resolve(artifact.file());
-            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+        Path ensure(Artifact artifact, boolean install, java.util.function.LongConsumer progress) {
+            return ensureAt(artifact, artifactLocation(artifact), install, progress);
+        }
+
+        private Path ensureAt(Artifact artifact, Path target, boolean install, java.util.function.LongConsumer progress) {
+            return ensureAt(artifact, target, install, progress, null);
+        }
+
+        private Path ensureAt(Artifact artifact, Path target, boolean install,
+                              java.util.function.LongConsumer progress, Path source) {
+            return ensureAt(artifact, target, install, progress, source, false);
+        }
+
+        private Path ensureAt(Artifact artifact, Path target, boolean install,
+                              java.util.function.LongConsumer progress, Path source, boolean repair) {
+            if ((offline || artifact.url().isBlank()) && source == null) {
+                if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                    throw missingTool(artifact.name(), artifact.sha256(), target);
+                }
                 verifyArtifact(artifact, target);
                 return target;
             }
-            Path source = findArtifactSource(artifact.file());
-            if (source != null) {
-                installArtifact(artifact, source, target);
-            } else if (offline || artifact.url() == null || artifact.url().isBlank()) {
-                throw missing.get();
-            } else {
-                installArtifact(artifact, null, target);
+            Path partial = target.resolveSibling(target.getFileName() + ".part");
+            Path repository = workRoot.resolve("maven-repository");
+            Path lock = target.startsWith(repository)
+                    ? cache.resolve(".maven-download-locks").resolve(repository.relativize(target) + ".download-lock")
+                    : target.resolveSibling(target.getFileName() + ".download-lock");
+            createDirectories(target.getParent());
+            createDirectories(lock.getParent());
+            try (var channel = java.nio.channels.FileChannel.open(lock, java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+                 var ignored = channel.lock()) {
+                boolean replace = false;
+                if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                    try {
+                        verifyArtifact(artifact, target);
+                        return target;
+                    } catch (PatcherException mismatch) {
+                        if ((repair || install && target.startsWith(repository))
+                                && Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+                            replace = true; // Keep the old file until its replacement is verified.
+                        } else {
+                            if (install && Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)
+                                && (target.equals(cache.resolve(artifact.file())) || target.equals(toolDestination(artifact.file()))
+                                    || isMavenArtifact(artifact) && target.startsWith(mavenInstallDestination()))) {
+                                Files.delete(target);
+                            }
+                            throw mismatch;
+                        }
+                    }
+                }
+                if (Files.exists(partial, LinkOption.NOFOLLOW_LINKS)
+                        && !Files.isRegularFile(partial, LinkOption.NOFOLLOW_LINKS)) {
+                    throw new PatcherException("invalid partial download path: " + partial);
+                }
+                if (source != null || artifact.url().startsWith("file:")) {
+                    Path local = source == null ? Paths.get(URI.create(artifact.url())) : source;
+                    verifyArtifact(artifact, local);
+                    Files.copy(local, partial, StandardCopyOption.REPLACE_EXISTING);
+                    progress.accept(Files.size(partial));
+                    return publishDownload(artifact, partial, target, replace);
+                }
+                if (artifact.bytes() > 0 && Files.isRegularFile(partial) && Files.size(partial) >= artifact.bytes()) {
+                    // A cancelled job may already have read the last byte.
+                    return publishDownload(artifact, partial, target, replace);
+                }
+                download(artifact, partial, progress);
+                return publishDownload(artifact, partial, target, replace);
+            } catch (IOException error) {
+                throw new PatcherException("could not download " + artifact.name() + ": " + error.getMessage());
             }
+        }
+
+        private Path publishDownload(Artifact artifact, Path partial, Path target, boolean replace) throws IOException {
+            try {
+                verifySize(artifact, partial);
+                verifyFile(artifact.name(), partial, artifact.sha256());
+            } catch (PatcherException error) {
+                Files.deleteIfExists(partial);
+                throw error;
+            }
+            if (replace) Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            else Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE);
             return target;
+        }
+
+        private void download(Artifact artifact, Path partial, java.util.function.LongConsumer progress) throws IOException {
+            long offset = Files.isRegularFile(partial) ? Files.size(partial) : 0;
+            URI origin = URI.create(artifact.url());
+            if (origin.getHost() == null || !(origin.getScheme().equals("https")
+                    || origin.getScheme().equals("http") && List.of("localhost", "127.0.0.1", "[::1]").contains(origin.getHost()))) {
+                throw new PatcherException("invalid pinned download URL for " + artifact.name());
+            }
+            URI uri = origin;
+            for (int redirects = 0; redirects <= 3; redirects++) {
+                var connection = (java.net.HttpURLConnection) uri.toURL().openConnection();
+                connection.setInstanceFollowRedirects(false);
+                connection.setConnectTimeout(20_000);
+                connection.setReadTimeout(30_000);
+                connection.setRequestProperty("Accept-Encoding", "identity");
+                if (offset > 0) connection.setRequestProperty("Range", "bytes=" + offset + "-");
+                try {
+                    int status = connection.getResponseCode();
+                    if (List.of(301, 302, 303, 307, 308).contains(status)) {
+                        String location = connection.getHeaderField("Location");
+                        URI next = location == null ? uri : uri.resolve(location);
+                        if (!"https".equals(next.getScheme()) || next.getUserInfo() != null
+                                || next.getPort() != -1
+                                || !(origin.getHost().equals(next.getHost()) || artifact.redirectHost().equals(next.getHost()))) {
+                            throw new PatcherException("unapproved redirect for " + artifact.name());
+                        }
+                        uri = next;
+                        continue;
+                    }
+                    boolean append = offset > 0 && status == 206;
+                    String range = connection.getHeaderField("Content-Range");
+                    if (status == 206 && (!append || !validRange(range, offset, artifact.bytes()))) {
+                        Files.deleteIfExists(partial);
+                        throw new PatcherException("invalid resume range for " + artifact.name());
+                    }
+                    if (status == 416 && offset > 0) {
+                        Files.deleteIfExists(partial);
+                        throw new PatcherException("invalid partial download for " + artifact.name() + "; retry the download");
+                    }
+                    if (status != 200 && status != 206) throw new PatcherException("HTTP " + status + " downloading " + artifact.name());
+                    long received = append ? offset : 0;
+                    if (received > 0) progress.accept(received);
+                    try (InputStream input = connection.getInputStream(); var output = Files.newOutputStream(partial,
+                            java.nio.file.StandardOpenOption.CREATE, LinkOption.NOFOLLOW_LINKS, append
+                            ? java.nio.file.StandardOpenOption.APPEND : java.nio.file.StandardOpenOption.TRUNCATE_EXISTING)) {
+                        byte[] buffer = new byte[64 * 1024];
+                        long lastUpdate = received;
+                        int count;
+                        while ((count = input.read(buffer)) != -1) {
+                            received += count;
+                            if (artifact.bytes() > 0 && received > artifact.bytes()) {
+                                throw new PatcherException("size mismatch for " + artifact.name() + ": more than " + artifact.bytes() + " bytes");
+                            }
+                            output.write(buffer, 0, count);
+                            if (received - lastUpdate >= 256 * 1024) {
+                                progress.accept(received);
+                                lastUpdate = received;
+                            }
+                        }
+                        progress.accept(received);
+                    } catch (PatcherException error) {
+                        Files.deleteIfExists(partial);
+                        throw error;
+                    }
+                    return;
+                } finally {
+                    connection.disconnect();
+                }
+            }
+            throw new PatcherException("too many redirects for " + artifact.name());
+        }
+
+        private static boolean validRange(String range, long offset, long size) {
+            if (range == null || !range.startsWith("bytes " + offset + "-")) return false;
+            return size <= 0 || range.endsWith("/" + size);
+        }
+
+        private static void verifySize(Artifact artifact, Path file) {
+            if (artifact.bytes() <= 0) return;
+            try {
+                long actual = Files.size(file);
+                if (actual != artifact.bytes()) throw new PatcherException("size mismatch for " + artifact.name()
+                        + ": expected " + artifact.bytes() + " bytes, got " + actual);
+            } catch (IOException error) {
+                throw new PatcherException("could not read size for " + artifact.name() + ": " + error.getMessage());
+            }
         }
 
         private Path findArtifactSource(String file) {
@@ -1121,12 +2254,23 @@ public final class GaiusPatcher {
             return candidates.stream().filter(Files::isRegularFile).findFirst().orElse(null);
         }
 
+        List<String> mavenProfiles() {
+            return Json.array(Json.object(lock, "mavenRepository"), "profiles").stream().map(value -> {
+                if (value instanceof String profile && !profile.isBlank()) return profile;
+                throw new PatcherException(lockFile + ": invalid Maven profile");
+            }).distinct().toList();
+        }
+
         List<MavenArtifact> lockedMavenArtifacts(String profile) {
             if (!lock.containsKey("mavenRepository")) return List.of();
-            Map<String, Object> repository = Json.object(lock, "mavenRepository");
-            if (!Json.array(repository, "profiles").contains(profile)) {
+            if (!mavenProfiles().contains(profile)) {
                 throw new PatcherException(lockFile + ": Maven dependencies are not locked for profile " + profile);
             }
+            return lockedMavenArtifacts();
+        }
+
+        List<MavenArtifact> lockedMavenArtifacts() {
+            Map<String, Object> repository = Json.object(lock, "mavenRepository");
             Map<Path, MavenArtifact> entries = new LinkedHashMap<>();
             for (Object value : Json.array(repository, "artifacts")) {
                 Map<String, Object> pin = Json.asObject(value, "Maven artifact");
@@ -1160,36 +2304,42 @@ public final class GaiusPatcher {
         }
 
         Path ensureMavenRepository(List<MavenArtifact> entries) {
-            Path repository = workRoot.resolve("maven-repository");
-            for (MavenArtifact entry : entries) {
-                Artifact artifact = entry.artifact();
-                Path target = repository.resolve(entry.path());
-                // The writable repository contains plain files. Use --toolchain-dir for a shared cache.
-                for (Path path = target; !path.equals(workRoot); path = path.getParent()) {
-                    if (Files.isSymbolicLink(path)) {
-                        throw new PatcherException("symbolic link in writable Maven repository: " + path);
-                    }
-                }
-                if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-                    verifyArtifact(artifact, target);
-                    continue;
-                }
-                Path source = null;
-                if (externalCache != null) {
-                    for (String name : List.of("maven-repository", "repository")) {
-                        Path candidate = externalCache.resolve(name).resolve(entry.path());
-                        if (Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
-                            source = candidate;
-                            break;
-                        }
-                    }
-                }
-                if (source == null && offline) {
-                    throw missingTool(artifact.name(), artifact.sha256(), target);
-                }
-                installArtifact(artifact, source, target);
+            for (MavenArtifact entry : entries) ensureMavenArtifact(entry, false, ignored -> {});
+            return workRoot.resolve("maven-repository");
+        }
+
+        String mavenFileState(MavenArtifact entry) {
+            Path target = workRoot.resolve("maven-repository").resolve(entry.path());
+            return mavenSymlink(target) == null ? Tools.fileState(target, entry.artifact()) : "hash-mismatch";
+        }
+
+        private Path mavenSymlink(Path target) {
+            // The writable repository contains plain files. Use --toolchain-dir for a shared cache.
+            for (Path path = target; !path.equals(workRoot); path = path.getParent()) {
+                if (Files.isSymbolicLink(path)) return path;
             }
-            return repository;
+            return null;
+        }
+
+        void ensureMavenArtifact(MavenArtifact entry, boolean install, java.util.function.LongConsumer progress) {
+            Path target = workRoot.resolve("maven-repository").resolve(entry.path());
+            Path symlink = mavenSymlink(target);
+            if (symlink != null) throw new PatcherException("symbolic link in writable Maven repository: " + symlink);
+            if (!install && Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                verifyArtifact(entry.artifact(), target);
+                return;
+            }
+            Path source = null;
+            if (externalCache != null) {
+                for (String name : List.of("maven-repository", "repository")) {
+                    Path candidate = externalCache.resolve(name).resolve(entry.path());
+                    if (!candidate.equals(target) && Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                        source = candidate;
+                        break;
+                    }
+                }
+            }
+            ensureAt(entry.artifact(), target, install, progress, source);
         }
 
         static void stageMavenRepository(Path repository, Path stage, List<MavenArtifact> entries) {
@@ -1202,140 +2352,54 @@ public final class GaiusPatcher {
 
         private static void verifyArtifact(Artifact artifact, Path path) {
             verifyFile(artifact.name(), path, artifact.sha256());
-            try {
-                long size = Files.size(path);
-                if (artifact.bytes() > 0 && size != artifact.bytes()) {
-                    throw new PatcherException("size mismatch for " + artifact.name() + " at " + path
-                            + ": expected " + artifact.bytes() + " bytes, got " + size);
-                }
-            } catch (IOException error) {
-                throw new PatcherException("could not check size of " + artifact.name() + ": " + error.getMessage());
-            }
+            verifySize(artifact, path);
         }
 
-        private Path findMavenRepository(List<Object> artifacts) {
-            List<Path> candidates = new ArrayList<>();
+        private Artifact mavenArtifact(Map<String, Object> item) {
+            String path = Json.string(item, "path");
+            Safe.relative(path);
+            String hash = Json.string(item, "sha256");
+            if (!hash.matches("[0-9a-f]{64}")) throw new PatcherException("invalid SHA-256 for " + path);
+            long bytes = ((Number) item.getOrDefault("bytes", 0)).longValue();
+            return new Artifact("TeaVM " + path, path,
+                    Json.string(Json.object(lock, "teavm"), "repository") + path, hash, bytes);
+        }
+
+        private List<Path> mavenCandidates() {
+            var candidates = new ArrayList<Path>();
             if (externalCache != null) {
                 candidates.add(externalCache.resolve("maven-repository"));
                 candidates.add(externalCache.resolve("repository"));
             }
             candidates.add(workRoot.resolve("maven-repository"));
-            candidates.add(Paths.get(System.getProperty("user.home"), ".m2", "repository"));
-            Path seed = null;
+            candidates.add(Path.of(System.getProperty("user.home"), ".m2", "repository"));
+            return candidates;
+        }
+
+        private Path mavenInstallDestination() {
+            return mavenCandidates().getFirst();
+        }
+
+        private Path mavenRepositoryForTools() {
+            return mavenCandidates().stream().filter(path -> Files.isRegularFile(path.resolve(Tools.MAVEN_INVENTORY)))
+                    .findFirst().orElse(mavenInstallDestination());
+        }
+
+        private Path findMavenRepository(List<Object> artifacts) {
+            var pins = artifacts.stream().map(value -> mavenArtifact(Json.asObject(value, "TeaVM artifact"))).toList();
+            Path repository = mavenRepositoryForTools();
+            var candidates = new ArrayList<>(mavenCandidates());
+            candidates.remove(repository);
+            candidates.addFirst(repository);
             for (Path candidate : candidates) {
-                if (!Files.isDirectory(candidate)) continue;
-                boolean complete = true;
-                for (Object value : artifacts) {
-                    Map<String, Object> item = Json.asObject(value, "TeaVM artifact");
-                    Path file = candidate.resolve(Safe.relative(Json.string(item, "path")));
-                    if (!Files.isRegularFile(file)) {
-                        complete = false;
-                        continue;
-                    }
-                    verifyFile("TeaVM " + file.getFileName(), file, Json.string(item, "sha256"));
+                if (pins.stream().allMatch(pin -> Files.isRegularFile(candidate.resolve(Safe.relative(pin.file()))))) {
+                    for (Artifact pin : pins) verifyArtifact(pin, candidate.resolve(Safe.relative(pin.file())));
+                    return candidate;
                 }
-                if (complete) return candidate;
-                if (seed == null) seed = candidate;
+                if (candidate.equals(repository) && Files.isRegularFile(candidate.resolve(Tools.MAVEN_INVENTORY))) break;
             }
-            Path repository = workRoot.resolve("maven-repository");
-            if (offline) {
-                Path hintRoot = mavenRepositoryHintRoot();
-                Map<String, Object> missing = firstMissingArtifact(hintRoot, artifacts);
-                String path = Json.string(missing, "path");
-                throw missingTool("TeaVM " + path, Json.string(missing, "sha256"),
-                        hintRoot.resolve(Safe.relative(path)));
-            }
-
-            if (!repository.equals(seed)) {
-                createDirectories(repository);
-                if (seed != null) Build.copyTree(seed, repository, path -> false);
-            }
-            String base = Json.string(Json.object(lock, "teavm"), "repository");
-            for (Object value : artifacts) {
-                Map<String, Object> item = Json.asObject(value, "TeaVM artifact");
-                String path = Json.string(item, "path");
-                Path target = repository.resolve(Safe.relative(path));
-                if (Files.isRegularFile(target)) {
-                    verifyFile("TeaVM " + target.getFileName(), target, Json.string(item, "sha256"));
-                    continue;
-                }
-                installArtifact(new Artifact("TeaVM " + path, target.getFileName().toString(), base + path,
-                        Json.string(item, "sha256"), -1), null, target);
-            }
+            for (Artifact pin : pins) ensureAt(pin, repository.resolve(Safe.relative(pin.file())), false, ignored -> {});
             return repository;
-        }
-
-        private Map<String, Object> firstMissingArtifact(Path repository, List<Object> artifacts) {
-            for (Object value : artifacts) {
-                Map<String, Object> item = Json.asObject(value, "TeaVM artifact");
-                if (!Files.isRegularFile(repository.resolve(Safe.relative(Json.string(item, "path"))))) {
-                    return item;
-                }
-            }
-            return Json.asObject(artifacts.get(0), "TeaVM artifact");
-        }
-
-        private Path mavenRepositoryHintRoot() {
-            if (externalCache != null) {
-                Path mavenRepository = externalCache.resolve("maven-repository");
-                if (Files.isDirectory(mavenRepository)) return mavenRepository;
-                Path repository = externalCache.resolve("repository");
-                if (Files.isDirectory(repository)) return repository;
-                return mavenRepository;
-            }
-            Path repository = workRoot.resolve("maven-repository");
-            if (Files.isDirectory(repository)) return repository;
-            return Paths.get(System.getProperty("user.home"), ".m2", "repository");
-        }
-
-        private void installArtifact(Artifact artifact, Path source, Path target) {
-            createDirectories(target.getParent());
-            Path partial = null;
-            try {
-                partial = Files.createTempFile(target.getParent(), ".gaius-artifact-", ".part");
-                if (source == null) {
-                    URI uri = URI.create(artifact.url());
-                    if ("file".equals(uri.getScheme())) {
-                        Files.copy(Paths.get(uri), partial, StandardCopyOption.REPLACE_EXISTING);
-                    } else {
-                        if (!"https".equals(uri.getScheme())) {
-                            throw new PatcherException("unsupported URL for " + artifact.name() + ": " + uri);
-                        }
-                        System.err.println("  downloading " + artifact.name() + " from " + uri);
-                        if (downloadClient == null) {
-                            downloadClient = HttpClient.newBuilder()
-                                    .followRedirects(HttpClient.Redirect.NORMAL)
-                                    .proxy(ProxySelector.getDefault())
-                                    .connectTimeout(Duration.ofSeconds(20))
-                                    .build();
-                        }
-                        HttpResponse<Path> response = downloadClient.send(HttpRequest.newBuilder(uri)
-                                .timeout(Duration.ofMinutes(10)).GET().build(),
-                                HttpResponse.BodyHandlers.ofFile(partial));
-                        if (response.statusCode() != 200) {
-                            throw new PatcherException("could not download " + artifact.name() + ": HTTP "
-                                    + response.statusCode() + " from " + uri + ". Place it at " + target + ".");
-                        }
-                    }
-                } else {
-                    Files.copy(source, partial, StandardCopyOption.REPLACE_EXISTING);
-                }
-                verifyArtifact(artifact, partial);
-                Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException error) {
-                throw new PatcherException("could not install " + artifact.name() + " at " + target
-                        + ": " + error.getMessage());
-            } catch (InterruptedException error) {
-                Thread.currentThread().interrupt();
-                throw new PatcherException("interrupted while downloading " + artifact.name());
-            } finally {
-                if (partial != null) {
-                    try {
-                        Files.deleteIfExists(partial);
-                    } catch (IOException ignored) {
-                    }
-                }
-            }
         }
 
         private Path ensureMavenHome(Artifact artifact, Path archive) {
@@ -1368,28 +2432,37 @@ public final class GaiusPatcher {
             }
         }
 
-        Path resolveShaderToolchain(Args args) {
+        Path shaderDirectory(Args args) {
             String explicit = args.options.get("shader-toolchain");
             if (explicit == null || explicit.isBlank()) explicit = System.getenv("GAIUS_SHADER_TOOLCHAIN_PREBUILT");
-            if (explicit != null && !explicit.isBlank()) {
-                return Paths.get(explicit).toAbsolutePath().normalize();
-            }
-            if (externalCache != null && Files.isDirectory(externalCache.resolve("shader-toolchain"))) {
+            if (explicit != null && !explicit.isBlank()) return Path.of(explicit).toAbsolutePath().normalize();
+            if (externalCache != null && Files.exists(externalCache.resolve("shader-toolchain"), LinkOption.NOFOLLOW_LINKS)) {
                 return externalCache.resolve("shader-toolchain");
             }
             Path cached = cache.resolve("shader-toolchain");
-            if (Files.exists(cached, LinkOption.NOFOLLOW_LINKS)) return cached;
+            return Files.exists(cached, LinkOption.NOFOLLOW_LINKS) ? cached : null;
+        }
+
+        Path resolveShaderToolchain(Args args) {
+            Path existing = shaderDirectory(args);
+            if (existing != null) return existing;
+            Path cached = cache.resolve("shader-toolchain");
             Map<String, Object> shader = Json.object(Json.object(lock, "wasm"), "shader");
             if (!shader.containsKey("prebuiltArchive")) return null;
             Artifact pin = artifact("26.3 prebuilt shader toolchain archive", Json.object(shader, "prebuiltArchive"));
-            Path archive = ensure(pin, () -> new PatcherException("missing " + pin.name() + " " + pin.file()
-                    + "; expected SHA-256 " + pin.sha256() + ". "
-                    + (offline ? "Offline mode cannot download it. " : "No download URL is configured. ")
-                    + "Place the ZIP at " + cache.resolve(pin.file())
-                    + " or put it in the directory passed to --toolchain-dir <dir>. "
-                    + "For an unpacked verified copy, pass --shader-toolchain <dir>."));
-            Set<String> expected = new LinkedHashSet<>(Json.object(shader, "files").keySet());
-            expected.add(Json.string(shader, "manifest"));
+            Path source = findArtifactSource(pin.file());
+            if (source == null && !pin.url().startsWith("file:")) {
+                throw new PatcherException("missing " + pin.name() + " " + pin.file()
+                        + "; expected SHA-256 " + pin.sha256() + ". " + Tools.SHADER_RELEASE_HINT
+                        + " Place the ZIP at " + cache.resolve(pin.file())
+                        + " or supply its folder with --toolchain-dir <dir>."
+                        + " For a verified unpacked copy, pass --shader-toolchain <dir>.");
+            }
+            // An archive supplied by the release process is local input only.
+            Path archive = source == null ? Path.of(URI.create(pin.url())) : source;
+            verifyArtifact(pin, archive);
+            createDirectories(cache);
+            Set<String> expected = new LinkedHashSet<>(shaderPins().keySet());
             Path unpack = null;
             try {
                 unpack = Files.createTempDirectory(cache, ".shader-toolchain-");
@@ -1418,23 +2491,64 @@ public final class GaiusPatcher {
             }
         }
 
-        private void verifyShaderToolchain(Path directory) {
-            Map<String, Object> shader = Json.object(Json.object(lock, "wasm"), "shader");
-            Path root = directory == null ? cache.resolve("shader-toolchain") : directory;
-            verifyShaderFile("prebuilt shader toolchain manifest", root.resolve(Json.string(shader, "manifest")),
-                    Json.string(shader, "manifestSha256"));
-            for (Map.Entry<String, Object> item : Json.object(shader, "files").entrySet()) {
-                verifyShaderFile("Wasm shader toolchain " + item.getKey(), root.resolve(item.getKey()),
-                        String.valueOf(item.getValue()));
+        record ShaderCheck(Map<String, String> pins, List<String> missingFiles, List<String> differingFiles) {
+            String state() {
+                return !differingFiles.isEmpty() ? "tampered" : !missingFiles.isEmpty() ? "missing-offline" : "verified";
             }
         }
 
-        private static void verifyShaderFile(String name, Path path, String expected) {
-            if (!Files.isRegularFile(path)) {
-                throw new PatcherException("missing " + name + " at " + path + "; expected SHA-256 " + expected
-                        + ". Restore the missing file or pass --shader-toolchain <dir> with all verified files.");
+        private Map<String, String> shaderPins() {
+            var shader = Json.object(Json.object(lock, "wasm"), "shader");
+            var pins = new LinkedHashMap<String, String>();
+            pins.put(Json.string(shader, "manifest"), Json.string(shader, "manifestSha256"));
+            for (var item : Json.object(shader, "files").entrySet()) {
+                if (pins.putIfAbsent(item.getKey(), String.valueOf(item.getValue())) != null) {
+                    throw new PatcherException(lockFile + ": duplicate shader pin: " + item.getKey());
+                }
             }
-            verifyFile(name, path, expected);
+            for (var item : pins.entrySet()) {
+                if (!item.getKey().matches("[A-Za-z0-9_.+-]+") || Safe.relative(item.getKey()).getNameCount() != 1
+                        || item.getKey().equals(".") || !item.getValue().matches("[0-9a-f]{64}")) {
+                    throw new PatcherException(lockFile + ": invalid shader pin: " + item.getKey());
+                }
+            }
+            return pins;
+        }
+
+        private ShaderCheck inspectShader(Path directory) {
+            var pins = shaderPins();
+            var missing = new ArrayList<String>();
+            var differing = new ArrayList<String>();
+            for (var pin : pins.entrySet()) {
+                Path file = directory == null ? null : directory.resolve(pin.getKey());
+                if (file == null || !Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+                    missing.add(pin.getKey());
+                } else {
+                    try {
+                        verifyFile("shader toolchain " + pin.getKey(), file, pin.getValue());
+                    } catch (PatcherException error) {
+                        differing.add(pin.getKey());
+                    }
+                }
+            }
+            return new ShaderCheck(pins, missing, differing);
+        }
+
+        private void verifyShaderToolchain(Path directory) {
+            var check = inspectShader(directory);
+            if (!check.differingFiles().isEmpty()) {
+                String file = check.differingFiles().getFirst();
+                throw new PatcherException("invalid prebuilt shader toolchain file: " + directory.resolve(file)
+                        + "; expected SHA-256 " + check.pins().get(file)
+                        + ". Leave this folder unchanged and pass a verified folder with --shader-toolchain <dir>.");
+            }
+            if (!check.missingFiles().isEmpty()) {
+                String file = check.missingFiles().getFirst();
+                Path where = directory == null ? toolDestination("shader-toolchain") : directory;
+                throw new PatcherException("missing prebuilt shader toolchain file: " + where.resolve(file)
+                        + "; expected SHA-256 " + check.pins().get(file)
+                        + ". " + Tools.SHADER_RELEASE_HINT + " Place the verified files there or pass --shader-toolchain <dir>.");
+            }
         }
 
         static void verifyFile(String name, Path path, String expected) {
@@ -1489,8 +2603,13 @@ public final class GaiusPatcher {
         }
 
         static void runExtraction(List<String> command, Path archive) {
+            runExtraction(new ProcessBuilder(command), archive);
+        }
+
+        static void runExtraction(ProcessBuilder command, Path archive) {
+            command.environment().remove("TAR_OPTIONS");
             try {
-                Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+                Process process = command.redirectErrorStream(true).start();
                 String output;
                 try (InputStream stream = process.getInputStream()) {
                     output = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
@@ -1500,7 +2619,7 @@ public final class GaiusPatcher {
                     throw new PatcherException("could not extract tool archive " + archive + ": " + output.trim());
                 }
             } catch (IOException error) {
-                throw new PatcherException("could not extract " + archive + " with " + command.get(0)
+                throw new PatcherException("could not extract " + archive + " with " + command.command().getFirst()
                         + ": " + error.getMessage());
             } catch (InterruptedException error) {
                 Thread.currentThread().interrupt();
@@ -1694,20 +2813,36 @@ public final class GaiusPatcher {
             ToolchainManager toolchain = new ToolchainManager(
                     sourceRoot.resolve("patcher/toolchain.lock"), args, workRoot);
             toolchain.preflight(version, args);
+            Tools.Shell bash = Tools.Shell.find();
+            if (bash == null || !bash.ready()) {
+                throw new PatcherException(Tools.isWindows()
+                        ? "Git for Windows Bash was not found; install it from https://git-scm.com/download/win"
+                        : "Bash was not found; install it and put it on PATH");
+            }
+            Tools.Python python = bash.resolvePython(sourceRoot);
+            if (python == null) throw new PatcherException(Tools.PYTHON_HINT);
+            if (args.strictKernel()) {
+                var missing = Tools.kernelStatus(toolchain, sourceRoot, args, bash).stream()
+                        .filter(row -> !"present".equals(row.get("state")))
+                        .map(row -> row.get("id").toString()).toList();
+                if (!missing.isEmpty()) {
+                    throw new PatcherException("strict kernel prerequisites missing: " + String.join(", ", missing)
+                            + "; see tools status --json --strict-kernel");
+                }
+            }
+            Map<String, String> toolEnvironment = toolEnvironment(args, python);
             runQuietly(() -> {
                 Terms.require(args, profiles);
                 return 0;
             });
             ToolchainManager.Prepared prepared = toolchain.prepare(profiles, version, args);
             // Build is intentionally offline. Fetch reads the launcher's local
-            // metadata and files every time so a stale work directory cannot
-            // silently become the build input.
+            // metadata and only passes SHA-1-checked inputs to the build.
             progress("fetch", "local-files", 8, "Validating local launcher files");
             Args fetch = copyArgs(args, "fetch", version);
             fetch.flags.add("offline");
             fetch.flags.add("reproducible");
-            runQuietly(() -> Fetch.run(fetch, false));
-            Path work = Locations.workDir(args, profiles, profile);
+            Fetch.Result fetched = runQuietly(() -> Fetch.collect(fetch, false));
 
             deleteTree(output.resolve("tool"));
             createDirectories(output);
@@ -1717,16 +2852,18 @@ public final class GaiusPatcher {
             Path stageWork = toolRoot.resolve("port/work").resolve(version);
 
             progress("stage", "source-tree", 18, "Staging the isolated build tree");
-            stageSourceTree(sourceRoot, toolRoot, work, workRoot.resolve("tools"), version, prepared);
+            stageSourceTree(sourceRoot, toolRoot, fetched, workRoot.resolve("tools"), version, prepared);
             writeBuildClasspath(toolRoot, stageWork.resolve("libraries"), stageWork.resolve("classpath.txt"));
+            Path buildJdkHome = prepared.stagedJdk()
+                    ? toolRoot.resolve("port/work/tools/jdk-runtime") : prepared.jdkHome();
             if (!profile.needsMappings()) {
                 copyFile(stageWork.resolve("client-original.jar"), stageWork.resolve("client-named.jar"));
-            }
-            if (profile.needsMappings() && !Files.isRegularFile(stageWork.resolve("client-named.jar"))) {
+            } else {
                 progress("prepare", "remap", 27, "Remapping the local client");
-                runTool(toolRoot, List.of("port/scripts/remap-client.sh"), output.resolve("remap.log"),
-                        Map.of("GAIUS_VERSION_PROFILE_PATH", "versions/" + version + ".json",
-                                "GAIUS_MAVEN_OFFLINE", "true"));
+                Map<String, String> remapEnvironment = new LinkedHashMap<>(toolEnvironment);
+                remapEnvironment.put("GAIUS_VERSION_PROFILE_PATH", "versions/" + version + ".json");
+                remapEnvironment.put("GAIUS_JAVA_HOME", buildJdkHome.toString());
+                runTool(bash, toolRoot, List.of("port/scripts/remap-client.sh"), output.resolve("remap.log"), remapEnvironment);
             }
 
             progress("prepare", "source-patches", 38, "Applying source patches and preserving user-decompiled code");
@@ -1744,14 +2881,15 @@ public final class GaiusPatcher {
             });
 
             progress("compile", "overlays", 48, "Building isolated overlays for TeaVM");
-            Map<String, String> overlayEnvironment = new LinkedHashMap<>();
+            Map<String, String> overlayEnvironment = new LinkedHashMap<>(toolEnvironment);
             overlayEnvironment.put("GAIUS_VERSION_PROFILE_PATH", "versions/" + version + ".json");
             overlayEnvironment.put("GAIUS_BUILD_ROOT", buildRoot.toString());
             overlayEnvironment.put("GAIUS_OVERLAY_DIRECTORY", buildRoot.resolve("overlays").toString());
             overlayEnvironment.put("GAIUS_MAVEN_REPOSITORY",
                     toolRoot.resolve("port/work/tools/maven-repository").toString());
             overlayEnvironment.put("GAIUS_MAVEN_OFFLINE", "true");
-            runTool(toolRoot, List.of("port/scripts/build-overlays.sh"), output.resolve("overlays.log"), overlayEnvironment);
+            overlayEnvironment.put("GAIUS_JAVA_HOME", buildJdkHome.toString());
+            runTool(bash, toolRoot, List.of("port/scripts/build-overlays.sh"), output.resolve("overlays.log"), overlayEnvironment);
             // The repository's fixture script has a historical default path
             // under port/work. Keep that compatibility input inside the
             // disposable tree even though the release output uses buildRoot.
@@ -1760,7 +2898,7 @@ public final class GaiusPatcher {
             copyFile(buildRoot.resolve("overlays/teavm-core-0.15.0-gaius.jar"), fixtureOverlay);
 
             progress("compile", "teavm", 55, "Running the existing TeaVM release pipeline");
-            Map<String, String> environment = new LinkedHashMap<>();
+            Map<String, String> environment = new LinkedHashMap<>(toolEnvironment);
             environment.put("GAIUS_BUILD_ROOT", buildRoot.toString());
             environment.put("GAIUS_OVERLAY_DIRECTORY", buildRoot.resolve("overlays").toString());
             environment.put("GAIUS_DIST_DIRECTORY", dist.toString());
@@ -1783,12 +2921,10 @@ public final class GaiusPatcher {
                 }
                 environment.put("GAIUS_SHADER_TOOLCHAIN_PREBUILT", shaderToolchain.toString());
             }
-            if (prepared.jdkHome() != null && prepared.stagedJdk()) {
-                environment.put("GAIUS_JAVA_HOME", toolRoot.resolve("port/work/tools/jdk-runtime").toString());
-            }
+            environment.put("GAIUS_JAVA_HOME", buildJdkHome.toString());
             prepared.hostWasm().configure(toolRoot.resolve("port/work/tools/host-wasm"), environment);
             environment.put("GAIUS_WASM_HOST_TOOLS_REPORT", output.resolve("wasm-host-tools.json").toString());
-            runTool(toolRoot, List.of("patcher/build-release-locked.sh", version), output.resolve("build.log"), environment);
+            runTool(bash, toolRoot, List.of("patcher/build-release-locked.sh", version), output.resolve("build.log"), environment);
 
             Path pages = buildRoot.resolve("pages-site");
             Path portable = dist.resolve("Gaius.html");
@@ -1966,26 +3102,6 @@ public final class GaiusPatcher {
             writeString(html, source.substring(0, insert) + script + source.substring(insert));
         }
 
-        static Path resolveShaderToolchain(Args args, Path profiles, Path stagedToolchain) {
-            String configured = args.options.get("shader-toolchain");
-            if (configured == null || configured.isBlank()) {
-                configured = System.getenv("GAIUS_SHADER_TOOLCHAIN_PREBUILT");
-            }
-            if (configured != null && !configured.isBlank()) {
-                return Paths.get(configured).toAbsolutePath().normalize();
-            }
-            String toolchainDir = args.options.get("toolchain-dir");
-            if (toolchainDir != null && !toolchainDir.isBlank()) {
-                Path candidate = Paths.get(toolchainDir).toAbsolutePath().normalize().resolve("shader-toolchain");
-                if (Files.isDirectory(candidate)) return candidate;
-            }
-            if (stagedToolchain != null && Files.isRegularFile(stagedToolchain.resolve(SHADER_TOOLCHAIN_MANIFEST))) {
-                return stagedToolchain;
-            }
-            Path workToolchain = Locations.workRoot(args, profiles).resolve("tools/shader-toolchain");
-            return Files.isRegularFile(workToolchain.resolve(SHADER_TOOLCHAIN_MANIFEST)) ? workToolchain : null;
-        }
-
         static Args copyArgs(Args source, String command, String version) {
             Args copy = new Args();
             copy.command = command;
@@ -2017,7 +3133,7 @@ public final class GaiusPatcher {
             }
         }
 
-        static void stageSourceTree(Path sourceRoot, Path stageRoot, Path fetchedWork, Path toolCache, String version,
+        static void stageSourceTree(Path sourceRoot, Path stageRoot, Fetch.Result fetched, Path toolCache, String version,
                                     ToolchainManager.Prepared prepared) {
             deleteTree(stageRoot);
             createDirectories(stageRoot);
@@ -2026,6 +3142,7 @@ public final class GaiusPatcher {
                 String value = relative.toString().replace('\\', '/');
                 return value.equals("work") || value.startsWith("work/")
                         || value.equals("target") || value.startsWith("target/")
+                        || value.equals("native/target") || value.startsWith("native/target/")
                         || value.equals("web/dist") || value.startsWith("web/dist/");
             });
             copyTree(sourceRoot.resolve("patcher"), stageRoot.resolve("patcher"), path -> false);
@@ -2046,8 +3163,12 @@ public final class GaiusPatcher {
                 copyTree(licenses, stageRoot.resolve("LICENSES"), path -> false);
             }
             Path stageWorkRoot = stageRoot.resolve("port/work");
-            createDirectories(stageWorkRoot);
-            copyTree(fetchedWork, stageWorkRoot.resolve(version), path -> false);
+            Path stageWork = stageWorkRoot.resolve(version);
+            createDirectories(stageWork.resolve("libraries"));
+            // Do not import stale libraries, assets, or derived jars from earlier runs.
+            for (Path file : fetched.files) {
+                copyFile(file, stageWork.resolve(fetched.work.relativize(file)));
+            }
             if (Files.isDirectory(toolCache)) {
                 Path stagedTools = stageWorkRoot.resolve("tools");
                 try (var stream = Files.list(toolCache)) {
@@ -2229,17 +3350,21 @@ public final class GaiusPatcher {
             }
         }
 
-        static void runTool(Path toolRoot, List<String> relativeCommand, Path log, Map<String, String> extraEnv) {
-            List<String> command = new ArrayList<>();
-            String first = relativeCommand.get(0);
-            if (first.endsWith(".sh")) {
-                command.add("bash");
-            }
-            command.add(toolRoot.resolve(relativeCommand.get(0)).toString());
-            for (int i = 1; i < relativeCommand.size(); i++) command.add(relativeCommand.get(i));
+        static Map<String, String> toolEnvironment(Args args, Tools.Python python) {
+            boolean strict = args.strictKernel();
+            return Map.of("PYTHON", python.executable(),
+                    "GAIUS_SKIP_KERNELS", strict ? "0" : "1",
+                    "GAIUS_KERNELS_STRICT", strict ? "1" : "0",
+                    "GAIUS_KERNELS_PREPARED", "0",
+                    "GAIUS_SHADERXLAT_WASM", "");
+        }
+
+        static void runTool(Tools.Shell bash, Path toolRoot, List<String> relativeCommand, Path log, Map<String, String> extraEnv) {
+            var arguments = new ArrayList<>(relativeCommand);
+            arguments.set(0, toolRoot.resolve(arguments.getFirst()).toString());
             try {
                 createDirectories(log.getParent());
-                ProcessBuilder builder = new ProcessBuilder(command).directory(toolRoot.toFile())
+                ProcessBuilder builder = bash.process(arguments.toArray(String[]::new)).directory(toolRoot.toFile())
                         .redirectErrorStream(true).redirectOutput(log.toFile());
                 builder.environment().put("GAIUS_MAVEN_OFFLINE", "true");
                 builder.environment().put("GAIUS_ASSETS_OFFLINE", "true");
@@ -2261,21 +3386,22 @@ public final class GaiusPatcher {
             }
         }
 
-        static void runQuietly(java.util.function.IntSupplier action) {
+        static <T> T runQuietly(java.util.function.Supplier<T> action) {
             if (!Args.currentJsonProgress) {
-                action.getAsInt();
-                return;
+                return action.get();
             }
             PrintStream original = System.out;
             ByteArrayOutputStream captured = new ByteArrayOutputStream();
+            T result;
             try (PrintStream replacement = new PrintStream(captured, true, StandardCharsets.UTF_8)) {
                 System.setOut(replacement);
-                action.getAsInt();
+                result = action.get();
             } finally {
                 System.setOut(original);
             }
             String text = captured.toString(StandardCharsets.UTF_8);
             if (!text.isBlank()) System.err.print(text);
+            return result;
         }
 
         static void progress(String phase, String step, int pct, String message) {
@@ -3509,6 +4635,17 @@ public final class GaiusPatcher {
                                     "-Djava.util.concurrent.ForkJoinPool.common.parallelism=1")
                             && deterministicEnvironment.get("MAVEN_OPTS").endsWith("-Duser.timezone=UTC")
                             && deterministicEnvironment.get("JAVA_TOOL_OPTIONS").endsWith("-Duser.timezone=UTC"));
+            var testPython = new Tools.Python("py -3", "/c/Tools with spaces/Python/python.exe");
+            Args defaultBuild = Args.parse(new String[] {"build", "26.3"});
+            Args strictBuild = Args.parse(new String[] {"build", "26.3", "--strict-kernel"});
+            check("default build skips kernels and clears inherited kernel inputs",
+                    Build.toolEnvironment(defaultBuild, testPython).equals(Map.of(
+                            "PYTHON", testPython.executable(), "GAIUS_SKIP_KERNELS", "1", "GAIUS_KERNELS_STRICT", "0",
+                            "GAIUS_KERNELS_PREPARED", "0", "GAIUS_SHADERXLAT_WASM", "")));
+            check("strict build enables kernels and retains the resolved Python executable",
+                    Build.toolEnvironment(strictBuild, testPython).equals(Map.of(
+                            "PYTHON", testPython.executable(), "GAIUS_SKIP_KERNELS", "0", "GAIUS_KERNELS_STRICT", "1",
+                            "GAIUS_KERNELS_PREPARED", "0", "GAIUS_SHADERXLAT_WASM", "")));
             Args reproducibleFetch = Args.parse(new String[] {"fetch", "26.3", "--offline"});
             reproducibleFetch.flags.add("reproducible");
             check("build fetch manifest uses a fixed timestamp",
@@ -3555,6 +4692,16 @@ public final class GaiusPatcher {
             Path stageFixture = null;
             try {
                 stageFixture = Files.createTempDirectory("gaius-patcher-selftest-");
+                Path official = stageFixture.resolve("official-file");
+                byte[] original = "abc".getBytes(StandardCharsets.US_ASCII);
+                Job job = Job.local("test input", official, Hashes.sha1(original), stageFixture.resolve("copy"));
+                check("official file check reports a missing path", job.check(official).equals(new FileCheck(null, "missing")));
+                Files.write(official, original);
+                check("official file check accepts matching SHA-1", job.check(official).ok());
+                byte[] modified = "abd".getBytes(StandardCharsets.US_ASCII);
+                Files.write(official, modified);
+                check("official file check detects a same-size change",
+                        job.check(official).equals(new FileCheck(Hashes.sha1(modified), "sha1-mismatch")));
                 Path source = stageFixture.resolve("source");
                 Path staged = stageFixture.resolve("staged");
                 Path fetched = stageFixture.resolve("fetched");
@@ -3654,7 +4801,13 @@ public final class GaiusPatcher {
                         && injected.contains("defaults.renderDistanceChunks + '\\n';"));
                 check("portable HTML receives the same first-run settings", readString(settingsHtml)
                         .contains("renderDistanceChunks"));
-                Build.stageSourceTree(source, staged, fetched, stageFixture.resolve("missing-tools"), "test", null);
+                Path fetchedLibrary = fetched.resolve("libraries/verified.jar");
+                Files.createDirectories(fetchedLibrary.getParent());
+                Files.writeString(fetchedLibrary, "verified library\n");
+                Files.writeString(fetchedLibrary.resolveSibling("leftover.jar"), "stale library\n");
+                Files.writeString(fetched.resolve("client-named.jar"), "stale derivative\n");
+                Fetch.Result fetchedResult = new Fetch.Result(fetched, List.of(fetchedLibrary));
+                Build.stageSourceTree(source, staged, fetchedResult, stageFixture.resolve("missing-tools"), "test", null);
                 check("build stage copies license inputs",
                         Files.readString(staged.resolve("NOTICE")).equals("synthetic notice\n")
                         && Files.readString(staged.resolve("LICENSE")).equals("synthetic license\n")
@@ -3663,6 +4816,11 @@ public final class GaiusPatcher {
                 check("build stage copies artifact contract input",
                         Files.readString(staged.resolve(Build.ARTIFACT_CONTRACT_SMOKE))
                                 .equals("synthetic contract input\n"));
+                Path stagedWork = staged.resolve("port/work/test");
+                check("build stages only current verified inputs from the fetch work directory",
+                        Files.readString(stagedWork.resolve("libraries/verified.jar")).equals("verified library\n")
+                                && !Files.exists(stagedWork.resolve("libraries/leftover.jar"))
+                                && !Files.exists(stagedWork.resolve("client-named.jar")));
 
                 Path toolCache = stageFixture.resolve("cache");
                 Path toolSource = toolCache.resolve("vineflower-1.11.2.jar");
@@ -3679,14 +4837,20 @@ public final class GaiusPatcher {
                         toolBytes.length);
                 Path cachedTool = manager.cache.resolve(synthetic.file());
                 Files.createDirectories(cachedTool.getParent());
+                check("tools status detects missing artifacts", Tools.fileState(cachedTool, synthetic).equals("missing"));
+                check("tools install respects offline mode", throwsPatcher(() -> Tools.install(
+                        Args.parse(new String[] {"tools", "install", "--json-progress", "--offline", "--only", "fixture"}),
+                        manager, List.of(new Tools.Locked("fixture", Tools.ALL, synthetic, false)), List.of())));
                 Files.write(cachedTool, toolBytes);
                 check("toolchain accepts a matching SHA-256", manager.ensure(synthetic).equals(cachedTool));
+                check("tools status detects verified artifacts", Tools.fileState(cachedTool, synthetic).equals("present"));
                 Files.writeString(cachedTool, "tampered tool bytes\n", StandardCharsets.UTF_8);
+                check("tools status detects tampered artifacts", Tools.fileState(cachedTool, synthetic).equals("hash-mismatch"));
                 boolean tamperRejected = false;
                 try {
                     manager.ensure(synthetic);
                 } catch (PatcherException error) {
-                    tamperRejected = error.getMessage().contains("expected " + toolHash);
+                    tamperRejected = error.getMessage().contains(toolHash);
                 }
                 check("toolchain rejects a tampered file", tamperRejected);
                 Map<String, Object> missingTeaVM = Map.of("path", "synthetic/teavm.jar", "sha256", "1".repeat(64));
@@ -3699,9 +4863,9 @@ public final class GaiusPatcher {
                 }
                 check("offline toolchain hint names tool, hash, path and toolchain directory",
                         hint.contains("TeaVM synthetic/teavm.jar") && hint.contains("1".repeat(64))
-                                && hint.contains("synthetic/teavm.jar")
+                                && hint.contains("teavm.jar")
                                 && hint.contains("--toolchain-dir"));
-                Build.stageSourceTree(source, staged, fetched, toolCache, "test", null);
+                Build.stageSourceTree(source, staged, fetchedResult, toolCache, "test", null);
                 ToolchainManager.verifyFile("staged synthetic tool", toolStaged, toolHash);
                 check("toolchain stages a verified tool into the isolated build tree",
                         Files.readAllBytes(toolStaged).length == toolBytes.length);
@@ -3866,7 +5030,7 @@ public final class GaiusPatcher {
             check("only verified Wasm host tools are staged with explicit paths",
                     regularFileCount(staged) == 3
                             && Files.readString(Path.of(environment.get("GAIUS_WASM_OPT"))).equals("synthetic wasm-opt")
-                            && Path.of(environment.get("GAIUS_WASM_LD")).equals(staged.resolve("llvm/bin/wasm-ld")));
+                            && Path.of(environment.get("GAIUS_WASM_LD")).equals(staged.resolve("llvm/llvm/bin/wasm-ld")));
             Path cachedOptimizer = manager.cache.resolve("binaryen.tar.gz");
             String hash = Hashes.sha256(cachedOptimizer);
             Files.writeString(cachedOptimizer, "tampered archive");
@@ -3913,7 +5077,7 @@ public final class GaiusPatcher {
         static final Set<String> VALUE_OPTIONS =
                 Set.of("minecraft-dir", "profiles", "work", "work-root", "mappings", "decompiler",
                         "source-patches", "into", "out", "shader-toolchain", "toolchain-dir", "quality",
-                        "render-distance", "backend", "resource-pack", "manifest");
+                        "render-distance", "backend", "resource-pack", "manifest", "only");
 
         static Args parse(String[] argv) {
             Args args = new Args();
@@ -3947,6 +5111,10 @@ public final class GaiusPatcher {
             if (name.equals("resource-pack")) {
                 repeatedOptions.computeIfAbsent(name, ignored -> new ArrayList<>()).add(value);
             }
+        }
+
+        boolean strictKernel() {
+            return flags.contains("strict-kernel");
         }
 
         int intOption(String name, int fallback) {

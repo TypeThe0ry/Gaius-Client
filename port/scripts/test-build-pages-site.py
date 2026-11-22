@@ -398,6 +398,12 @@ console.log(JSON.stringify(rows));
                 (wasm / name).write_bytes((dist / name).read_bytes() if (dist / name).is_file() else b"wasm")
             (wasm / "vanilla-assets.pack.gz").write_bytes((dist / "vanilla-assets.pack.gz").read_bytes())
             write_profile_sidecar(wasm / "vanilla-assets.pack.gz", RENDERPEARL_ID)
+            kernel_dir = wasm / "kernels"
+            kernel_dir.mkdir()
+            semantics = {"schemaVersion": 1, "profile": SITE.profile_of(INDEX),
+                         "kernels": {"shaderxlat": {"enabled": True, "reasons": []}}}
+            (kernel_dir / "kernel-semantics.json").write_text(json.dumps(semantics), encoding="utf-8")
+            (kernel_dir / "kernel-mirror.js").write_bytes((SITE.WEB / "kernels/kernel-mirror.js").read_bytes())
             config = {"loader": "gaius-shader-toolchain.js?v=00112233aabbccdd",
                       "version": "00112233aabbccdd"}
             page = SITE.SHADER_TOOLCHAIN_TAG.sub(
@@ -410,6 +416,9 @@ console.log(JSON.stringify(rows));
             index = (root / "site/index.html").read_text(encoding="utf-8")
             for name in ("gaius-shader-toolchain.js", *(name for _, name in SITE.SHADER_TOOLCHAIN_MODULES)):
                 self.assertIn(name, descriptor["assets"])
+            mirror = (root / "site" / descriptor["assets"]["kernels/kernel-mirror.js"]).read_text(encoding="utf-8")
+            self.assertTrue(mirror.startswith("globalThis.__gaiusKernelSemantics = "), mirror[:120])
+            self.assertIn('"shaderxlat":{"enabled":true', mirror)
             self.assertIn("window.__gaiusWebGpuShaderToolchain", index)
             self.assertNotIn("data-gaius-runtimes", index)
 

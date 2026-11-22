@@ -1,5 +1,13 @@
 {
   "gaius.about.title": "Gaius 정보",
+  "gaius.connection.badge": "전송 방식: %s",
+  "gaius.connection.connecting_via": "%s(으)로 연결 중",
+  "gaius.server.protocol": "연결 프로토콜",
+  "gaius.server.protocol.relay": "릴레이(기본값)",
+  "gaius.server.protocol.plugin": "플러그인",
+  "gaius.server.protocol.eagler": "Eagler",
+  "gaius.server.protocol.wsproxy": "WebSocket 프록시",
+  "gaius.server.protocol.websocket_hint": "WebSocket 주소(ws:// 또는 wss://)",
   "gaius.about.disclaimer": "Gaius는 Minecraft의 공식 제품이 아닙니다. Mojang이나 Microsoft의 승인을 받지 않았으며 두 회사와 관련이 없습니다. 정품 Minecraft: Java Edition을 소유하고 있어야 합니다.",
   "gaius.about.license": "Gaius 라이선스",
   "gaius.about.third_party": "타사 고지 사항",

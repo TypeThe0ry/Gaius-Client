@@ -1,5 +1,13 @@
 {
   "gaius.about.title": "Acerca de Gaius",
+  "gaius.connection.badge": "Transporte: %s",
+  "gaius.connection.connecting_via": "Conectando mediante %s",
+  "gaius.server.protocol": "Protocolo de conexión",
+  "gaius.server.protocol.relay": "Relay (predeterminado)",
+  "gaius.server.protocol.plugin": "Plugin",
+  "gaius.server.protocol.eagler": "Eagler",
+  "gaius.server.protocol.wsproxy": "Proxy WebSocket",
+  "gaius.server.protocol.websocket_hint": "Dirección WebSocket (ws:// o wss://)",
   "gaius.about.disclaimer": "Gaius no es un producto oficial de Minecraft. Mojang ni Microsoft lo aprueban ni están asociados con él. Debes tener una copia legítima de Minecraft: Java Edition.",
   "gaius.about.license": "Licencia de Gaius",
   "gaius.about.third_party": "Avisos de terceros",

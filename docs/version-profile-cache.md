@@ -9,7 +9,7 @@ reported separately, with the metadata, profile and index paths and the actual h
 ## Cache inspected on 2026-10-08
 
 The `1.21.11` profile records Mojang asset index `29` with SHA-1
-`4043c34fdd5d06b2ac1f6f46c5b91a4ac16e3452`. That pin was recorded on 2026-09-29. `docs/feasibility.md` records 4,590 objects and 446,134,512 total asset bytes for
+`4043c34fdd5d06b2ac1f6f46c5b91a4ac16e3452`. The profile first pinned this revision on 2026-09-29. `docs/feasibility.md` records 4,590 objects and 446,134,512 total asset bytes for
 the earlier official metadata snapshot.
 
 The local `port/work/1.21.11/version.json` instead names

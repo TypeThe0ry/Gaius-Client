@@ -11,13 +11,17 @@
 > **Gaius 不是 Minecraft 官方产品，未经 Mojang 或 Microsoft 认可，也与其无关。**
 > 你必须拥有 Minecraft: Java Edition 并遵守
 > [Minecraft EULA](https://www.minecraft.net/eula)。本仓库不包含游戏代码、游戏
-> 文件或构建，Gaius 也不提供下载。详见[免责声明](DISCLAIMER.md)。
+> 文件或构建，Gaius 也不提供下载。部分构建工具可直接从上游获取所需输入。
+> 详见[免责声明](DISCLAIMER.md)。
 
 Gaius 是兼容 Minecraft: Java Edition 26.3、26.2 和 1.21.11 的非官方浏览器客户端
 （WebAssembly + WebGPU，WebGL2 回退，仅支持 Chrome）。本仓库包含 Gaius 自己的源码、
 **Gaius 补丁工具**（Patcher）和 issue 追踪。源码对应 Gaius v0.4.0-pre.6。
 
 ## 补丁工具
+
+**仅凭公开树无法构建游戏。** overlay 构建还需要导出时排除的光照和 Unihex 生成器。
+拥有对应源码的维护者可按[本地配方](patcher/recipes/README.md#local-bridge-generation)生成。
 
 补丁工具从你自己的启动器安装中读取官方游戏文件，逐个校验 SHA-1，打上 Gaius 的
 补丁并编译成浏览器版本，全部在你的电脑上完成。它从不下载游戏，生成的构建只供你

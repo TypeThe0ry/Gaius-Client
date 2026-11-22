@@ -19,14 +19,17 @@ GUARD = PUBLIC_ROOT / ".github" / "scripts" / "issue-guard.js"
 
 class ExportMappingTest(unittest.TestCase):
     def test_public_root_files_go_to_the_root(self):
-        self.assertEqual(export_public_tree.export_path("patcher/public-root/README.md"), "README.md")
+        self.assertEqual(export_public_tree.export_path("public/README.md"), "README.md")
+        self.assertEqual(export_public_tree.export_path("public/README.zh-CN.md"), "README.zh-CN.md")
+        self.assertEqual(export_public_tree.export_path("public/assets/gaius-icon.svg"), "docs/assets/gaius-icon.svg")
         self.assertEqual(export_public_tree.export_path("patcher/public-root/.github/ISSUE_TEMPLATE/config.yml"),
                          ".github/ISSUE_TEMPLATE/config.yml")
         self.assertEqual(export_public_tree.export_path("patcher/README.md"), "patcher/README.md")
 
     def test_public_root_has_the_legal_files(self):
+        readme = PATCHER.parent / ("public/README.md" if PUBLIC_ROOT != PATCHER.parent else "README.md")
         for name in ("README.md", "DISCLAIMER.md", "CONTRIBUTING.md"):
-            text = (PUBLIC_ROOT / name).read_text(encoding="utf-8")
+            text = (readme if name == "README.md" else PUBLIC_ROOT / name).read_text(encoding="utf-8")
             self.assertIn("DISCLAIMER.md" if name != "DISCLAIMER.md" else "minecraft.net/eula", text)
         disclaimer = (PUBLIC_ROOT / "DISCLAIMER.md").read_text(encoding="utf-8")
         self.assertIn("Not an official Minecraft product".lower(), disclaimer.lower().replace("**", ""))

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -85,6 +86,23 @@ def teavm_pom(main_class: str, target_directory: Path, target_file: str) -> str:
 
 
 class PortableArtifactIdentityTest(unittest.TestCase):
+    def test_wasmgc_atlas_probe_is_pipefail_safe(self) -> None:
+        build = (SCRIPT.parent / "build-wasmgc.sh").read_text(encoding="utf-8")
+        self.assertIn("unzip -Z1 \"$atlas_client_jar\"", build)
+        self.assertIn("grep -Fx 'net/minecraft/client/resources/model/sprite/AtlasManager.class'", build)
+        with tempfile.TemporaryDirectory() as directory:
+            jar = Path(directory) / "client.jar"
+            with zipfile.ZipFile(jar, "w") as archive:
+                archive.writestr("first.class", b"first")
+                archive.writestr("net/minecraft/client/resources/model/sprite/AtlasManager.class", b"atlas")
+                archive.writestr("last.class", b"last")
+            result = subprocess.run(
+                ["bash", "-c",
+                 "set -euo pipefail; unzip -Z1 \"$1\" | grep -Fx "
+                 "'net/minecraft/client/resources/model/sprite/AtlasManager.class' >/dev/null",
+                 "atlas-probe", str(jar)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self) -> None:
         self._fixture_environment = hermetic_gaius_environment()
         self._fixture_environment.__enter__()

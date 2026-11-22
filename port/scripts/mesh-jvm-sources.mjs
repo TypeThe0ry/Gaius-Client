@@ -3,13 +3,22 @@ import {createHash} from "node:crypto";
 import {existsSync, readFileSync} from "node:fs";
 import {join} from "node:path";
 import {MANIFEST, stageSources} from "../tools/sourcesets/sourcesets.mjs";
+import {generateBrowserBridges} from "./browser-bridge-classes.mjs";
+
+const BLOCK_ACCESS = "net/minecraft/world/level/block/state/GaiusMeshBlockAccess";
+const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+export function stageMeshJvmBridge(profile, directory, root) {
+  const files = generateBrowserBridges({root, profile, role: "src", scratch: directory, out: directory,
+    owners: [BLOCK_ACCESS]});
+  return Object.fromEntries(files.map((file) => [file, hash(readFileSync(join(directory, file)))]));
+}
 
 export function stageMeshJvmSources(profile, out, root) {
   const staged = stageSources(profile, "src", "js", out, root);
   const mesh = "dev/gaius/browser/kernel/mesh/";
   const paths = ["MeshTableWriter", "ModelTableExporter", "MeshModelTable", "MeshProfile", "MeshVersionOps"]
     .map((name) => `${mesh}${name}.java`);
-  paths.push("net/minecraft/world/level/block/state/GaiusMeshBlockAccess.java");
   const ops = readFileSync(join(out, `${mesh}MeshVersionOps.java`), "utf8")
     .match(/\bINSTANCE\s*=\s*new\s+([\w$.]+)\s*\(/);
   assert(ops, "staged MeshVersionOps must select an implementation");
@@ -22,7 +31,8 @@ export function stageMeshJvmSources(profile, out, root) {
   const sourceFiles = [join(root, MANIFEST), ...paths.map((path) => staged.files.get(path).path),
     ...staged.sets.map((name) => join(root, "port/mc/shared", name, "relocations.tsv"))
       .filter(existsSync)];
-  const compiledSources = Object.fromEntries(paths.map((path) => [path,
-    createHash("sha256").update(readFileSync(join(out, path))).digest("hex")]));
-  return {javaFiles: paths.map((path) => join(out, path)), sourceFiles, compiledSources};
+  const compiledSources = Object.fromEntries(paths.map((path) => [path, hash(readFileSync(join(out, path)))]));
+  const bridgeDirectory = join(out, "bridge-classes");
+  const compiledBridges = stageMeshJvmBridge(profile, bridgeDirectory, root);
+  return {javaFiles: paths.map((path) => join(out, path)), sourceFiles, compiledSources, bridgeDirectory, compiledBridges};
 }

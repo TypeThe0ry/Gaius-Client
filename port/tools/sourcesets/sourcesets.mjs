@@ -235,22 +235,12 @@ export function resolveSources(profileRef, kind, target = "js", root = DEFAULT_R
     const profile = loadProfile(profileRef, root);
     const manifest = loadManifest(root);
     const sets = selectedSets(manifest, profile);
-    // The Patcher materializes only source patches for the selected profile.
-    // An exclude can name a source managed by Patcher for a different profile.
-    const patchManifest = join(root, "patcher/source-patches.json");
-    const inactivePatchTargets = new Set(existsSync(patchManifest)
-        ? JSON.parse(readFileSync(patchManifest, "utf8")).patches
-            .filter(patch => !patch.versions.includes(profile.id)).map(patch => patch.target)
-        : []);
     const files = new Map();
     for (const [rel, path] of listFiles(join(root, spec.base))) files.set(rel, {path, origin: "shared"});
     for (const set of sets) {
         const setRoot = join(root, "port/mc/shared", set.name, kind);
         for (const {entry, line} of readExcludes(join(setRoot, "excludes.txt"))) {
             if (!files.has(entry)) {
-                const inactiveInEarlierSet = sets.slice(0, sets.indexOf(set)).some(earlier =>
-                    inactivePatchTargets.has(`port/mc/shared/${earlier.name}/${kind}/java/${entry}`));
-                if (inactivePatchTargets.has(`${spec.base}/${entry}`) || inactiveInEarlierSet) continue;
                 fail(`port/mc/shared/${set.name}/${kind}/excludes.txt:${line}: stale entry ${entry} `
                     + `(no such file before set ${set.name} for profile ${profile.id})`);
             }
@@ -569,11 +559,6 @@ function selfTest() {
         expect("clean check", check(root), []);
         write("port/mc/shared/lts/src/excludes.txt", "p/Missing.java\n");
         expect("stale exclude", check(root).some((p) => p.includes("stale entry p/Missing.java")), true);
-        write("patcher/source-patches.json", JSON.stringify({patches: [{
-            target: "port/mc/shared/canonical/src/java/p/Missing.java", versions: ["alpha"],
-        }]}));
-        expect("out-of-profile source patch is absent", list("gamma"),
-            ["p/Gone.java:shared", "p/Kernel.java:canonical", "p/Shared.java:shared"]);
         write("port/mc/shared/lts/src/excludes.txt", "p/Kernel.java\n");
         write("port/mc/shared/gen-2/relocations.tsv", "a.old.Payload\ta.fresh.Payload\nb.Unused\tc.Unused\n");
         expect("stale relocation", check(root).some((p) => p.includes("stale relocation b.Unused")), true);

@@ -252,18 +252,23 @@ const onErrorStart = channel.indexOf("ws.onerror = function()", onMessageStart);
 assert.ok(onOpenStart > 0 && onMessageStart > onOpenStart && onErrorStart > onMessageStart);
 const browserHandlers = channel.slice(onOpenStart, onErrorStart).replaceAll("\\\\", "\\");
 
-function browserSession({built = declaration, direct = false, local = false} = {}) {
+function browserSession({built = declaration, direct = false, local = false, embedded = false} = {}) {
     const controls = [];
     const errors = [];
     const entry = {host: "example.invalid", port: 25565, targetKey: "example.invalid:25565",
         webSocketGeneration: 1, closed: false, connected: false};
-    const context = vm.createContext({entry, generation: 1, candidate: {direct, url: "wss://example.invalid/tunnel"},
+    const urlConnect = embedded ? "wss://example.invalid/tunnel?c=" +
+        Buffer.from(control(), "utf8").toString("base64url") : null;
+    const context = vm.createContext({entry, generation: 1, adoptedRelay: null, relayAlreadyOpen: false, urlConnect,
+        candidate: {direct, url: "wss://example.invalid/tunnel"},
+        retryControl() {return false;}, relayTrace: null, targetWarm: false, relayAckTimeout: 700,
         ws: {}, queueControl(entry, message) {controls.push(message);},
         localTunnelRole() {return local ? "client" : null;}, localSkinDescriptor() {return undefined;},
         bridgeToken() {return undefined;}, recordConnectPhase() {}, armCandidateTimeout() {},
         relayTunnelConnectTimeout() {return 10000;}, clearCandidateTimeout() {},
         normalizedTargetKey(host, port) {return host + ":" + port;},
-        forgetDirectPluginUnavailable() {}, recordRelayNodeSuccess() {}, requestFlush() {},
+        forgetDirectPluginUnavailable() {}, rememberSuccessfulRelay() {}, recordRelayNodeSuccess() {},
+        clearRelayPreparation() {}, requestFlush() {},
         state: {stats: {directConnected: 0}, failInbound(entry, error) {errors.push(error); entry.closed = true;}}});
     if (built !== undefined) vm.runInContext(relayProtocolScript(built), context);
     vm.runInContext(browserHandlers, context);
@@ -282,7 +287,8 @@ test("real browser onopen sends the embedded table that the relay validates", ()
     assert.equal(session.entry.connected, true);
     assert.deepEqual(session.errors, []);
     session.context.ws.onopen();
-    assert.equal(session.controls[1].protocolTable, session.controls[0].protocolTable);
+    assert.equal(session.controls.length, 1, "repeated WebSocket open must not resend connect");
+    assert.equal(session.controls[0].protocolTable.sha256, declaration.sha256);
 });
 
 test("old relay acknowledgement and old browser control remain compatible", () => {
@@ -293,6 +299,18 @@ test("old relay acknowledgement and old browser control remain compatible", () =
     assert.equal(legacy.controls[0].protocolTable, undefined);
     legacy.connected();
     assert.equal(legacy.entry.connected, true);
+
+    // A short legacy URL connect carries no table. The real onopen handler must
+    // suppress the control frame, and the legacy connected reply still completes.
+    const embedded = browserSession({built: null, embedded: true});
+    const encoded = new URL(embedded.context.urlConnect).searchParams.get("c");
+    assert.equal(parseConnectRequest(Buffer.from(encoded, "base64url").toString("utf8")).protocolTable, undefined);
+    assert.deepEqual(embedded.controls, []);
+    embedded.context.ws.onopen();
+    assert.deepEqual(embedded.controls, []);
+    embedded.connected();
+    assert.equal(embedded.entry.connected, true);
+    assert.deepEqual(embedded.errors, []);
 });
 
 test("direct-plugin and LAN controls do not acquire a session table", () => {
