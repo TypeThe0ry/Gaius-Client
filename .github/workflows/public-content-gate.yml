@@ -1,0 +1,21 @@
+name: Public content gate
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  public-content-gate:
+    name: public-content-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the candidate tree
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Reject non-public content
+        run: python3 .github/scripts/public-content-gate.py HEAD
